@@ -1,0 +1,19 @@
+[package]
+name = "proto"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "proto_lib"
+path = "src/lib.rs"
+
+[dependencies]
+prost = "0.12.3"
+prost-build = { version = "0.12.3" }
+prost-types = "0.12.6"
+
+[build-dependencies]
+prost-build = { version = "0.12.3" }
+
+[package.metadata.cargo-machete]
+ignored = ["prost-build"]

@@ -1,0 +1,6 @@
+/target
+staker.crt
+staker.key
+pop.key
+bls.key
+data/

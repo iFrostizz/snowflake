@@ -1,0 +1,17 @@
+[workspace]
+members = ["node", "proto"]
+default-members = ["node"]
+resolver = "2"
+
+[profile.dev]
+panic = 'abort'
+
+[profile.release]
+debug = 1
+
+[workspace.dependencies]
+proto = { path = "./proto" }
+
+# [patch.'https://github.com/iFrostizz/rlp-rs']
+# rlp-rs = { path = "../rlp-rs/rlp" }
+# rlp-types = { path = "../rlp-rs/types" }
