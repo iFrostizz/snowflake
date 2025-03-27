@@ -114,20 +114,18 @@ mod tests {
 
     #[test]
     fn correct_ip_bytes_repr() {
-        // TODO leaked IP: don't release !
         let ip_addr =
-            std::net::IpAddr::from_str("99c3:1f7b:ce7a:ac16:1aac:6956:cb56:a8ea").unwrap();
+            std::net::IpAddr::from_str("4187:e8e5:6129:f9a8:7e88:5b66:4255:e34b").unwrap();
         let port = 6969;
         let timestamp = 69420;
         let unsigned_ip = UnsignedIp::new(ip_addr, port, timestamp);
         let as_bytes = unsigned_ip.bytes();
-        // [42, 2, 132, 43, 3, 128, 91, 1, 210, 175, 133, 21, 151, 165, 219, 222, 27, 57, 0, 0, 0, 0, 0, 1, 15, 44]
 
         assert_eq!(
             as_bytes,
             [
-                153, 195, 31, 123, 206, 122, 172, 22, 26, 172, 105, 86, 203, 86, 168, 234, 27, 57,
-                0, 0, 0, 0, 0, 1, 15, 44
+                65, 135, 232, 229, 97, 41, 249, 168, 126, 136, 91, 102, 66, 85, 227, 75, 27, 57, 0,
+                0, 0, 0, 0, 1, 15, 44
             ]
         );
 
@@ -138,13 +136,15 @@ mod tests {
         assert_eq!(
             ip_hash.to_vec(),
             [
-                23, 31, 33, 6, 42, 153, 225, 190, 16, 42, 122, 134, 199, 123, 178, 177, 27, 128,
-                168, 58, 126, 101, 19, 35, 255, 75, 193, 222, 2, 183, 183, 193
+                78, 206, 134, 62, 131, 68, 102, 55, 164, 146, 192, 6, 169, 154, 156, 225, 229, 25,
+                149, 104, 39, 205, 233, 5, 98, 143, 22, 125, 170, 120, 31, 22
             ]
         );
 
-        let key_path = Path::new(env!("CARGO_MANIFEST_DIR"));
-        let private_key_path = key_path.join("../staker.key");
+        let credentials_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/credentials/");
+        let private_key_path = credentials_path.join("staker.key");
+        let cert_path = credentials_path.join("staker.crt");
+
         let private_key = fs::read(private_key_path).unwrap();
         let private_key_pem = openssl::rsa::Rsa::private_key_from_pem(&private_key).unwrap();
         let keypair = PKey::from_rsa(private_key_pem).unwrap();
@@ -154,7 +154,6 @@ mod tests {
         signer.update(&ip_hash).unwrap();
         let signature = signer.sign_to_vec().unwrap();
 
-        let cert_path = key_path.join("../staker.crt");
         let cert_raw = fs::read(cert_path).unwrap();
         let x509 = x509::X509::from_pem(&cert_raw).unwrap();
         let public_key = x509.public_key().unwrap();
@@ -163,7 +162,6 @@ mod tests {
         verifier.set_rsa_padding(Padding::PKCS1).unwrap();
         verifier.update(&ip_hash).unwrap();
         let verified = verifier.verify(&signature).unwrap();
-
         assert!(verified);
     }
 }

@@ -21,10 +21,10 @@ openssl = "0.10.64"
 sha2 = "0.10.8"
 futures = "0.3.30"
 bs58 = { version = "0.5.0", features = ["cb58"] }
-clap = { version = "4.5.3", features = ["derive"] }
+clap = { version = "4.5.34", features = ["derive"] }
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.114"
-phf = { version = "0.11.2", features = ["macros"] }
+phf = { version = "0.11.3", features = ["macros"] }
 flume = "0.11.0"
 zstd = "0.13.0"
 async-recursion = "1.1.0"
@@ -33,13 +33,12 @@ rand = "0.8.5"
 console-subscriber = "0.2.0"
 tracing-subscriber = "0.3.18"
 tokio = { version = "1.37.0", features = ["full", "net"] }
-thiserror = "1.0.61"
+thiserror = "2.0.12"
 blst = "0.3.12"
 indexmap = "2.2.6"
 tokio-rustls = "0.26.0"
 hex = "0.4.3"
-rand_mt = "4.2.2"
-rlp-types = { git = "https://github.com/iFrostizz/rlp-rs", branch = "fix_tx_deser" }
+rand_mt = "5.0.0"
 metrics = "0.23.0"
 metrics-exporter-prometheus = "0.15.3"
 paste = "1.0.15"
