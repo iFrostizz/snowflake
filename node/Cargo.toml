@@ -38,7 +38,7 @@ blst = "0.3.12"
 indexmap = "2.2.6"
 tokio-rustls = "0.26.0"
 hex = "0.4.3"
-rand_mt = "4.2.2"
+rand_mt = "5.0.0"
 rlp-types = { git = "https://github.com/iFrostizz/rlp-rs", branch = "fix_tx_deser" }
 metrics = "0.23.0"
 metrics-exporter-prometheus = "0.15.3"
