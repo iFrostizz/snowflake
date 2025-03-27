@@ -37,7 +37,7 @@ pub fn ip_from_octets(mut octets: Vec<u8>) -> Result<IpAddr, std::io::Error> {
 }
 
 fn two_bytes_u16(b1: u8, b2: u8) -> u16 {
-    (b1 as u16) << 8 | b2 as u16
+    ((b1 as u16) << 8) | b2 as u16
 }
 
 #[cfg(test)]
