@@ -13,8 +13,6 @@ use tokio::net::{
 };
 use tokio::sync::oneshot;
 
-mod types;
-
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub enum Method {
     #[serde(rename = "eth_chainId")]
@@ -236,8 +234,8 @@ impl Rpc {
                             tx.send((as_bytes, Instant::now())).unwrap();
                             // TODO calculate hash from RLP encoded tx hash
                             let hash =
-                            "0x0000000000000000000000000000000000000000000000000000000000000000"
-                                .to_string();
+                                "0x0000000000000000000000000000000000000000000000000000000000000000"
+                                    .to_string();
                             Ok(hash)
                         }
                         _ => Err("invalid type".to_string()),

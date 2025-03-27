@@ -28,6 +28,9 @@ pub const DEFAULT_DEADLINE: u64 = 10_000_000_000; // <10s
 
 pub const APP_PREFIX: u8 = 0;
 
+#[cfg(feature = "dhat-heap")]
+pub(crate) const DHAT_TIME_S: u64 = 600;
+
 #[cfg(test)]
 mod tests {
     use super::{C_CHAIN_ID, C_CHAIN_ID_STR};

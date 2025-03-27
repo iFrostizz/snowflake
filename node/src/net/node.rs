@@ -1,9 +1,7 @@
 use crate::client::config;
 use crate::id::{ChainId, NodeId};
 use crate::message::{mail_box::MailBox, pipeline::Pipeline, MiniMessage};
-use crate::net::{
-    ip::UnsignedIp, BackoffParams, Intervals, Network, Peer, PeerInfo, PeerMessage,
-};
+use crate::net::{ip::UnsignedIp, BackoffParams, Intervals, Network, Peer, PeerInfo, PeerMessage};
 use crate::server::{
     msg::{DecodingError, OutboundMessage},
     peers::PeerSender,
@@ -363,14 +361,15 @@ impl Network {
         Ok(())
     }
 
+    pub fn has_reached_max_peers(&self, peers_infos: &IndexMap<NodeId, PeerInfo>) -> bool {
+        match self.config.max_peers {
+            Some(max_peers) => peers_infos.len() >= max_peers,
+            None => false,
+        }
+    }
+
     pub fn can_add_peer(&self, node_id: &NodeId) -> bool {
         let peers_infos = self.peers_infos.read().unwrap();
-
-        let max_peers_check = match self.config.max_peers {
-            Some(max_peers) => peers_infos.len() < max_peers,
-            None => true,
-        };
-
-        max_peers_check && !peers_infos.contains_key(node_id)
+        !self.has_reached_max_peers(&peers_infos) && !peers_infos.contains_key(node_id)
     }
 }

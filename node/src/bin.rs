@@ -7,9 +7,6 @@ use std::sync::Arc;
 use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 
-#[cfg(feature = "dhat-heap")]
-use std::time::Duration;
-
 mod blocks;
 mod cli;
 mod client;
@@ -39,8 +36,6 @@ macro_rules! debugger {
 #[cfg(feature = "dhat-heap")]
 #[global_allocator]
 static ALLOC: dhat::Alloc = dhat::Alloc;
-#[cfg(feature = "dhat-heap")]
-const DHAT_TIME_S: u64 = 600;
 
 #[tokio::main]
 async fn main() {
@@ -77,7 +72,10 @@ async fn main() {
 
     #[cfg(feature = "dhat-heap")]
     {
-        tokio::time::sleep(Duration::from_secs(DHAT_TIME_S)).await;
+        use std::time::Duration;
+        use crate::utils::constants;
+
+        tokio::time::sleep(Duration::from_secs(constants::DHAT_TIME_S)).await;
         drop(_profiler);
         node_tx.send(()).unwrap();
         drop(node_ops);

@@ -514,7 +514,7 @@ impl Node {
 
     fn get_peer_list(self: &Arc<Node>) {
         let peers = self.network.peers_infos.read().unwrap();
-        if peers.is_empty() {
+        if peers.is_empty() || self.network.has_reached_max_peers(&peers) {
             return;
         }
         let (node_id, random_peer) = peers.get_index(random::<usize>() % peers.len()).unwrap();
