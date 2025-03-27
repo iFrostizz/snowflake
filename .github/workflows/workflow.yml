@@ -14,6 +14,9 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
 
+      - name: Install protoc
+        run: sudo apt install -y protoc
+
       - name: Install Rust
         uses: actions-rs/toolchain@v1
         with:
