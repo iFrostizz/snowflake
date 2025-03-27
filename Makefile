@@ -2,13 +2,16 @@
 
 export OUT_DIR=proto/src/
 
-ci: fmt	clippy
+ci: fmt	clippy test
 
 fmt:
 	cargo fmt
 
 clippy:
 	cargo clippy --all-targets -- -D warnings
+
+test:
+	cargo test
 
 keys:
 	openssl req -x509 -newkey rsa:4096 -keyout staker.key -out staker.crt -days 36500 -nodes -subj '/CN=localhost' -set_serial 0
