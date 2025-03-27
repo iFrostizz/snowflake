@@ -72,8 +72,8 @@ async fn main() {
 
     #[cfg(feature = "dhat-heap")]
     {
-        use std::time::Duration;
         use crate::utils::constants;
+        use std::time::Duration;
 
         tokio::time::sleep(Duration::from_secs(constants::DHAT_TIME_S)).await;
         drop(_profiler);

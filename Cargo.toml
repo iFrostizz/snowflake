@@ -13,5 +13,4 @@ debug = 1
 proto = { path = "./proto" }
 
 # [patch.'https://github.com/iFrostizz/rlp-rs']
-# rlp-rs = { path = "../rlp-rs/rlp" }
 # rlp-types = { path = "../rlp-rs/types" }
