@@ -24,7 +24,7 @@ bs58 = { version = "0.5.0", features = ["cb58"] }
 clap = { version = "4.5.3", features = ["derive"] }
 serde = { version = "1.0.197", features = ["derive"] }
 serde_json = "1.0.114"
-phf = { version = "0.11.2", features = ["macros"] }
+phf = { version = "0.11.3", features = ["macros"] }
 flume = "0.11.0"
 zstd = "0.13.0"
 async-recursion = "1.1.0"
