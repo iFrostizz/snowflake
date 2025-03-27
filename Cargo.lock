@@ -2194,15 +2194,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "keccak"
-version = "0.1.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ecc2af9a1119c51f12a14607e783cb977bde58bc069ff0c3da1095e635d70654"
-dependencies = [
- "cpufeatures",
-]
-
-[[package]]
 name = "keccak-asm"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2447,7 +2438,6 @@ dependencies = [
  "rand",
  "rand_mt",
  "ripemd",
- "rlp-types",
  "rustls",
  "rustls-pemfile",
  "rustls-pki-types",
@@ -3212,28 +3202,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rlp-rs"
-version = "0.1.0"
-source = "git+https://github.com/iFrostizz/rlp-rs?branch=fix_tx_deser#70c6009760d44ebaf257f6acc8c96cee2cdc1e50"
-dependencies = [
- "paste",
- "serde",
- "serde_bytes",
-]
-
-[[package]]
-name = "rlp-types"
-version = "0.1.0"
-source = "git+https://github.com/iFrostizz/rlp-rs?branch=fix_tx_deser#70c6009760d44ebaf257f6acc8c96cee2cdc1e50"
-dependencies = [
- "rlp-rs",
- "serde",
- "serde_bytes",
- "sha2",
- "sha3",
-]
-
-[[package]]
 name = "ruint"
 version = "1.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3485,15 +3453,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "serde_bytes"
-version = "0.11.15"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "387cc504cb06bb40a96c8e04e951fe01854cf6bc921053c954e4a606d9675c6a"
-dependencies = [
- "serde",
-]
-
-[[package]]
 name = "serde_derive"
 version = "1.0.204"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3548,16 +3507,6 @@ dependencies = [
  "cfg-if",
  "cpufeatures",
  "digest 0.10.7",
-]
-
-[[package]]
-name = "sha3"
-version = "0.10.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "75872d278a8f37ef87fa0ddbda7802605cb18344497949862c0d4dcb291eba60"
-dependencies = [
- "digest 0.10.7",
- "keccak",
 ]
 
 [[package]]

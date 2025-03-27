@@ -102,7 +102,7 @@ impl Filter {
 
     fn big_endian_u64(data: &[u8]) -> u64 {
         // source: https://tip.golang.org/src/vendor/golang.org/x/sys/cpu/byteorder.go
-        (0..8).fold(0, |acc, i| acc | (data[7 - i] as u64) << (i * 8))
+        (0..8).fold(0, |acc, i| acc | ((data[7 - i] as u64) << (i * 8)))
     }
 
     pub fn feed(&mut self, gossip_id: [u8; 32]) {
