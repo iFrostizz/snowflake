@@ -1,6 +1,6 @@
 /target
-staker.crt
-staker.key
-pop.key
-bls.key
+/bls.key
+/staker.crt
+/staker.key
 data/
+.idea/
