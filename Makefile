@@ -2,7 +2,7 @@
 
 export OUT_DIR=proto/src/
 
-ci: fmt	clippy test
+ci: fmt	clippy test proto-check
 
 fmt:
 	cargo fmt
@@ -19,6 +19,9 @@ keys:
 
 proto:
 	cargo build -p proto
+
+proto-check: proto
+	git diff --quiet -- proto/src/
 
 metrics:
 	sudo prometheus --config.file ./prometheus.yml --web.listen-address=:9898

@@ -11,6 +11,7 @@ debug = 1
 
 [workspace.dependencies]
 proto = { path = "./proto" }
+prost = "0.13.5"
 
 # [patch.'https://github.com/iFrostizz/rlp-rs']
 # rlp-types = { path = "../rlp-rs/types" }
