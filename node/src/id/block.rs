@@ -41,11 +41,11 @@ impl AsRef<[u8]> for BlockID {
 #[cfg(test)]
 mod tests {
     use super::BlockID;
-    use rand::Rng;
+    use rand::random;
 
     #[test]
     fn conversion() {
-        let bytes: [u8; BlockID::LEN] = rand::thread_rng().gen();
+        let bytes: [u8; BlockID::LEN] = random();
         let block_id = BlockID::from(bytes);
         assert_eq!(BlockID::try_from(bytes.as_slice()).unwrap(), block_id);
         assert_eq!(block_id.as_ref(), &bytes);

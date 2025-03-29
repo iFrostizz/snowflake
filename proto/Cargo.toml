@@ -8,12 +8,12 @@ name = "proto_lib"
 path = "src/lib.rs"
 
 [dependencies]
-prost = "0.12.3"
-prost-build = { version = "0.12.3" }
+prost = "0.13.5"
+prost-build = { version = "0.13.5" }
 prost-types = "0.13.5"
 
 [build-dependencies]
-prost-build = { version = "0.12.3" }
+prost-build = { version = "0.13.5" }
 
 [package.metadata.cargo-machete]
 ignored = ["prost-build"]

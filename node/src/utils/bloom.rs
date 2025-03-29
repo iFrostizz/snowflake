@@ -264,7 +264,7 @@ impl TryFrom<&[u8]> for ReadFilter {
         let entries: Vec<u8> = value.get((entries_offset as usize)..).unwrap().to_owned();
 
         Ok(Self {
-            salt: rand::thread_rng().gen(),
+            salt: random(),
             num_bits: entries.len() as u64 * 8,
             seeds,
             entries,
