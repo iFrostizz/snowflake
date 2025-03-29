@@ -87,7 +87,7 @@ async fn main() -> Result<(), NodeError> {
         let res = tokio::try_join!(node_ops, server, client);
 
         node_tx.send(()).unwrap();
-        
+
         match res {
             Ok((Err(e), ..)) | Ok((Ok(_), (), Err(e))) => return Err(e),
             Ok((Ok(_), (), Ok(_))) => (),

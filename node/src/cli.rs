@@ -133,7 +133,7 @@ impl Args {
         let network = &self.network_id.to_string();
         let network_id: u32 = constants::NETWORK[network];
         let c_chain_id: ChainId = constants::C_CHAIN_ID[network].clone();
-        
+
         let socket_addr = match self.public_ip.unwrap() {
             IpAddr::V4(ip) => SocketAddr::new(IpAddr::V4(ip), self.http_port),
             IpAddr::V6(ip) => SocketAddr::new(IpAddr::V6(ip), self.http_port),
