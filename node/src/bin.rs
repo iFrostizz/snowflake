@@ -38,7 +38,7 @@ macro_rules! debugger {
 static ALLOC: dhat::Alloc = dhat::Alloc;
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<(), NodeError> {
     #[cfg(feature = "dhat-heap")]
     let _profiler = dhat::Profiler::new_heap();
 
@@ -47,7 +47,7 @@ async fn main() {
 
     debugger!(false);
 
-    let args = cli::read_args();
+    let args = cli::read_args().await?;
     let network_config = args.network_config();
     let network = Arc::new(Network::new(network_config).unwrap());
 
@@ -67,7 +67,6 @@ async fn main() {
             &args.network_id.to_string(),
         )
         .await
-        .expect("failed to start client"); // TODO better error handling
     });
 
     #[cfg(feature = "dhat-heap")]
@@ -85,10 +84,18 @@ async fn main() {
 
     #[cfg(not(feature = "dhat-heap"))]
     {
-        let _ = tokio::join!(node_ops, server, client);
+        let res = tokio::try_join!(node_ops, server, client);
 
         node_tx.send(()).unwrap();
+        
+        match res {
+            Ok((Err(e), ..)) | Ok((Ok(_), (), Err(e))) => return Err(e),
+            Ok((Ok(_), (), Ok(_))) => (),
+            Err(e) => panic!("{:?}", e),
+        }
     }
+
+    Ok(())
 }
 
 async fn server(

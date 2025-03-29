@@ -1,10 +1,10 @@
 use crate::id::ChainId;
-use crate::net::node::NetworkConfig;
+use crate::net::node::{NetworkConfig, NodeError};
 use crate::net::{BackoffParams, Intervals};
 use crate::utils::constants::{self};
 use clap::Parser;
 use serde::Deserialize;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::{fmt::Display, time::Duration};
 use tokio::sync::Semaphore;
@@ -30,11 +30,13 @@ impl Display for NetworkName {
 #[derive(Parser, Debug)]
 #[command(version, about)]
 pub struct Args {
-    // TODO replace this by an automatic IP resolving mechanism e.g: https://docs.rs/public-ip/latest/public_ip/
-    // TODO the port should be 9651 by default but could be changed, maybe as part of another arg.
-    /// Socket address of the node
+    /// IP address of the node
     #[arg(long)]
-    pub public_socket: SocketAddr,
+    pub public_ip: Option<IpAddr>,
+
+    /// Public port of the node
+    #[arg(long, default_value_t = 9751)]
+    pub http_port: u16,
 
     /// Path of the certificate
     #[arg(short, long, default_value = "./staker.crt")]
@@ -65,7 +67,7 @@ pub struct Args {
     pub max_out_connections: usize,
 
     /// Cache size of messages that can be subscribed, to record peers latency
-    #[arg(long, alias = "max-lat", default_value = "10")]
+    #[arg(long, alias = "max-lat", default_value_t = 10)]
     pub max_latency_records: usize,
 
     /// Maximum amount of simultaneous handshakes
@@ -73,17 +75,17 @@ pub struct Args {
     pub max_handshakes: usize,
 
     /// Intervals configuration
-    #[arg(long, default_value = "60000")]
+    #[arg(long, default_value_t = 60000)]
     pub intervals_ping_ms: u64,
 
     /// Intervals configuration
-    #[arg(long, default_value = "60000")]
+    #[arg(long, default_value_t = 60000)]
     pub intervals_get_peer_list_ms: u64,
 
-    #[arg(long, default_value = "9000")]
+    #[arg(long, default_value_t = 9000)]
     pub metrics_port: u16,
 
-    #[arg(long, default_value = "false")]
+    #[arg(long, default_value_t = false)]
     pub enable_metrics: bool,
 
     #[arg(long, default_value = "50")]
@@ -94,8 +96,17 @@ pub struct Args {
     pub ipc_socket_path: String,
 }
 
-pub fn read_args() -> Args {
-    Args::parse()
+pub async fn read_args() -> Result<Args, NodeError> {
+    let mut args = Args::parse();
+    if args.public_ip.is_none() {
+        if let Some(ip) = public_ip::addr().await {
+            args.public_ip = Some(ip);
+        } else {
+            return Err(NodeError::Dns);
+        }
+    }
+    assert!(args.public_ip.is_some());
+    Ok(args)
 }
 
 impl Args {
@@ -122,9 +133,14 @@ impl Args {
         let network = &self.network_id.to_string();
         let network_id: u32 = constants::NETWORK[network];
         let c_chain_id: ChainId = constants::C_CHAIN_ID[network].clone();
+        
+        let socket_addr = match self.public_ip.unwrap() {
+            IpAddr::V4(ip) => SocketAddr::new(IpAddr::V4(ip), self.http_port),
+            IpAddr::V6(ip) => SocketAddr::new(IpAddr::V6(ip), self.http_port),
+        };
 
         NetworkConfig {
-            socket_addr: self.public_socket,
+            socket_addr,
             network_id,
             c_chain_id,
             pem_key_path: self.pem_key_path.clone(),
