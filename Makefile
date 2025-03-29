@@ -2,16 +2,21 @@
 
 export OUT_DIR=proto/src/
 
-ci: fmt	clippy test proto-check
+ci-check: fmt-check	clippy test proto-check
+
+ci-fix: fmt	clippy test proto
 
 fmt:
 	cargo fmt
+
+fmt-check:
+	cargo fmt --check
 
 clippy:
 	cargo clippy --all-targets -- -D warnings
 
 test:
-	cargo test
+	cargo test --quiet
 
 keys:
 	openssl req -x509 -newkey rsa:4096 -keyout staker.key -out staker.crt -days 36500 -nodes -subj '/CN=localhost' -set_serial 0
