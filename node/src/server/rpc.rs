@@ -84,10 +84,18 @@ pub struct Rpc {
     tx: Sender<(Vec<u8>, Instant)>,
 }
 
+mod jsonrpc_errors {
+    pub const PARSE_ERROR: i32 = -32700;
+    pub const INVALID_REQUEST: i32 = -32600;
+    pub const METHOD_NOT_FOUND: i32 = -32601;
+    pub const INVALID_PARAMS: i32 = -32602;
+    pub const INTERNAL_ERROR: i32 = -32603;
+}
+
 macro_rules! not_implemented {
     () => {
         return jsonrpsee::core::RpcResult::Err(jsonrpsee::types::ErrorObject::borrowed(
-            -32000,
+            jsonrpc_errors::METHOD_NOT_FOUND,
             "unimplemented method",
             None,
         ))
@@ -95,10 +103,12 @@ macro_rules! not_implemented {
 }
 
 mod rpc_impl {
-    use crate::Arc;
+    use std::env;
+    use crate::utils::constants;
+use crate::Arc;
 use crate::Network;
 
-use alloy::primitives::{Address, FixedBytes, U256};
+use alloy::primitives::{keccak256, Address, Bytes, FixedBytes, B256, U256, U64};
     use jsonrpsee::core::{async_trait, RpcResult, SubscriptionResult};
     use jsonrpsee::server::{
         IntoSubscriptionCloseResponse, PendingSubscriptionSink, SubscriptionCloseResponse,
@@ -106,6 +116,8 @@ use alloy::primitives::{Address, FixedBytes, U256};
     };
     use jsonrpsee::{proc_macros::rpc, Extensions};
     use serde::{Deserialize, Serialize};
+    use std::str::FromStr;
+    use super::jsonrpc_errors;
 
     type Bytes32 = FixedBytes<32>;
     type BloomFilter = FixedBytes<256>;
@@ -227,19 +239,23 @@ use alloy::primitives::{Address, FixedBytes, U256};
         fn client_version(&self) -> RpcResult<String>;
 
         #[method(name = "sha3")]
-        fn sha3(&self, data: &[u8]) -> RpcResult<Bytes32>;
+        fn sha3(&self, data: Bytes) -> RpcResult<Bytes32> {
+            Ok(keccak256(data))
+        }
     }
 
     #[rpc(server, namespace = "net")]
     pub trait Net {
         #[method(name = "version")]
-        fn version(&self) -> RpcResult<u64>;
+        fn version(&self) -> RpcResult<String>;
 
         #[method(name = "listening")]
-        fn listening(&self) -> RpcResult<bool>;
+        fn listening(&self) -> RpcResult<bool> {
+            Ok(true) // constant for now
+        }
 
         #[method(name = "peerCount")]
-        fn peer_count(&self) -> RpcResult<u64>;
+        fn peer_count(&self) -> RpcResult<U64>;
     }
 
     #[rpc(server, namespace = "eth")]
@@ -249,16 +265,17 @@ use alloy::primitives::{Address, FixedBytes, U256};
 
         #[method(name = "syncing")]
         fn syncing(&self) -> RpcResult<bool> {
+            // TODO: remove the constant once we ask peers for information to initialize state.
             RpcResult::Ok(false)
         }
 
         #[method(name = "coinbase")]
-        fn coinbase(&self) -> RpcResult<String> {
-            RpcResult::Ok("0x0100000000000000000000000000000000000000".to_string())
+        fn coinbase(&self) -> RpcResult<Address> {
+            RpcResult::Ok(Address::from_str("0x0100000000000000000000000000000000000000").unwrap())
         }
 
         #[method(name = "chainId")]
-        fn chain_id(&self) -> RpcResult<u64>;
+        fn chain_id(&self) -> RpcResult<U64>;
 
         #[method(name = "mining")]
         fn mining(&self) -> RpcResult<bool> {
@@ -403,39 +420,37 @@ use alloy::primitives::{Address, FixedBytes, U256};
         pub(crate) network: Arc<Network>
     }
 
-    // #[async_trait]
     impl Web3Server for RpcServerImpl {
         fn client_version(&self) -> RpcResult<String> {
-            not_implemented!()
-        }
-
-        fn sha3(&self, _data: &[u8]) -> RpcResult<Bytes32> {
-            not_implemented!()
+            const CLIENT: &str = constants::CLIENT;
+            const VERSION: &str = env!("CARGO_PKG_VERSION");
+            const PLATFORM: &str = current_platform::CURRENT_PLATFORM;
+            const RUSTC: Option<&str> = option_env!("RUSTC_VERSION");
+            let rustc = RUSTC.unwrap_or("x.x.x");
+            let client_version = format!("{}/{}/{}/{}", CLIENT, VERSION, PLATFORM, rustc);
+            Ok(client_version)
         }
     }
 
     impl NetServer for RpcServerImpl {
-        fn version(&self) -> RpcResult<u64> {
-            not_implemented!()
+        fn version(&self) -> RpcResult<String> {
+            Ok(self.network.config.eth_network_id.to_string())
         }
 
-        fn listening(&self) -> RpcResult<bool> {
-            not_implemented!()
-        }
-
-        fn peer_count(&self) -> RpcResult<u64> {
+        fn peer_count(&self) -> RpcResult<U64> {
             let peer_count = self.network.peers_infos.read().unwrap().len() as u64;
-            Ok(peer_count)
+            Ok(U64::from(peer_count))
         }
     }
 
+    // #[async_trait]
     impl EthServer for RpcServerImpl {
         fn protocol_version(&self) -> RpcResult<String> {
             not_implemented!()
         }
 
-        fn chain_id(&self) -> RpcResult<u64> {
-            not_implemented!()
+        fn chain_id(&self) -> RpcResult<U64> {
+            Ok(U64::from(self.network.config.eth_network_id))
         }
 
         fn hashrate(&self) -> RpcResult<u64> {
@@ -858,7 +873,7 @@ mod tests {
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         log::debug!("start");
         tokio::spawn(async move {
-            let rpc = Rpc::new(path, tx);
+            let rpc = Rpc::new(network, path, tx);
             rpc.start(shutdown_rx).await;
         });
 

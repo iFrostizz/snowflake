@@ -133,7 +133,8 @@ impl Args {
         let back_off = self.back_off();
 
         let network = &self.network_id.to_string();
-        let network_id: u32 = constants::NETWORK[network];
+        let network_id = constants::NETWORK[network];
+        let eth_network_id = constants::ETH_NETWORK[network];
         let c_chain_id: ChainId = constants::C_CHAIN_ID[network].clone();
 
         let socket_addr = match self.public_ip.unwrap() {
@@ -144,6 +145,7 @@ impl Args {
         NetworkConfig {
             socket_addr,
             network_id,
+            eth_network_id,
             c_chain_id,
             pem_key_path: self.pem_key_path.clone(),
             bls_key_path: self.bls_key_path.clone(),
