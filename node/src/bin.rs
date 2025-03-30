@@ -48,6 +48,8 @@ async fn main() -> Result<(), NodeError> {
     debugger!(false);
 
     let args = cli::read_args().await?;
+    log::debug!("args: {:?}", args);
+
     let network_config = args.network_config();
     let network = Arc::new(Network::new(network_config).unwrap());
 
@@ -106,14 +108,16 @@ async fn server(
     JoinHandle<Result<(), NodeError>>,
     JoinHandle<()>,
 ) {
+    log::debug!("starting server");
+
     let (transaction_tx, transaction_rx) = flume::unbounded();
     let node2 = node.clone();
-    let (node_tx, rx) = broadcast::channel(1);
+    let (node_tx, node_rx) = broadcast::channel(1);
     let enable_metrics = args.enable_metrics;
     let metrics_port = args.metrics_port;
     let node_ops = tokio::task::spawn(async move {
         node2
-            .start(enable_metrics, metrics_port, transaction_rx, rx)
+            .start(enable_metrics, metrics_port, transaction_rx, node_rx)
             .await
     });
 

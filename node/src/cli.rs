@@ -99,8 +99,10 @@ pub struct Args {
 pub async fn read_args() -> Result<Args, NodeError> {
     let mut args = Args::parse();
     if args.public_ip.is_none() {
+        log::debug!("public_ip parameter not provided, resolving DNS...");
         if let Some(ip) = public_ip::addr().await {
             args.public_ip = Some(ip);
+            log::debug!("found {:?}", ip);
         } else {
             return Err(NodeError::Dns);
         }
