@@ -56,6 +56,7 @@ pub enum NodeError {
     Message(String),
 }
 
+#[derive(Debug)]
 pub struct NetworkConfig {
     /// This node socket address
     pub socket_addr: SocketAddr,
@@ -74,6 +75,7 @@ pub struct NetworkConfig {
     pub max_peers: Option<usize>,
 }
 
+#[derive(Debug)]
 pub struct WriteMessage(Vec<u8>);
 
 impl WriteMessage {
@@ -88,6 +90,7 @@ impl From<Vec<u8>> for WriteMessage {
     }
 }
 
+#[derive(Debug)]
 pub struct WriteHandler(Sender<Vec<u8>>, MiniMessage);
 
 impl WriteHandler {

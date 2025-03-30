@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use std::fmt::Display;
 use std::fs;
 use std::io::ErrorKind;
+use std::sync::Arc;
 use std::time::Instant;
 use jsonrpsee::Methods;
 use tokio::io::{self, AsyncWriteExt};
@@ -78,6 +79,7 @@ pub struct ResponseError {
 }
 
 pub struct Rpc {
+    network: Arc<Network>,
     listener: UnixListener,
     tx: Sender<(Vec<u8>, Instant)>,
 }
@@ -93,7 +95,10 @@ macro_rules! not_implemented {
 }
 
 mod rpc_impl {
-    use alloy::primitives::{Address, FixedBytes, U256};
+    use crate::Arc;
+use crate::Network;
+
+use alloy::primitives::{Address, FixedBytes, U256};
     use jsonrpsee::core::{async_trait, RpcResult, SubscriptionResult};
     use jsonrpsee::server::{
         IntoSubscriptionCloseResponse, PendingSubscriptionSink, SubscriptionCloseResponse,
@@ -222,7 +227,7 @@ mod rpc_impl {
         fn client_version(&self) -> RpcResult<String>;
 
         #[method(name = "sha3")]
-        fn sha3(&self, data: &[u8]) -> RpcResult<[u8; 32]>;
+        fn sha3(&self, data: &[u8]) -> RpcResult<Bytes32>;
     }
 
     #[rpc(server, namespace = "net")]
@@ -394,14 +399,17 @@ mod rpc_impl {
     }
 
     #[derive(Debug, Clone)]
-    pub struct RpcServerImpl;
+    pub struct RpcServerImpl {
+        pub(crate) network: Arc<Network>
+    }
 
     // #[async_trait]
     impl Web3Server for RpcServerImpl {
         fn client_version(&self) -> RpcResult<String> {
             not_implemented!()
         }
-        fn sha3(&self, _data: &[u8]) -> RpcResult<[u8; 32]> {
+
+        fn sha3(&self, _data: &[u8]) -> RpcResult<Bytes32> {
             not_implemented!()
         }
     }
@@ -410,11 +418,14 @@ mod rpc_impl {
         fn version(&self) -> RpcResult<u64> {
             not_implemented!()
         }
+
         fn listening(&self) -> RpcResult<bool> {
             not_implemented!()
         }
+
         fn peer_count(&self) -> RpcResult<u64> {
-            not_implemented!()
+            let peer_count = self.network.peers_infos.read().unwrap().len() as u64;
+            Ok(peer_count)
         }
     }
 
@@ -598,10 +609,11 @@ mod rpc_impl {
 }
 
 use rpc_impl::{EthServer, NetServer, RpcServerImpl, Web3Server};
+use crate::net::Network;
 
 impl Rpc {
-    pub fn new(path: &str, tx: Sender<(Vec<u8>, Instant)>) -> Self {
-        log::debug!("starting rpc at {path}");
+    pub fn new(network: Arc<Network>, path: &str, tx: Sender<(Vec<u8>, Instant)>) -> Self {
+        log::debug!("starting rpc at {path}"); // TODO deprecate IPC
 
         if fs::metadata(path).is_ok() {
             fs::remove_file(path).expect("could not remove socket");
@@ -609,21 +621,25 @@ impl Rpc {
 
         let listener = UnixListener::bind(path).expect("failed to bind socket");
 
-        Self { listener, tx }
+        Self { network, listener, tx }
     }
 
     pub async fn start(&self, mut shutdown_rx: oneshot::Receiver<()>) {
+        let rpc_port = 9781; // TODO configurable
         let server = ServerBuilder::default()
-            .build("127.0.0.1:9781")
+            .build(format!("127.0.0.1:{}", rpc_port))
             .await
             .unwrap();
         let addr = server.local_addr().unwrap();
         log::debug!("Listening on {}", addr);
 
-        let mut rpc = Web3Server::into_rpc(RpcServerImpl);
-        rpc.merge(NetServer::into_rpc(RpcServerImpl))
+        let rpc_impl = RpcServerImpl {
+            network: self.network.clone(),
+        };
+        let mut rpc = Web3Server::into_rpc(rpc_impl.clone());
+        rpc.merge(NetServer::into_rpc(rpc_impl.clone()))
             .expect("should not fail");
-        rpc.merge(EthServer::into_rpc(RpcServerImpl))
+        rpc.merge(EthServer::into_rpc(rpc_impl))
             .expect("should not fail");
         let server_handle = server.start(rpc);
 

@@ -25,11 +25,12 @@ impl Server {
         ipc_socket_path: &str,
         max_in_connections: usize,
     ) {
+        let network = node.network.clone();
         let listener = tokio::spawn(async move {
             Listener::start(&node, config, max_in_connections).await;
         });
 
-        let rpc = Rpc::new(ipc_socket_path, tx);
+        let rpc = Rpc::new(network, ipc_socket_path, tx);
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         let rpc_server = tokio::spawn(async move {
             rpc.start(shutdown_rx).await;
