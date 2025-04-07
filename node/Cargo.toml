@@ -21,7 +21,7 @@ openssl = "0.10.64"
 sha2 = "0.10.8"
 futures = "0.3.30"
 bs58 = { version = "0.5.0", features = ["cb58"] }
-clap = { version = "4.5.34", features = ["derive"] }
+clap = { version = "4.5.35", features = ["derive"] }
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.114"
 phf = { version = "0.11.3", features = ["macros"] }
