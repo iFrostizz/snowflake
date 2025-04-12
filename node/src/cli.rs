@@ -91,9 +91,9 @@ pub struct Args {
     #[arg(long, default_value = "50")]
     pub max_peers: Option<usize>,
 
-    /// IPC socket path
-    #[arg(long, default_value = "/tmp/snowflake.ipc")]
-    pub ipc_socket_path: String,
+    /// RPC port
+    #[arg(long, default_value_t = 9781)]
+    pub rpc_port: u16,
 }
 
 pub async fn read_args() -> Result<Args, NodeError> {

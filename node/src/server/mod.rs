@@ -22,7 +22,7 @@ impl Server {
         node: Arc<Node>,
         config: Arc<ServerConfig>,
         tx: Sender<(Vec<u8>, Instant)>,
-        ipc_socket_path: &str,
+        rpc_port: u16,
         max_in_connections: usize,
     ) {
         let network = node.network.clone();
@@ -30,7 +30,7 @@ impl Server {
             Listener::start(&node, config, max_in_connections).await;
         });
 
-        let rpc = Rpc::new(network, ipc_socket_path, tx);
+        let rpc = Rpc::new(network, rpc_port, tx).await;
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         let rpc_server = tokio::spawn(async move {
             rpc.start(shutdown_rx).await;

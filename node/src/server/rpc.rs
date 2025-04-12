@@ -1,14 +1,15 @@
 use flume::Sender;
-use jsonrpsee::server::ServerBuilder;
+use jsonrpsee::server::{Server, ServerBuilder};
+use jsonrpsee::Methods;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fmt::Display;
 use std::fs;
 use std::io::ErrorKind;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Instant;
-use jsonrpsee::Methods;
 use tokio::io::{self, AsyncWriteExt};
 use tokio::net::{
     unix::{OwnedReadHalf, OwnedWriteHalf},
@@ -80,7 +81,7 @@ pub struct ResponseError {
 
 pub struct Rpc {
     network: Arc<Network>,
-    listener: UnixListener,
+    server: Server,
     tx: Sender<(Vec<u8>, Instant)>,
 }
 
@@ -95,7 +96,7 @@ mod jsonrpc_errors {
 macro_rules! not_implemented {
     () => {
         return jsonrpsee::core::RpcResult::Err(jsonrpsee::types::ErrorObject::borrowed(
-            jsonrpc_errors::METHOD_NOT_FOUND,
+            METHOD_NOT_FOUND,
             "unimplemented method",
             None,
         ))
@@ -103,21 +104,23 @@ macro_rules! not_implemented {
 }
 
 mod rpc_impl {
-    use std::env;
+    use super::jsonrpc_errors::*;
     use crate::utils::constants;
-use crate::Arc;
-use crate::Network;
-
-use alloy::primitives::{keccak256, Address, Bytes, FixedBytes, B256, U256, U64};
+    use crate::Arc;
+    use crate::Network;
+    use alloy::primitives::{keccak256, Address, Bytes, FixedBytes, B256, U256, U64};
+    use flume::Sender;
     use jsonrpsee::core::{async_trait, RpcResult, SubscriptionResult};
     use jsonrpsee::server::{
         IntoSubscriptionCloseResponse, PendingSubscriptionSink, SubscriptionCloseResponse,
         SubscriptionMessage,
     };
+    use jsonrpsee::types::ErrorObject;
     use jsonrpsee::{proc_macros::rpc, Extensions};
     use serde::{Deserialize, Serialize};
+    use std::env;
     use std::str::FromStr;
-    use super::jsonrpc_errors;
+    use std::time::Instant;
 
     type Bytes32 = FixedBytes<32>;
     type BloomFilter = FixedBytes<256>;
@@ -335,7 +338,7 @@ use alloy::primitives::{keccak256, Address, Bytes, FixedBytes, B256, U256, U64};
         fn send_transaction(&self, object: UnsignedTransactionObject) -> RpcResult<Bytes32>;
 
         #[method(name = "sendRawTransaction")]
-        fn send_raw_transaction(&self, data: Vec<u8>) -> RpcResult<Bytes32>;
+        fn send_raw_transaction(&self, data: String) -> RpcResult<Bytes32>;
 
         #[method(name = "call")]
         fn call(&self, object: CallObject, block_parameter: BlockParameter) -> RpcResult<Vec<u8>>;
@@ -417,7 +420,8 @@ use alloy::primitives::{keccak256, Address, Bytes, FixedBytes, B256, U256, U64};
 
     #[derive(Debug, Clone)]
     pub struct RpcServerImpl {
-        pub(crate) network: Arc<Network>
+        pub(crate) network: Arc<Network>,
+        pub(crate) tx: Sender<(Vec<u8>, Instant)>,
     }
 
     impl Web3Server for RpcServerImpl {
@@ -523,8 +527,19 @@ use alloy::primitives::{keccak256, Address, Bytes, FixedBytes, B256, U256, U64};
             not_implemented!()
         }
 
-        fn send_raw_transaction(&self, data: Vec<u8>) -> RpcResult<Bytes32> {
-            not_implemented!()
+        fn send_raw_transaction(&self, data: String) -> RpcResult<Bytes32> {
+            let data_hex = data
+                .strip_prefix("0x")
+                .map(|stripped| hex::decode(stripped).ok())
+                .flatten()
+                .ok_or(ErrorObject::borrowed(
+                    PARSE_ERROR,
+                    "invalid hex string",
+                    None,
+                ))?;
+            let hash = keccak256(&data_hex);
+            self.tx.send((data_hex, Instant::now())).unwrap();
+            Ok(hash)
         }
 
         fn call(&self, object: CallObject, block_parameter: BlockParameter) -> RpcResult<Vec<u8>> {
@@ -623,80 +638,48 @@ use alloy::primitives::{keccak256, Address, Bytes, FixedBytes, B256, U256, U64};
     }
 }
 
-use rpc_impl::{EthServer, NetServer, RpcServerImpl, Web3Server};
 use crate::net::Network;
+use rpc_impl::{EthServer, NetServer, RpcServerImpl, Web3Server};
 
 impl Rpc {
-    pub fn new(network: Arc<Network>, path: &str, tx: Sender<(Vec<u8>, Instant)>) -> Self {
-        log::debug!("starting rpc at {path}"); // TODO deprecate IPC
-
-        if fs::metadata(path).is_ok() {
-            fs::remove_file(path).expect("could not remove socket");
-        }
-
-        let listener = UnixListener::bind(path).expect("failed to bind socket");
-
-        Self { network, listener, tx }
-    }
-
-    pub async fn start(&self, mut shutdown_rx: oneshot::Receiver<()>) {
-        let rpc_port = 9781; // TODO configurable
+    pub async fn new(network: Arc<Network>, rpc_port: u16, tx: Sender<(Vec<u8>, Instant)>) -> Self {
         let server = ServerBuilder::default()
             .build(format!("127.0.0.1:{}", rpc_port))
             .await
             .unwrap();
-        let addr = server.local_addr().unwrap();
-        log::debug!("Listening on {}", addr);
+        if let Ok(addr) = server.local_addr() {
+            log::debug!("Listening on {}", addr);
+        }
 
+        Self {
+            network,
+            server,
+            tx,
+        }
+    }
+
+    pub fn local_addr(&self) -> io::Result<SocketAddr> {
+        self.server.local_addr()
+    }
+
+    pub async fn start(self, mut shutdown_rx: oneshot::Receiver<()>) {
         let rpc_impl = RpcServerImpl {
             network: self.network.clone(),
+            tx: self.tx,
         };
         let mut rpc = Web3Server::into_rpc(rpc_impl.clone());
         rpc.merge(NetServer::into_rpc(rpc_impl.clone()))
             .expect("should not fail");
         rpc.merge(EthServer::into_rpc(rpc_impl))
             .expect("should not fail");
-        let server_handle = server.start(rpc);
 
-        tokio::spawn(server_handle.stopped());
-
-        let mut threads = Vec::new();
-        loop {
-            tokio::select! {
-                accepted = self.listener.accept() => {
-                    match accepted {
-                        Ok((stream, _addr)) => {
-                            log::debug!("listener got a new socket");
-                            let (read, write) = stream.into_split();
-
-                            let tx = self.tx.clone();
-
-                            let (thread_tx, thread_rx) = oneshot::channel();
-
-                            tokio::spawn(async move {
-                                if let Err(err) = Self::communicate(read, write, tx, thread_rx).await {
-                                    match err.kind() {
-                                        ErrorKind::UnexpectedEof | ErrorKind::BrokenPipe => (), // normal disconnection
-                                        rest => {
-                                            log::error!("error when communicating over IPC: {rest}")
-                                        }
-                                    }
-                                }
-                            });
-
-                            threads.push(thread_tx);
-                        }
-                        Err(err) => log::error!("err from socket accept {err:?}"),
-                    }
-                }
-                _ = &mut shutdown_rx => {
-                    log::debug!("shutting down rpc!");
-                    while let Some(thread) = threads.pop() {
-                        let _ = thread.send(());
-                    }
-
-                    return
-                }
+        let server_handle = self.server.start(rpc);
+        tokio::select! {
+            _ = server_handle.stopped() => {
+                log::error!("server stopped!");
+            }
+            _ = &mut shutdown_rx => {
+                // server_handle is dropped so it will be stopped.
             }
         }
     }
@@ -788,6 +771,7 @@ impl Rpc {
         }
     }
 
+    #[deprecated]
     fn process_req(req: Request, tx: &Sender<(Vec<u8>, Instant)>) -> Result<String, String> {
         match req.method {
             Method::SendRawTransaction => {
@@ -855,16 +839,27 @@ impl Rpc {
 #[cfg(test)]
 mod tests {
     use super::Rpc;
+    use crate::id::ChainId;
+    use crate::net::node::NetworkConfig;
+    use crate::net::BackoffParams;
+    use crate::net::Intervals;
+    use crate::net::Network;
     use alloy::providers::{network::EthereumWallet, Provider, ProviderBuilder};
     use alloy::signers::local::PrivateKeySigner;
     use alloy::transports::ipc::IpcConnect;
+    use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
+    use std::path::Path;
+    use std::sync::Arc;
     use tokio::sync::oneshot;
 
     #[tokio::test(flavor = "multi_thread")]
     async fn send_transaction() {
         // tracing_subscriber::fmt::init();
 
-        let path = "/tmp/snowflake_test1.ipc";
+        let credentials_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/credentials/");
+        let pem_key_path = credentials_path.join("staker.key");
+        let cert_path = credentials_path.join("staker.crt");
+        let bls_key_path = credentials_path.join("bls.key");
 
         let (tx, rx) = flume::unbounded();
         tokio::spawn(async move {
@@ -872,22 +867,49 @@ mod tests {
         });
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         log::debug!("start");
+        let network = Arc::new(
+            Network::new(NetworkConfig {
+                socket_addr: SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), 0)),
+                network_id: 0,
+                eth_network_id: 0,
+                c_chain_id: ChainId::from([0; 32]),
+                pem_key_path,
+                bls_key_path,
+                cert_path,
+                intervals: Intervals {
+                    ping: 0,
+                    get_peer_list: 0,
+                },
+                back_off: BackoffParams {
+                    initial_duration: Default::default(),
+                    muln: 0,
+                    max_retries: 0,
+                },
+                max_throughput: 0,
+                max_out_queue_size: 0,
+                bucket_size: 0,
+                max_concurrent_handshakes: 0,
+                max_peers: None,
+            })
+            .unwrap(),
+        );
+
+        let rpc = Rpc::new(network, 0, tx).await;
+        let addr = rpc.local_addr().unwrap();
+
         tokio::spawn(async move {
-            let rpc = Rpc::new(network, path, tx);
             rpc.start(shutdown_rx).await;
         });
 
         let signer = PrivateKeySigner::random();
         let wallet = EthereumWallet::from(signer);
-        let ipc = IpcConnect::new(path.to_string());
         let provider = ProviderBuilder::new()
             .wallet(wallet.clone())
-            .on_ipc(ipc.clone())
-            .await
-            .unwrap();
+            .on_http(format!("http://{}", addr).parse().unwrap());
 
         log::debug!("sending");
-        let _ = provider.send_raw_transaction(&hex::decode("f86680843b9aca00825208940000000000000000000000000000000000000000808083015285a06c1cbdd2e8d1a0a9119159527cbe00151778bcc5ea8ae8ccd687b05f5316c325a044ea618c2ca67374cbec06747b048e7915a488f4cf9f911887bfa9e766112846").unwrap()).await.unwrap();
+        let tx_signed = hex::decode("f86680843b9aca00825208940000000000000000000000000000000000000000808083015285a06c1cbdd2e8d1a0a9119159527cbe00151778bcc5ea8ae8ccd687b05f5316c325a044ea618c2ca67374cbec06747b048e7915a488f4cf9f911887bfa9e766112846").unwrap();
+        let _ = provider.send_raw_transaction(&tx_signed).await.unwrap();
 
         shutdown_tx.send(()).unwrap();
     }

@@ -124,14 +124,14 @@ async fn server(
     let server_config = config::server_config(&args.cert_path, &args.pem_key_path);
     let server_config = Arc::new(server_config);
     let node2 = node.clone();
-    let ipc_socket_path = args.ipc_socket_path.clone();
+    let rpc_port = args.rpc_port;
     let max_in_connections = args.max_in_connections;
     let server = tokio::task::spawn(async move {
         Server::start(
             node2,
             server_config,
             transaction_tx,
-            &ipc_socket_path,
+            rpc_port,
             max_in_connections,
         )
         .await
