@@ -16,6 +16,20 @@ impl AsRef<[u8]> for NodeId {
     }
 }
 
+impl From<NodeId> for [u8; 20] {
+    fn from(value: NodeId) -> Self {
+        value.id.into()
+    }
+}
+
+impl From<[u8; 20]> for NodeId {
+    fn from(value: [u8; 20]) -> Self {
+        Self {
+            id: Id::from(value),
+        }
+    }
+}
+
 impl Display for NodeId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}{}", NODE_PREFIX, self.id)
