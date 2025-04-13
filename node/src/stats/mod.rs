@@ -115,6 +115,7 @@ pub mod messages {
         Ping,
         Pong,
         Handshake,
+        LightHandshake,
         GetPeerList,
         PeerList,
         GetStateSummaryFrontier,

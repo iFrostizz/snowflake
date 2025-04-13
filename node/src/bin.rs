@@ -17,6 +17,7 @@ mod node;
 mod server;
 mod stats;
 mod utils;
+mod dht;
 
 /// Turn the tokio-console subscriber on or off by passing `true` or `false`
 #[macro_export]

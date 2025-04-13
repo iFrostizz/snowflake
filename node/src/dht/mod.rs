@@ -19,7 +19,7 @@ pub struct Dht<const BITS: usize, const B_SIZE: usize, const LIMBS: usize, const
 }
 
 impl<const BITS: usize, const B_SIZE: usize, const LIMBS: usize, const OFFSET: usize>
-    Dht<BITS, B_SIZE, LIMBS, OFFSET>
+Dht<BITS, B_SIZE, LIMBS, OFFSET>
 {
     fn _from_node_id(node_id: NodeId, k: Uint<BITS, LIMBS>) -> Self {
         assert!(B_SIZE > 0);
@@ -64,6 +64,17 @@ impl ConcreteDht<u16> for DhtBlocks {
     }
 }
 
+pub trait Task {
+    async fn run(&self);
+}
+
+impl Task for DhtBlocks {
+    async fn run(&self) {
+        // let 
+        todo!()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -71,11 +82,9 @@ mod tests {
     #[test]
     fn dht_buckets() {
         let dht = DhtBlocks::from_node_id(NodeId::default(), 8);
-
         let (lo, hi) = dht.bucket_range();
         assert_eq!(lo, Uint::from_be_bytes([255, 248]));
         assert_eq!(hi, Uint::from_be_bytes([0, 8]));
-
         assert!(dht.is_desired_bucket(0));
         assert!(dht.is_desired_bucket(65528));
         assert!(!dht.is_desired_bucket(8));
@@ -83,11 +92,9 @@ mod tests {
         assert!(!dht.is_desired_bucket(16));
 
         let dht = DhtBlocks::from_node_id(NodeId::default(), 0);
-
         let (lo, hi) = dht.bucket_range();
         assert_eq!(lo, Uint::from_be_bytes([0, 0]));
         assert_eq!(lo, hi);
-
         assert!(dht.is_desired_bucket(0));
         assert!(!dht.is_desired_bucket(65535));
         assert!(!dht.is_desired_bucket(1));
@@ -96,11 +103,9 @@ mod tests {
             NodeId::from([0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
             8,
         );
-
         let (lo, hi) = dht.bucket_range();
         assert_eq!(lo, Uint::from_be_bytes([0, 0]));
         assert_eq!(hi, Uint::from_be_bytes([0, 16]));
-
         assert!(dht.is_desired_bucket(0));
         assert!(dht.is_desired_bucket(8));
         assert!(!dht.is_desired_bucket(16));

@@ -55,6 +55,9 @@ message Message {
     AppResponse app_response = 31;
     AppGossip app_gossip = 32;
     AppError app_error = 34;
+
+    // Light messages:
+    LightHandshake light_handshake = 1000;
   }
 }
 
@@ -118,6 +121,14 @@ message Handshake {
   // Signature of the peer IP port pair at a provided timestamp with the BLS
   // key.
   bytes ip_bls_sig = 13;
+}
+
+message LightHandshake {
+  uint64 k_blocks = 1;
+  uint64 k_numbers = 2;
+  uint64 k_txs = 3;
+  uint64 k_storage = 4;
+  uint64 k_world = 5;
 }
 
 // Metadata about a peer's P2P client used to determine compatibility
