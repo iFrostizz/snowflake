@@ -91,8 +91,8 @@ async fn main() -> Result<(), NodeError> {
         node_tx.send(()).unwrap();
 
         match res {
-            Ok((Err(e), ..)) | Ok((Ok(_), (), Err(e))) => return Err(e),
-            Ok((Ok(_), (), Ok(_))) => (),
+            Ok((Err(e), ..)) | Ok((Ok(_), Err(e), ..)) | Ok((.., Err(e))) => return Err(e),
+            Ok((Ok(_), Ok(_), Ok(_))) => (),
             Err(e) => panic!("{:?}", e),
         }
     }
@@ -106,7 +106,7 @@ async fn server(
 ) -> (
     broadcast::Sender<()>,
     JoinHandle<Result<(), NodeError>>,
-    JoinHandle<()>,
+    JoinHandle<Result<(), NodeError>>,
 ) {
     log::debug!("starting server");
 

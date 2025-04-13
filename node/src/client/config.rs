@@ -18,7 +18,9 @@ pub fn client_config(cert_path: &Path, key_path: &Path) -> ClientConfig {
         roots: webpki_roots::TLS_SERVER_ROOTS.into(),
     };
 
-    rustls::crypto::ring::default_provider().install_default().unwrap();
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .unwrap();
 
     let mut config = ClientConfig::builder()
         .with_root_certificates(root_store)
