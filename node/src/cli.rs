@@ -91,16 +91,18 @@ pub struct Args {
     #[arg(long, default_value = "50")]
     pub max_peers: Option<usize>,
 
-    /// IPC socket path
-    #[arg(long, default_value = "/tmp/snowflake.ipc")]
-    pub ipc_socket_path: String,
+    /// RPC port
+    #[arg(long, default_value_t = 9781)]
+    pub rpc_port: u16,
 }
 
 pub async fn read_args() -> Result<Args, NodeError> {
     let mut args = Args::parse();
     if args.public_ip.is_none() {
+        log::debug!("public_ip parameter not provided, resolving DNS...");
         if let Some(ip) = public_ip::addr().await {
             args.public_ip = Some(ip);
+            log::debug!("found {:?}", ip);
         } else {
             return Err(NodeError::Dns);
         }
@@ -131,7 +133,8 @@ impl Args {
         let back_off = self.back_off();
 
         let network = &self.network_id.to_string();
-        let network_id: u32 = constants::NETWORK[network];
+        let network_id = constants::NETWORK[network];
+        let eth_network_id = constants::ETH_NETWORK[network];
         let c_chain_id: ChainId = constants::C_CHAIN_ID[network].clone();
 
         let socket_addr = match self.public_ip.unwrap() {
@@ -142,6 +145,7 @@ impl Args {
         NetworkConfig {
             socket_addr,
             network_id,
+            eth_network_id,
             c_chain_id,
             pem_key_path: self.pem_key_path.clone(),
             bls_key_path: self.bls_key_path.clone(),

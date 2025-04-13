@@ -1,3 +1,4 @@
+use crate::net::node::NodeError;
 use crate::node::Node;
 use crate::server::{listener::Listener, rpc::Rpc};
 use flume::Sender;
@@ -22,14 +23,15 @@ impl Server {
         node: Arc<Node>,
         config: Arc<ServerConfig>,
         tx: Sender<(Vec<u8>, Instant)>,
-        ipc_socket_path: &str,
+        rpc_port: u16,
         max_in_connections: usize,
-    ) {
+    ) -> Result<(), NodeError> {
+        let network = node.network.clone();
         let listener = tokio::spawn(async move {
             Listener::start(&node, config, max_in_connections).await;
         });
 
-        let rpc = Rpc::new(ipc_socket_path, tx);
+        let rpc = Rpc::new(network, rpc_port, tx).await?;
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         let rpc_server = tokio::spawn(async move {
             rpc.start(shutdown_rx).await;
@@ -37,5 +39,7 @@ impl Server {
 
         let _ = tokio::try_join!(listener, rpc_server);
         let _ = shutdown_tx.send(());
+
+        Ok(())
     }
 }

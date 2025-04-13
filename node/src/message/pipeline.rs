@@ -20,11 +20,13 @@ use std::time::Duration;
 use tokio::sync::broadcast;
 use tokio::time::Instant;
 
+#[derive(Debug)]
 pub struct BucketMessage {
     message: WriteMessage,
     handler: WriteHandler,
 }
 
+#[derive(Debug)]
 pub struct Pipeline {
     /// Max throughput in B/s
     max_throughput: u32,

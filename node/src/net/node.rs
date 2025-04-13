@@ -56,10 +56,12 @@ pub enum NodeError {
     Message(String),
 }
 
+#[derive(Debug)]
 pub struct NetworkConfig {
     /// This node socket address
     pub socket_addr: SocketAddr,
     pub network_id: u32,
+    pub eth_network_id: u64,
     pub c_chain_id: ChainId,
     pub pem_key_path: PathBuf,
     pub bls_key_path: PathBuf,
@@ -74,6 +76,7 @@ pub struct NetworkConfig {
     pub max_peers: Option<usize>,
 }
 
+#[derive(Debug)]
 pub struct WriteMessage(Vec<u8>);
 
 impl WriteMessage {
@@ -88,6 +91,7 @@ impl From<Vec<u8>> for WriteMessage {
     }
 }
 
+#[derive(Debug)]
 pub struct WriteHandler(Sender<Vec<u8>>, MiniMessage);
 
 impl WriteHandler {
@@ -122,6 +126,7 @@ impl Network {
         );
         let signed_ip = unsigned_ip.sign_with_key(&bls, &config.pem_key_path);
 
+        // TODO https://github.com/iFrostizz/snowflake/issues/13
         let client = p2p::Client {
             name: String::from("avalanchego"),
             major: 1,

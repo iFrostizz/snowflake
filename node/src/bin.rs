@@ -48,6 +48,8 @@ async fn main() -> Result<(), NodeError> {
     debugger!(false);
 
     let args = cli::read_args().await?;
+    log::debug!("args: {:?}", args);
+
     let network_config = args.network_config();
     let network = Arc::new(Network::new(network_config).unwrap());
 
@@ -89,8 +91,8 @@ async fn main() -> Result<(), NodeError> {
         node_tx.send(()).unwrap();
 
         match res {
-            Ok((Err(e), ..)) | Ok((Ok(_), (), Err(e))) => return Err(e),
-            Ok((Ok(_), (), Ok(_))) => (),
+            Ok((Err(e), ..)) | Ok((Ok(_), Err(e), ..)) | Ok((.., Err(e))) => return Err(e),
+            Ok((Ok(_), Ok(_), Ok(_))) => (),
             Err(e) => panic!("{:?}", e),
         }
     }
@@ -104,30 +106,32 @@ async fn server(
 ) -> (
     broadcast::Sender<()>,
     JoinHandle<Result<(), NodeError>>,
-    JoinHandle<()>,
+    JoinHandle<Result<(), NodeError>>,
 ) {
+    log::debug!("starting server");
+
     let (transaction_tx, transaction_rx) = flume::unbounded();
     let node2 = node.clone();
-    let (node_tx, rx) = broadcast::channel(1);
+    let (node_tx, node_rx) = broadcast::channel(1);
     let enable_metrics = args.enable_metrics;
     let metrics_port = args.metrics_port;
     let node_ops = tokio::task::spawn(async move {
         node2
-            .start(enable_metrics, metrics_port, transaction_rx, rx)
+            .start(enable_metrics, metrics_port, transaction_rx, node_rx)
             .await
     });
 
     let server_config = config::server_config(&args.cert_path, &args.pem_key_path);
     let server_config = Arc::new(server_config);
     let node2 = node.clone();
-    let ipc_socket_path = args.ipc_socket_path.clone();
+    let rpc_port = args.rpc_port;
     let max_in_connections = args.max_in_connections;
     let server = tokio::task::spawn(async move {
         Server::start(
             node2,
             server_config,
             transaction_tx,
-            &ipc_socket_path,
+            rpc_port,
             max_in_connections,
         )
         .await

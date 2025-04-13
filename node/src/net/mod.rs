@@ -32,6 +32,7 @@ pub mod latency;
 pub mod node;
 pub mod queue;
 
+#[derive(Debug)]
 pub struct BackoffParams {
     pub initial_duration: Duration,
     pub muln: u32,
@@ -52,6 +53,7 @@ pub struct HandshakeInfos {
 }
 
 /// A network is a list of peers
+#[derive(Debug)]
 pub struct Network {
     pub config: NetworkConfig,
     pub node_id: NodeId,

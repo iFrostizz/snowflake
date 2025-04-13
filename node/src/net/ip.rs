@@ -16,6 +16,7 @@ pub struct UnsignedIp {
     pub timestamp: u64,
 }
 
+#[derive(Debug)]
 pub struct SignedIp {
     pub unsigned_ip: UnsignedIp,
     pub ip_sig: Vec<u8>,

@@ -417,17 +417,15 @@ impl Node {
                 if let Some(hs_permit) = maybe_hs_permit.take() {
                     let mut peers = self.network.peers_infos.write().unwrap();
                     if let Some(PeerInfo { infos, .. }) = peers.get_mut(node_id) {
-                        {
-                            if infos.is_none() {
-                                stats::handshook_peers::inc();
-                                let gossip_id = peer_infos.gossip_id(node_id);
-                                *infos = Some(peer_infos);
-                                let mut bloom_filter = self.network.bloom_filter.write().unwrap();
-                                bloom_filter.feed(gossip_id); // we write it to the filter even if it fails to avoid always hearing about it
-                                Self::regen_bloom_if_necessary(&peers, &mut bloom_filter);
-                            } else {
-                                log::debug!("received NewPeer twice {}", node_id);
-                            }
+                        if infos.is_none() {
+                            stats::handshook_peers::inc();
+                            let gossip_id = peer_infos.gossip_id(node_id);
+                            *infos = Some(peer_infos);
+                            let mut bloom_filter = self.network.bloom_filter.write().unwrap();
+                            bloom_filter.feed(gossip_id); // we write it to the filter even if it fails to avoid always hearing about it
+                            Self::regen_bloom_if_necessary(&peers, &mut bloom_filter);
+                        } else {
+                            log::debug!("received NewPeer twice {}", node_id);
                         }
                     } else {
                         log::debug!("received NewPeer while the infos were ready {}", node_id);
