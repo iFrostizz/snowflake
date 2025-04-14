@@ -3219,7 +3219,7 @@ dependencies = [
  "prost",
  "proto",
  "public-ip",
- "rand 0.8.5",
+ "rand 0.9.0",
  "rand_mt",
  "ripemd",
  "rustls",
