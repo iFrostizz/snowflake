@@ -8,7 +8,7 @@ pub struct Message {
     /// That is because when the compression is enabled, we don't want to include uncompressed fields.
     #[prost(
         oneof = "message::Message",
-        tags = "2, 11, 12, 13, 35, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 34, 1000"
+        tags = "2, 11, 12, 13, 35, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 34"
     )]
     pub message: ::core::option::Option<message::Message>,
 }
@@ -77,9 +77,6 @@ pub mod message {
         AppGossip(super::AppGossip),
         #[prost(message, tag = "34")]
         AppError(super::AppError),
-        /// Light messages:
-        #[prost(message, tag = "1000")]
-        LightHandshake(super::LightHandshake),
     }
 }
 /// Ping reports a peer's perceived uptime percentage.
@@ -160,19 +157,6 @@ pub struct Handshake {
     /// key.
     #[prost(bytes = "vec", tag = "13")]
     pub ip_bls_sig: ::prost::alloc::vec::Vec<u8>,
-}
-#[derive(Clone, Copy, PartialEq, ::prost::Message)]
-pub struct LightHandshake {
-    #[prost(uint64, tag = "1")]
-    pub k_blocks: u64,
-    #[prost(uint64, tag = "2")]
-    pub k_numbers: u64,
-    #[prost(uint64, tag = "3")]
-    pub k_txs: u64,
-    #[prost(uint64, tag = "4")]
-    pub k_storage: u64,
-    #[prost(uint64, tag = "5")]
-    pub k_world: u64,
 }
 /// Metadata about a peer's P2P client used to determine compatibility
 #[derive(Clone, PartialEq, ::prost::Message)]

@@ -1,8 +1,9 @@
+mod block;
+mod kademlia;
+
 use crate::id::NodeId;
 use ruint::Uint;
 use std::cmp::Ordering;
-
-pub type DhtBlocks = Dht<16, 2, 1, 0>;
 
 pub trait ConcreteDht<NUM> {
     fn from_node_id(node_id: NodeId, k: NUM) -> Self;
@@ -19,7 +20,7 @@ pub struct Dht<const BITS: usize, const B_SIZE: usize, const LIMBS: usize, const
 }
 
 impl<const BITS: usize, const B_SIZE: usize, const LIMBS: usize, const OFFSET: usize>
-Dht<BITS, B_SIZE, LIMBS, OFFSET>
+    Dht<BITS, B_SIZE, LIMBS, OFFSET>
 {
     fn _from_node_id(node_id: NodeId, k: Uint<BITS, LIMBS>) -> Self {
         assert!(B_SIZE > 0);
@@ -52,27 +53,8 @@ Dht<BITS, B_SIZE, LIMBS, OFFSET>
     }
 }
 
-impl ConcreteDht<u16> for DhtBlocks {
-    fn from_node_id(node_id: NodeId, k: u16) -> Self {
-        let k = Uint::from_be_bytes(k.to_be_bytes());
-        DhtBlocks::_from_node_id(node_id, k)
-    }
-
-    fn is_desired_bucket(&self, bucket: u16) -> bool {
-        let bucket = Uint::from_be_bytes(bucket.to_be_bytes());
-        self._is_desired_bucket(bucket)
-    }
-}
-
 pub trait Task {
     async fn run(&self);
-}
-
-impl Task for DhtBlocks {
-    async fn run(&self) {
-        // let 
-        todo!()
-    }
 }
 
 #[cfg(test)]
@@ -81,7 +63,9 @@ mod tests {
 
     #[test]
     fn dht_buckets() {
-        let dht = DhtBlocks::from_node_id(NodeId::default(), 8);
+        type MyDht = Dht<16, 2, 1, 0>;
+        
+        let dht = MyDht::from_node_id(NodeId::default(), 8);
         let (lo, hi) = dht.bucket_range();
         assert_eq!(lo, Uint::from_be_bytes([255, 248]));
         assert_eq!(hi, Uint::from_be_bytes([0, 8]));
@@ -91,7 +75,7 @@ mod tests {
         assert!(dht.is_desired_bucket(65535));
         assert!(!dht.is_desired_bucket(16));
 
-        let dht = DhtBlocks::from_node_id(NodeId::default(), 0);
+        let dht = MyDht::from_node_id(NodeId::default(), 0);
         let (lo, hi) = dht.bucket_range();
         assert_eq!(lo, Uint::from_be_bytes([0, 0]));
         assert_eq!(lo, hi);
@@ -99,7 +83,7 @@ mod tests {
         assert!(!dht.is_desired_bucket(65535));
         assert!(!dht.is_desired_bucket(1));
 
-        let dht = DhtBlocks::from_node_id(
+        let dht = MyDht::from_node_id(
             NodeId::from([0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
             8,
         );
