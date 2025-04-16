@@ -5,22 +5,25 @@ use crate::id::NodeId;
 use ruint::Uint;
 use std::cmp::Ordering;
 
-pub trait ConcreteDht<NUM> {
+pub trait ConcreteDht<NUM, IN> {
     fn from_node_id(node_id: NodeId, k: NUM) -> Self;
     fn is_desired_bucket(&self, bucket: NUM) -> bool;
+    fn in_to_bucket(val: IN) -> NUM;
 }
 
 /// BITS is the numbers of bits that encode all buckets.
 /// B_SIZE is the size in bytes of buckets (BITS == B_SIZE * 8).
 /// LIMBS is the limbs of the internal uint (LIMBS == ceil(BITS / 64))
 /// OFFSET is the byte offset to derive the bucket from the node ID.
-pub struct Dht<const BITS: usize, const B_SIZE: usize, const LIMBS: usize, const OFFSET: usize> {
+pub struct Dht<const BITS: usize, const LIMBS: usize, const B_SIZE: usize, const OFFSET: usize, IN>
+{
     bucket_lo: Uint<BITS, LIMBS>,
     bucket_hi: Uint<BITS, LIMBS>,
+    _marker: std::marker::PhantomData<IN>,
 }
 
-impl<const BITS: usize, const B_SIZE: usize, const LIMBS: usize, const OFFSET: usize>
-    Dht<BITS, B_SIZE, LIMBS, OFFSET>
+impl<const BITS: usize, const LIMBS: usize, const B_SIZE: usize, const OFFSET: usize, IN>
+    Dht<BITS, LIMBS, B_SIZE, OFFSET, IN>
 {
     fn _from_node_id(node_id: NodeId, k: Uint<BITS, LIMBS>) -> Self {
         assert!(B_SIZE > 0);
@@ -35,6 +38,7 @@ impl<const BITS: usize, const B_SIZE: usize, const LIMBS: usize, const OFFSET: u
         Self {
             bucket_lo,
             bucket_hi,
+            _marker: std::marker::PhantomData,
         }
     }
 
@@ -63,36 +67,38 @@ mod tests {
 
     #[test]
     fn dht_buckets() {
-        type MyDht = Dht<16, 2, 1, 0>;
-        
-        let dht = MyDht::from_node_id(NodeId::default(), 8);
+        type MyDht = Dht<16, 1, 2, 0, ()>;
+
+        let num_to_uint = |num: u16| -> Uint<16, 1> { Uint::from_be_bytes(num.to_be_bytes()) };
+
+        let dht = MyDht::_from_node_id(NodeId::default(), num_to_uint(8));
         let (lo, hi) = dht.bucket_range();
         assert_eq!(lo, Uint::from_be_bytes([255, 248]));
         assert_eq!(hi, Uint::from_be_bytes([0, 8]));
-        assert!(dht.is_desired_bucket(0));
-        assert!(dht.is_desired_bucket(65528));
-        assert!(!dht.is_desired_bucket(8));
-        assert!(dht.is_desired_bucket(65535));
-        assert!(!dht.is_desired_bucket(16));
+        assert!(dht._is_desired_bucket(num_to_uint(0)));
+        assert!(dht._is_desired_bucket(num_to_uint(65528)));
+        assert!(!dht._is_desired_bucket(num_to_uint(8)));
+        assert!(dht._is_desired_bucket(num_to_uint(65535)));
+        assert!(!dht._is_desired_bucket(num_to_uint(16)));
 
-        let dht = MyDht::from_node_id(NodeId::default(), 0);
+        let dht = MyDht::_from_node_id(NodeId::default(), Uint::ZERO);
         let (lo, hi) = dht.bucket_range();
         assert_eq!(lo, Uint::from_be_bytes([0, 0]));
         assert_eq!(lo, hi);
-        assert!(dht.is_desired_bucket(0));
-        assert!(!dht.is_desired_bucket(65535));
-        assert!(!dht.is_desired_bucket(1));
+        assert!(dht._is_desired_bucket(num_to_uint(0)));
+        assert!(!dht._is_desired_bucket(num_to_uint(65535)));
+        assert!(!dht._is_desired_bucket(num_to_uint(1)));
 
-        let dht = MyDht::from_node_id(
+        let dht = MyDht::_from_node_id(
             NodeId::from([0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
-            8,
+            num_to_uint(8),
         );
         let (lo, hi) = dht.bucket_range();
         assert_eq!(lo, Uint::from_be_bytes([0, 0]));
         assert_eq!(hi, Uint::from_be_bytes([0, 16]));
-        assert!(dht.is_desired_bucket(0));
-        assert!(dht.is_desired_bucket(8));
-        assert!(!dht.is_desired_bucket(16));
-        assert!(dht.is_desired_bucket(15));
+        assert!(dht._is_desired_bucket(num_to_uint(0)));
+        assert!(dht._is_desired_bucket(num_to_uint(8)));
+        assert!(!dht._is_desired_bucket(num_to_uint(16)));
+        assert!(dht._is_desired_bucket(num_to_uint(15)));
     }
 }
