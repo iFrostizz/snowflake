@@ -1,10 +1,9 @@
 use std::io::Result;
 
 fn main() -> Result<()> {
-    println!("cargo:rerun-if-changed=.");
+    std::env::set_var("OUT_DIR", "src");
 
-    let protos: Vec<String> = std::fs::read_dir(".")
-        .unwrap()
+    let protos: Vec<String> = std::fs::read_dir(".")?
         .filter_map(|entry| Some(entry.ok()?.path()))
         .filter(|path| path.extension().is_some_and(|ext| ext == "proto"))
         .filter_map(|path| {
@@ -13,7 +12,9 @@ fn main() -> Result<()> {
         })
         .collect();
 
-    prost_build::compile_protos(&protos, &["proto"])?;
+    prost_build::compile_protos(&protos, &["./"])?;
+
+    println!("cargo:rerun-if-changed=.");
 
     Ok(())
 }

@@ -1,7 +1,5 @@
 .PHONY: proto
 
-export OUT_DIR=proto/src/
-
 ci-check: fmt-check	clippy test proto-check
 
 ci-fix: fmt	clippy test proto

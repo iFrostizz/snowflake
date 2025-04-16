@@ -259,10 +259,10 @@ mod rpc_impl {
         fn get_transaction_count(&self, block_parameter: BlockParameter) -> RpcResult<u64>;
 
         #[method(name = "getBlockTransactionCountByHash")]
-        fn get_transaction_count_by_hash(&self, hash: Bytes32) -> RpcResult<u64>;
+        fn get_block_transaction_count_by_hash(&self, hash: Bytes32) -> RpcResult<u64>;
 
         #[method(name = "getBlockTransactionCountByNumber")]
-        fn get_transaction_count_by_number(
+        fn get_block_transaction_count_by_number(
             &self,
             block_parameter: BlockParameter,
         ) -> RpcResult<u64>;
@@ -314,8 +314,8 @@ mod rpc_impl {
         #[method(name = "getTransaction_by_hash")]
         fn get_transaction_by_hash(&self, hash: Bytes32) -> RpcResult<Option<TransactionObject>>;
 
-        #[method(name = "getTransactionByHashAndIndex")]
-        fn get_transaction_by_hash_and_index(
+        #[method(name = "getTransactionByBlockHashAndIndex")]
+        fn get_transaction_by_block_hash_and_index(
             &self,
             hash: Bytes32,
             position: u64,
@@ -437,11 +437,11 @@ mod rpc_impl {
             not_implemented!()
         }
 
-        fn get_transaction_count_by_hash(&self, _hash: Bytes32) -> RpcResult<u64> {
+        fn get_block_transaction_count_by_hash(&self, _hash: Bytes32) -> RpcResult<u64> {
             not_implemented!()
         }
 
-        fn get_transaction_count_by_number(
+        fn get_block_transaction_count_by_number(
             &self,
             _block_parameter: BlockParameter,
         ) -> RpcResult<u64> {
@@ -527,7 +527,7 @@ mod rpc_impl {
             not_implemented!()
         }
 
-        fn get_transaction_by_hash_and_index(
+        fn get_transaction_by_block_hash_and_index(
             &self,
             _hash: Bytes32,
             _position: u64,

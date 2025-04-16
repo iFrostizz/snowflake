@@ -10,6 +10,7 @@ use tokio::task::JoinHandle;
 mod blocks;
 mod cli;
 mod client;
+mod dht;
 mod id;
 mod message;
 mod net;

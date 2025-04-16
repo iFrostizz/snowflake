@@ -60,6 +60,12 @@ impl<const LEN: usize> From<[u8; LEN]> for Id<LEN> {
     }
 }
 
+impl<const LEN: usize> From<Id<LEN>> for [u8; LEN] {
+    fn from(id: Id<LEN>) -> Self {
+        id.inner
+    }
+}
+
 impl<const LEN: usize> std::fmt::Display for Id<LEN> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
