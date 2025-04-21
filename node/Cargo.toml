@@ -35,7 +35,7 @@ tracing-subscriber = "0.3.18"
 tokio = { version = "1.37.0", features = ["full", "net"] }
 thiserror = "2.0.12"
 blst = "0.3.12"
-indexmap = "2.2.6"
+indexmap = "2.9.0"
 tokio-rustls = "0.26.0"
 hex = "0.4.3"
 rand_mt = "5.0.0"
