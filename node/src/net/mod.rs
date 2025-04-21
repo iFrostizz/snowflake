@@ -15,7 +15,6 @@ use crate::server::{
 use crate::utils::bls::Bls;
 use crate::utils::constants::SNOWFLAKE_HANDLER_ID;
 use crate::utils::{bloom::Filter, ip::ip_from_octets, packer::Packer};
-use alloy::signers::k256::elliptic_curve::pkcs8::der::Encode;
 use async_recursion::async_recursion;
 use flume::Sender;
 use indexmap::IndexMap;
@@ -74,6 +73,7 @@ pub struct Network {
     pub client_config: Arc<ClientConfig>,
     /// All peers discovered by the node
     pub peers_infos: RwLock<IndexMap<NodeId, PeerInfo>>, // TODO can we find a way to do it lock-less ?
+    pub light_peers: RwLock<IndexMap<NodeId, Bucket>>,
     pub bootstrappers: RwLock<HashSet<NodeId>>,
     pub out_pipeline: Arc<Pipeline>,
     /// The canonically sorted validators map
@@ -94,6 +94,7 @@ pub struct Intervals {
 #[derive(Debug)]
 pub enum PeerMessage {
     NewPeer {
+        sender: PeerSender,
         infos: HandshakeInfos,
     },
     ObserveUptime(p2p::Ping),
@@ -102,6 +103,11 @@ pub enum PeerMessage {
         sender: PeerSender,
         known_peers: Option<BloomFilter>,
     },
+}
+
+#[derive(Debug)]
+pub enum LightPeerMessage {
+    NewPeer { sender: PeerSender, k: Bucket },
 }
 
 impl HandshakeInfos {
@@ -226,7 +232,7 @@ impl Peer {
         Err(NodeError::Failed(errs))
     }
 
-    /// What should we do when receiving a message from another peer ?
+    /// What should we do when receiving a message from another peer?
     #[async_recursion]
     pub async fn manage_message<'a>(
         node_id: &NodeId,
@@ -235,6 +241,7 @@ impl Peer {
         sender: &PeerSender,
         mail_box: &MailBox,
         spn: &Sender<PeerMessage>,
+        spln: &Sender<LightPeerMessage>,
         spl: &Sender<(LightMessage, oneshot::Sender<LightResult>)>,
         recursed: bool,
     ) -> Result<(), NodeError> {
@@ -274,6 +281,7 @@ impl Peer {
                     sender,
                     mail_box,
                     spn,
+                    spln,
                     spl,
                     true,
                 )
@@ -323,7 +331,11 @@ impl Peer {
                     .map_err(|_| NodeError::Message("failed to convert port".to_string()))?;
                 let sock_addr = SocketAddr::new(ip, port);
 
+                // TODO check if the peer is already known because this will lead to message
+                //  amplification if connecting to snowflake clients.
+                //  Also, the PeerList should only be sent in that case.
                 spn.send(PeerMessage::NewPeer {
+                    sender: sender.clone(),
                     infos: HandshakeInfos {
                         ip_signing_time,
                         network_id,
@@ -350,18 +362,19 @@ impl Peer {
             }
             Message::AppRequest(app_request) => {
                 if app_request.chain_id != c_chain_id.as_ref() {
-                    return Err(NodeError::Message("wrong chain ID".to_string()));
+                    return Ok(());
                 }
                 let bytes = app_request.app_bytes;
                 let (app_id, bytes) = unsigned_varint::decode::u64(&bytes)
                     .map_err(|_| NodeError::Message("failed to decode app ID".to_string()))?;
                 if app_id != SNOWFLAKE_HANDLER_ID {
-                    return Err(NodeError::Message("wrong handler ID".to_string()));
+                    return Ok(());
                 }
                 let light_message = InLightMessage::decode(bytes).map_err(NodeError::Decoding)?;
                 Self::manage_light_message(
-                    &c_chain_id,
+                    c_chain_id,
                     app_request.request_id,
+                    spln,
                     spl,
                     sender,
                     light_message,
@@ -378,6 +391,7 @@ impl Peer {
     pub async fn manage_light_message(
         c_chain_id: &ChainId,
         request_id: u32,
+        spln: &Sender<LightPeerMessage>,
         spl: &Sender<(LightMessage, oneshot::Sender<LightResult>)>,
         sender: &PeerSender,
         light_message: sdk::light_message::Message,
@@ -385,7 +399,14 @@ impl Peer {
         let chain_id = c_chain_id.as_ref().to_vec();
         let res = match light_message {
             sdk::light_message::Message::LightHandshake(LightHandshake { k }) => {
-                //
+                let bucket_arr: [u8; 20] = k
+                    .try_into()
+                    .map_err(|_| NodeError::Message("invalid bucket".to_string()))?;
+                let bucket = Bucket::from_be_bytes(bucket_arr);
+                let _ = spln.send(LightPeerMessage::NewPeer {
+                    sender: sender.clone(),
+                    k: bucket,
+                });
                 None
             }
             sdk::light_message::Message::FindValue(FindValue { dht, bucket }) => {
@@ -416,20 +437,23 @@ impl Peer {
                     .map_err(|_| NodeError::SendError)?;
                 Some(rx.await?)
             }
-            _ => todo!(), // TODO not sure if we should include responses in the set of messages.
         };
 
         match res {
-            Some(Ok(res)) => {
-                if let Some(value_or_nodes) = res {
-                    let mut app_bytes = Vec::new();
-                    let _ = sender.send(Message::AppResponse(AppResponse {
-                        chain_id,
-                        request_id,
-                        app_bytes,
-                    }));
-                }
+            Some(Ok(Some(value_or_nodes))) => {
+                let mut buffer = unsigned_varint::encode::u64_buffer();
+                let app_bytes = unsigned_varint::encode::u64(SNOWFLAKE_HANDLER_ID, &mut buffer);
+                let mut app_bytes = app_bytes.to_vec();
+                value_or_nodes
+                    .encode(&mut app_bytes)
+                    .map_err(|_| NodeError::Message("failed to encode".to_string()))?;
+                let _ = sender.send(Message::AppResponse(AppResponse {
+                    chain_id,
+                    request_id,
+                    app_bytes: app_bytes.to_vec(),
+                }));
             }
+            Some(Ok(None)) => (),
             Some(Err(LightError { code, message })) => {
                 let _ = sender.send(Message::AppError(AppError {
                     chain_id,

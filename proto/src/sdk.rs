@@ -18,7 +18,7 @@ pub struct PushGossip {
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct LightMessage {
-    #[prost(oneof = "light_message::Message", tags = "1, 11, 12, 13, 14")]
+    #[prost(oneof = "light_message::Message", tags = "1, 11, 12")]
     pub message: ::core::option::Option<light_message::Message>,
 }
 /// Nested message and enum types in `LightMessage`.
@@ -31,10 +31,6 @@ pub mod light_message {
         FindValue(super::FindValue),
         #[prost(message, tag = "12")]
         FindNode(super::FindNode),
-        #[prost(message, tag = "13")]
-        Nodes(super::Nodes),
-        #[prost(message, tag = "14")]
-        Value(super::Value),
     }
 }
 #[derive(Clone, PartialEq, ::prost::Message)]

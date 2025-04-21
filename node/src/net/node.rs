@@ -2,7 +2,10 @@ use crate::client::config;
 use crate::dht::{LightMessage, LightResult};
 use crate::id::{ChainId, NodeId};
 use crate::message::{mail_box::MailBox, pipeline::Pipeline, MiniMessage};
-use crate::net::{ip::UnsignedIp, BackoffParams, Intervals, Network, Peer, PeerInfo, PeerMessage};
+use crate::net::{
+    ip::UnsignedIp, BackoffParams, Intervals, LightPeerMessage, Network, Peer, PeerInfo,
+    PeerMessage,
+};
 use crate::server::{
     msg::{DecodingError, OutboundMessage},
     peers::PeerSender,
@@ -164,6 +167,7 @@ impl Network {
             client,
             client_config,
             peers_infos: RwLock::new(IndexMap::new()),
+            light_peers: RwLock::new(IndexMap::new()),
             bootstrappers,
             signed_ip,
             bloom_filter,
@@ -245,6 +249,7 @@ impl Network {
         sender: &PeerSender,
         mail_box: &MailBox,
         spn: &Sender<PeerMessage>,
+        spln: &Sender<LightPeerMessage>,
         spl: &Sender<(LightMessage, oneshot::Sender<LightResult>)>,
         mut rx: broadcast::Receiver<()>,
     ) -> Result<(), NodeError> {
@@ -253,7 +258,7 @@ impl Network {
             tokio::select! {
                 maybe_buf = read_stream_message(&mut read) => {
                     let buf = maybe_buf?;
-                    Peer::manage_message(node_id, c_chain_id, &buf, sender, mail_box, spn, spl, false).await?;
+                    Peer::manage_message(node_id, c_chain_id, &buf, sender, mail_box, spn, spln, spl, false).await?;
                 }
                 _ = rx.recv() => {
                     return Ok(())

@@ -1,4 +1,3 @@
-use crate::dht::LightMessage;
 use crate::dht::{Bucket, LightError, LightResult};
 use crate::dht::{ConcreteDht, Dht, Task};
 use crate::id::NodeId;
@@ -10,7 +9,7 @@ use crate::Arc;
 use alloy::primitives::keccak256;
 use proto_lib::p2p::message::Message;
 use proto_lib::p2p::GetAcceptedFrontier;
-use proto_lib::p2p::{AcceptedFrontier, EngineType, Get, GetAncestors};
+use proto_lib::p2p::{EngineType, GetAncestors};
 use std::collections::HashMap;
 use std::sync::RwLock;
 use std::time::Duration;

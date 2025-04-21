@@ -1,23 +1,20 @@
 use crate::dht::block::DhtBlocks;
-use crate::dht::kademlia::{KademliaDht, LockedMapDb, ValueOrNodes};
-use crate::dht::{Bucket, ConcreteDht, DhtId, LightError, LightMessage, LightResult, Task};
+use crate::dht::kademlia::KademliaDht;
+use crate::dht::{Bucket, ConcreteDht, DhtId, LightMessage, LightResult, Task};
 use crate::id::NodeId;
 use crate::net::node::NodeError;
 use crate::net::RwLock;
 use crate::node::Node;
-use crate::server::peers::PeerSender;
 use crate::utils::rlp::Block;
 use crate::utils::unpacker::StatelessBlock;
 use crate::Arc;
-use proto_lib::p2p::message::Message;
-use proto_lib::p2p::{AppError, AppResponse};
 use std::collections::HashMap;
 use tokio::sync::broadcast;
 use tokio::sync::oneshot;
 
 #[derive(Debug)]
 pub struct LightNetwork {
-    block_dht: Arc<DhtBlocks>,
+    pub block_dht: Arc<DhtBlocks>,
     sync_headers: bool,
 }
 

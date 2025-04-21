@@ -55,7 +55,7 @@ impl Filter {
         let seeds = (0..num_hashes).map(|_| rng.gen()).collect();
 
         let read = ReadFilter {
-            salt: random(),
+            salt: rand::random(),
             num_bits: num_entries * 8,
             seeds,
             entries: vec![0; num_entries as usize],
@@ -264,7 +264,7 @@ impl TryFrom<&[u8]> for ReadFilter {
         let entries: Vec<u8> = value.get((entries_offset as usize)..).unwrap().to_owned();
 
         Ok(Self {
-            salt: random(),
+            salt: rand::random(),
             num_bits: entries.len() as u64 * 8,
             seeds,
             entries,

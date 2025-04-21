@@ -23,9 +23,6 @@ message LightMessage {
 
     FindValue find_value = 11;
     FindNode find_node = 12;
-
-    Nodes nodes = 13;
-    Value value = 14;
   }
 }
 

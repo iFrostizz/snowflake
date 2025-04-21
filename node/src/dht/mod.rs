@@ -14,6 +14,7 @@ pub trait ConcreteDht<K> {
 
 #[derive(Debug)]
 pub struct Dht<DB: LockedMapDb<Bucket, Vec<u8>>> {
+    pub k: Bucket,
     bucket_lo: Bucket,
     bucket_hi: Bucket,
     pub kademlia_dht: KademliaDht<Vec<u8>, DB>,
@@ -25,6 +26,7 @@ impl<DB: LockedMapDb<Bucket, Vec<u8>>> Dht<DB> {
         let bucket = Bucket::from_be_bytes(arr);
         let (bucket_lo, bucket_hi) = (bucket.wrapping_sub(k), bucket.wrapping_add(k));
         Self {
+            k,
             bucket_lo,
             bucket_hi,
             kademlia_dht,

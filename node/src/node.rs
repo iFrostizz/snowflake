@@ -2,6 +2,7 @@ use crate::dht::{LightMessage, LightResult};
 use crate::id::{ChainId, Id, NodeId};
 use crate::message::{mail_box::MailBox, SubscribableMessage};
 use crate::net::light::LightNetwork;
+use crate::net::LightPeerMessage;
 use crate::net::{
     node::NodeError,
     queue::{ConnectionData, ConnectionQueue},
@@ -19,9 +20,9 @@ use futures::future;
 use indexmap::IndexMap;
 use prost::Message as _;
 use proto_lib::p2p::{
-    message::Message, AppGossip, BloomFilter, ClaimedIpPort, GetPeerList, PeerList,
+    message::Message, AppGossip, AppRequest, BloomFilter, ClaimedIpPort, GetPeerList, PeerList,
 };
-use rand::random;
+use proto_lib::sdk::LightHandshake;
 use std::collections::HashSet;
 use std::io::ErrorKind;
 use std::net::ToSocketAddrs;
@@ -255,14 +256,24 @@ impl Node {
             .add_peer(node_id, peer.x509_certificate.clone(), sender.clone())
             .await;
 
+        // TODO this is starting to look a bit messy, we should probably refactor this.
         let (spn, rpn) = flume::unbounded();
         let (spl, rpl) = flume::unbounded();
+        let (spln, rpln) = flume::unbounded();
         let (tx, _) = broadcast::channel(1);
-        let manage_peer = self.manage_peer(rpn, rpl, node_id, hs_permit, tx.subscribe());
+        let manage_peer = self.manage_peer(rpn, rpln, rpl, node_id, hs_permit, tx.subscribe());
         let (read, write) = peer.take_tls();
         let write_peer = self.write_peer(write, rnp, tx.subscribe());
-        let read_peer =
-            self.read_peer(&sender, node_id, c_chain_id, read, spn, spl, tx.subscribe());
+        let read_peer = self.read_peer(
+            &sender,
+            node_id,
+            c_chain_id,
+            read,
+            spn,
+            spln,
+            spl,
+            tx.subscribe(),
+        );
 
         let hand_peer = match self
             .network
@@ -289,6 +300,7 @@ impl Node {
     fn manage_peer(
         self: &Arc<Node>,
         rpn: Receiver<PeerMessage>,
+        rpln: Receiver<LightPeerMessage>,
         rpl: Receiver<(LightMessage, oneshot::Sender<LightResult>)>,
         node_id: NodeId,
         hs_permit: OwnedSemaphorePermit,
@@ -296,7 +308,7 @@ impl Node {
     ) -> JoinHandle<Result<(), NodeError>> {
         let node = self.clone();
         tokio::spawn(async move {
-            node.execute_peer_operation(rpn, rpl, node_id, hs_permit, rx)
+            node.execute_peer_operation(rpn, rpln, rpl, node_id, hs_permit, rx)
                 .await;
             Ok(())
         })
@@ -327,6 +339,7 @@ impl Node {
         c_chain_id: ChainId,
         read: ReadHalf<TlsStream<TcpStream>>,
         spn: Sender<PeerMessage>,
+        spln: Sender<LightPeerMessage>,
         spl: Sender<(LightMessage, oneshot::Sender<LightResult>)>,
         rx: broadcast::Receiver<()>,
     ) -> JoinHandle<Result<(), NodeError>> {
@@ -341,6 +354,7 @@ impl Node {
                 &peer_sender,
                 &mail_box,
                 &spn,
+                &spln,
                 &spl,
                 rx,
             )
@@ -401,6 +415,7 @@ impl Node {
     pub async fn execute_peer_operation(
         self: Arc<Node>,
         rpn: Receiver<PeerMessage>,
+        rpln: Receiver<LightPeerMessage>,
         rpl: Receiver<(LightMessage, oneshot::Sender<LightResult>)>,
         node_id: NodeId,
         hs_permit: OwnedSemaphorePermit,
@@ -414,6 +429,11 @@ impl Node {
                 res = rpn.recv_async() => {
                     if let Ok(msg) = res {
                         self.manage_inner_message(&node_id, msg, &mut maybe_hs_permit);
+                    }
+                }
+                res = rpln.recv_async() => {
+                    if let Ok(msg) = res {
+                        self.manage_inner_light_message(&node_id, msg);
                     }
                 }
                 res = rpl.recv_async() => {
@@ -472,7 +492,10 @@ impl Node {
 
                 let _ = sender.send(Message::PeerList(PeerList { claimed_ip_ports }));
             }
-            PeerMessage::NewPeer { infos: peer_infos } => {
+            PeerMessage::NewPeer {
+                sender,
+                infos: peer_infos,
+            } => {
                 if let Some(hs_permit) = maybe_hs_permit.take() {
                     let mut peers = self.network.peers_infos.write().unwrap();
                     if let Some(PeerInfo { infos, .. }) = peers.get_mut(node_id) {
@@ -483,6 +506,25 @@ impl Node {
                             let mut bloom_filter = self.network.bloom_filter.write().unwrap();
                             bloom_filter.feed(gossip_id); // we write it to the filter even if it fails to avoid always hearing about it
                             Self::regen_bloom_if_necessary(&peers, &mut bloom_filter);
+
+                            let chain_id = self.network.config.c_chain_id.as_ref().to_vec();
+                            let k = self.light_network.block_dht.k;
+                            let handshake = LightHandshake {
+                                k: k.to_be_bytes_vec(),
+                            };
+                            let mut bytes = unsigned_varint::encode::u64_buffer();
+                            let bytes = unsigned_varint::encode::u64(
+                                constants::SNOWFLAKE_HANDLER_ID,
+                                &mut bytes,
+                            );
+                            let mut app_bytes = bytes.to_vec();
+                            handshake.encode(&mut app_bytes).unwrap();
+                            let _ = sender.send(Message::AppRequest(AppRequest {
+                                chain_id,
+                                request_id: rand::random(),
+                                deadline: constants::DEFAULT_DEADLINE,
+                                app_bytes,
+                            }));
                         } else {
                             log::debug!("received NewPeer twice {}", node_id);
                         }
@@ -494,6 +536,43 @@ impl Node {
                 } else {
                     log::debug!("received NewPeer twice from permit {}", node_id);
                 }
+            }
+        }
+    }
+
+    fn manage_inner_light_message(self: &Arc<Node>, node_id: &NodeId, message: LightPeerMessage) {
+        let chain_id = self.network.config.c_chain_id.as_ref().to_vec();
+        match message {
+            LightPeerMessage::NewPeer { sender, k } => {
+                {
+                    let light_peers = self.network.light_peers.read().unwrap();
+                    if light_peers.contains_key(node_id) {
+                        log::debug!("discarding light duplicate handshake {node_id}");
+                        return;
+                    }
+                }
+                self.network
+                    .light_peers
+                    .write()
+                    .unwrap()
+                    .insert(*node_id, k);
+                let k = self.light_network.block_dht.k;
+                let handshake = LightHandshake {
+                    k: k.to_be_bytes_vec(),
+                };
+                // TODO this is duplicated code, we should refactor
+                let mut bytes = unsigned_varint::encode::u64_buffer();
+                let bytes =
+                    unsigned_varint::encode::u64(constants::SNOWFLAKE_HANDLER_ID, &mut bytes);
+                let mut app_bytes = bytes.to_vec();
+                handshake.encode(&mut app_bytes).unwrap();
+                let message = Message::AppRequest(AppRequest {
+                    chain_id,
+                    request_id: rand::random(),
+                    deadline: constants::DEFAULT_DEADLINE,
+                    app_bytes,
+                });
+                let _ = sender.send(message);
             }
         }
     }
@@ -578,7 +657,9 @@ impl Node {
         if peers.is_empty() || self.network.has_reached_max_peers(&peers) {
             return;
         }
-        let (node_id, random_peer) = peers.get_index(random::<usize>() % peers.len()).unwrap();
+        let (node_id, random_peer) = peers
+            .get_index(rand::random::<usize>() % peers.len())
+            .unwrap();
         let bloom_filter = self.network.bloom_filter.read().unwrap().as_proto();
         if random_peer
             .sender
@@ -605,7 +686,9 @@ impl Node {
 
         (0..n)
             .fold(HashSet::new(), |mut set, _| {
-                let (node_id, _) = peers.get_index(random::<usize>() % peers.len()).unwrap();
+                let (node_id, _) = peers
+                    .get_index(rand::random::<usize>() % peers.len())
+                    .unwrap();
                 set.insert(*node_id);
                 set
             })
@@ -747,7 +830,7 @@ impl Node {
                 if inter.is_empty() {
                     None
                 } else {
-                    let i = random::<usize>() % inter.len();
+                    let i = rand::random::<usize>() % inter.len();
                     Some(**inter[i])
                 }
             }

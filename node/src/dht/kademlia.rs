@@ -1,5 +1,7 @@
 use crate::dht::Bucket;
 use crate::id::NodeId;
+use prost::Message;
+use proto_lib::sdk;
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::sync::RwLock;
@@ -34,6 +36,24 @@ pub struct KademliaDht<V, DB: LockedMapDb<Bucket, V>> {
 pub enum ValueOrNodes<V> {
     Value(V),
     Nodes(Vec<NodeId>),
+}
+
+impl ValueOrNodes<Vec<u8>> {
+    pub fn encode(self, buf: &mut Vec<u8>) -> Result<(), prost::EncodeError> {
+        match self {
+            ValueOrNodes::Value(value) => sdk::Value::encode(&sdk::Value { value }, buf),
+
+            ValueOrNodes::Nodes(nodes) => sdk::Nodes::encode(
+                &sdk::Nodes {
+                    node_ids: nodes
+                        .into_iter()
+                        .map(|node_id| node_id.as_ref().to_vec())
+                        .collect(),
+                },
+                buf,
+            ),
+        }
+    }
 }
 
 impl<V, DB: LockedMapDb<Bucket, V>> KademliaDht<V, DB> {
