@@ -1,20 +1,28 @@
-use crate::id::NodeId;
+use crate::dht::LightError;
+use crate::dht::{Bucket, DhtId, LightMessage, LightResult};
+use crate::id::{ChainId, NodeId};
 use crate::message::{mail_box::MailBox, pipeline::Pipeline, MiniMessage, SubscribableMessage};
+use crate::net::sdk::{FindNode, FindValue, LightHandshake};
 use crate::net::{
     ip::SignedIp,
     node::{NetworkConfig, NodeError},
-    light::LightNetwork
 };
+use crate::server::msg::InLightMessage;
 use crate::server::{
     msg::InboundMessage,
     peers::{PeerInfo, PeerSender},
 };
 use crate::utils::bls::Bls;
+use crate::utils::constants::SNOWFLAKE_HANDLER_ID;
 use crate::utils::{bloom::Filter, ip::ip_from_octets, packer::Packer};
+use alloy::signers::k256::elliptic_curve::pkcs8::der::Encode;
 use async_recursion::async_recursion;
 use flume::Sender;
 use indexmap::IndexMap;
-use proto_lib::p2p::{self, message::Message, BloomFilter, Client, GetPeerList, Handshake};
+use proto_lib::p2p::{
+    self, message::Message, AppError, AppResponse, BloomFilter, Client, GetPeerList, Handshake,
+};
+use proto_lib::sdk;
 use ripemd::Digest;
 use rustls::ClientConfig;
 use rustls_pki_types::ServerName;
@@ -26,14 +34,15 @@ use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tokio::io::{split, ReadHalf, WriteHalf};
 use tokio::net::TcpStream;
+use tokio::sync::oneshot;
 use tokio::sync::Semaphore;
 use tokio_rustls::{TlsConnector, TlsStream};
 
 pub mod ip;
 pub mod latency;
+pub mod light;
 pub mod node;
 pub mod queue;
-pub mod light;
 
 #[derive(Debug)]
 pub struct BackoffParams {
@@ -72,7 +81,6 @@ pub struct Network {
     pub public_key: [u8; Bls::PUBLIC_KEY_BYTES],
     pub node_pop: Vec<u8>,
     pub handshake_semaphore: Arc<Semaphore>,
-    pub light_network: LightNetwork,
 }
 
 /// Intervals of operations in milliseconds
@@ -222,10 +230,12 @@ impl Peer {
     #[async_recursion]
     pub async fn manage_message<'a>(
         node_id: &NodeId,
+        c_chain_id: &ChainId,
         buf: &[u8],
         sender: &PeerSender,
         mail_box: &MailBox,
         spn: &Sender<PeerMessage>,
+        spl: &Sender<(LightMessage, oneshot::Sender<LightResult>)>,
         recursed: bool,
     ) -> Result<(), NodeError> {
         let decoded = InboundMessage::decode(buf).map_err(NodeError::Decoding)?;
@@ -243,8 +253,8 @@ impl Peer {
         };
 
         // TODO if this node holds a stake, here is the minimum amount of messages to handle since
-        // TODO they are registered and will get the node benched:
-        // TODO AppRequest, PullQuery, PushQuery, Get, GetAncestors, GetAccepted, GetAcceptedFrontier, GetAcceptedStateSummary, GetStateSummaryFrontier
+        //   they are registered and will get the node benched:
+        //   AppRequest, PullQuery, PushQuery, Get, GetAncestors, GetAccepted, GetAcceptedFrontier, GetAcceptedStateSummary, GetStateSummaryFrontier
         log::trace!("new incoming message {decoded:?}");
         match decoded {
             Message::CompressedZstd(ref comp) => {
@@ -257,7 +267,17 @@ impl Peer {
                 let buf_read = BufReader::new(&comp[..]);
                 let decoded_buf = zstd::stream::decode_all(buf_read)?;
 
-                Self::manage_message(node_id, &decoded_buf, sender, mail_box, spn, true).await?;
+                Self::manage_message(
+                    node_id,
+                    c_chain_id,
+                    &decoded_buf,
+                    sender,
+                    mail_box,
+                    spn,
+                    spl,
+                    true,
+                )
+                .await?;
 
                 return Ok(());
             }
@@ -265,6 +285,7 @@ impl Peer {
                 spn.send(PeerMessage::ObserveUptime(ping))
                     .map_err(|_| NodeError::SendError)?;
 
+                // TODO track uptime
                 sender
                     .send(Message::Pong(p2p::Pong {
                         uptime: 100,
@@ -327,9 +348,98 @@ impl Peer {
                 })
                 .map_err(|_| NodeError::SendError)?;
             }
+            Message::AppRequest(app_request) => {
+                if app_request.chain_id != c_chain_id.as_ref() {
+                    return Err(NodeError::Message("wrong chain ID".to_string()));
+                }
+                let bytes = app_request.app_bytes;
+                let (app_id, bytes) = unsigned_varint::decode::u64(&bytes)
+                    .map_err(|_| NodeError::Message("failed to decode app ID".to_string()))?;
+                if app_id != SNOWFLAKE_HANDLER_ID {
+                    return Err(NodeError::Message("wrong handler ID".to_string()));
+                }
+                let light_message = InLightMessage::decode(bytes).map_err(NodeError::Decoding)?;
+                Self::manage_light_message(
+                    &c_chain_id,
+                    app_request.request_id,
+                    spl,
+                    sender,
+                    light_message,
+                )
+                .await?;
+            }
             Message::Pong(_pong) => {}
             _ => log::debug!("unsupported message {} {node_id}", mini),
         };
+
+        Ok(())
+    }
+
+    pub async fn manage_light_message(
+        c_chain_id: &ChainId,
+        request_id: u32,
+        spl: &Sender<(LightMessage, oneshot::Sender<LightResult>)>,
+        sender: &PeerSender,
+        light_message: sdk::light_message::Message,
+    ) -> Result<(), NodeError> {
+        let chain_id = c_chain_id.as_ref().to_vec();
+        let res = match light_message {
+            sdk::light_message::Message::LightHandshake(LightHandshake { k }) => {
+                //
+                None
+            }
+            sdk::light_message::Message::FindValue(FindValue { dht, bucket }) => {
+                let dht_id = match dht {
+                    0 => DhtId::Block,
+                    _ => return Err(NodeError::Message("unsupported DHT".to_string())),
+                };
+                let bucket_arr: [u8; 20] = bucket
+                    .try_into()
+                    .map_err(|_| NodeError::Message("invalid bucket".to_string()))?;
+                let bucket = Bucket::from_be_bytes(bucket_arr);
+                let (tx, rx) = oneshot::channel();
+                spl.send((LightMessage::FindValue(dht_id, bucket), tx))
+                    .map_err(|_| NodeError::SendError)?;
+                Some(rx.await?)
+            }
+            sdk::light_message::Message::FindNode(FindNode { dht, bucket }) => {
+                let dht_id = match dht {
+                    0 => DhtId::Block,
+                    _ => return Err(NodeError::Message("unsupported DHT".to_string())),
+                };
+                let bucket_arr: [u8; 20] = bucket
+                    .try_into()
+                    .map_err(|_| NodeError::Message("invalid bucket".to_string()))?;
+                let bucket = Bucket::from_be_bytes(bucket_arr);
+                let (tx, rx) = oneshot::channel();
+                spl.send((LightMessage::FindNode(dht_id, bucket), tx))
+                    .map_err(|_| NodeError::SendError)?;
+                Some(rx.await?)
+            }
+            _ => todo!(), // TODO not sure if we should include responses in the set of messages.
+        };
+
+        match res {
+            Some(Ok(res)) => {
+                if let Some(value_or_nodes) = res {
+                    let mut app_bytes = Vec::new();
+                    let _ = sender.send(Message::AppResponse(AppResponse {
+                        chain_id,
+                        request_id,
+                        app_bytes,
+                    }));
+                }
+            }
+            Some(Err(LightError { code, message })) => {
+                let _ = sender.send(Message::AppError(AppError {
+                    chain_id,
+                    request_id,
+                    error_code: code,
+                    error_message: message,
+                }));
+            }
+            _ => (),
+        }
 
         Ok(())
     }

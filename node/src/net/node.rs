@@ -1,4 +1,5 @@
 use crate::client::config;
+use crate::dht::{LightMessage, LightResult};
 use crate::id::{ChainId, NodeId};
 use crate::message::{mail_box::MailBox, pipeline::Pipeline, MiniMessage};
 use crate::net::{ip::UnsignedIp, BackoffParams, Intervals, Network, Peer, PeerInfo, PeerMessage};
@@ -20,7 +21,6 @@ use indexmap::IndexMap;
 use openssl::x509;
 use prost::EncodeError;
 use proto_lib::p2p::{self};
-use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
@@ -42,6 +42,8 @@ pub enum NodeError {
     #[error("tcp error: {0}")]
     TcpConnection(#[from] std::io::Error),
     #[error("send error: all receivers have been dropped")]
+    // TODO
+    //   SendError(#[from] flume::SendError<T>),
     SendError,
     #[error("recv error: all sender have been dropped")]
     RecvError(#[from] oneshot::error::RecvError),
@@ -77,6 +79,7 @@ pub struct NetworkConfig {
     pub bucket_size: usize,
     pub max_concurrent_handshakes: usize,
     pub max_peers: Option<usize>,
+    pub bootstrappers: Vec<NodeId>,
 }
 
 #[derive(Debug)]
@@ -152,7 +155,7 @@ impl Network {
         ));
 
         let handshake_semaphore = Arc::new(Semaphore::new(config.max_concurrent_handshakes));
-        let bootstrappers = RwLock::new(HashSet::new());
+        let bootstrappers = RwLock::new(config.bootstrappers.iter().copied().collect());
 
         Ok(Self {
             node_id,
@@ -167,7 +170,6 @@ impl Network {
             public_key,
             node_pop,
             handshake_semaphore,
-            light_network: todo!(),
         })
     }
 
@@ -238,10 +240,12 @@ impl Network {
     /// Continuously read messages and return an error on an EOF
     pub async fn read_messages(
         node_id: &NodeId,
+        c_chain_id: &ChainId,
         mut read: ReadHalf<TlsStream<TcpStream>>,
         sender: &PeerSender,
         mail_box: &MailBox,
         spn: &Sender<PeerMessage>,
+        spl: &Sender<(LightMessage, oneshot::Sender<LightResult>)>,
         mut rx: broadcast::Receiver<()>,
     ) -> Result<(), NodeError> {
         loop {
@@ -249,7 +253,7 @@ impl Network {
             tokio::select! {
                 maybe_buf = read_stream_message(&mut read) => {
                     let buf = maybe_buf?;
-                    Peer::manage_message(node_id, &buf, sender, mail_box, spn, false).await?;
+                    Peer::manage_message(node_id, c_chain_id, &buf, sender, mail_box, spn, spl, false).await?;
                 }
                 _ = rx.recv() => {
                     return Ok(())

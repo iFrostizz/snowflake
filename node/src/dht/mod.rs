@@ -1,7 +1,7 @@
 pub mod block;
 pub mod kademlia;
 
-use crate::dht::kademlia::{KademliaDht, LockedMapDb};
+use crate::dht::kademlia::{KademliaDht, LockedMapDb, ValueOrNodes};
 use crate::id::NodeId;
 use ruint::Uint;
 use std::cmp::Ordering;
@@ -13,14 +13,13 @@ pub trait ConcreteDht<K> {
 }
 
 #[derive(Debug)]
-pub struct Dht<K, DB: LockedMapDb<Bucket, Vec<u8>>> {
+pub struct Dht<DB: LockedMapDb<Bucket, Vec<u8>>> {
     bucket_lo: Bucket,
     bucket_hi: Bucket,
-    kademlia_dht: KademliaDht<Vec<u8>, DB>,
-    _marker: std::marker::PhantomData<K>,
+    pub kademlia_dht: KademliaDht<Vec<u8>, DB>,
 }
 
-impl<K, DB: LockedMapDb<Bucket, Vec<u8>>> Dht<K, DB> {
+impl<DB: LockedMapDb<Bucket, Vec<u8>>> Dht<DB> {
     pub(crate) fn new(node_id: NodeId, k: Bucket, kademlia_dht: KademliaDht<Vec<u8>, DB>) -> Self {
         let arr: [u8; 20] = node_id.into();
         let bucket = Bucket::from_be_bytes(arr);
@@ -29,16 +28,15 @@ impl<K, DB: LockedMapDb<Bucket, Vec<u8>>> Dht<K, DB> {
             bucket_lo,
             bucket_hi,
             kademlia_dht,
-            _marker: std::marker::PhantomData,
         }
     }
 
-    /// Range of buckets of this node. The left hand is included and the right hand is excluded.
+    /// Range of buckets for this node. The left hand is included and the right hand is excluded.
     fn bucket_range(&self) -> (&Bucket, &Bucket) {
         (&self.bucket_lo, &self.bucket_hi)
     }
 
-    fn is_desired_bucket(&self, bucket: &Bucket) -> bool {
+    pub fn is_desired_bucket(&self, bucket: &Bucket) -> bool {
         let (bucket_lo, bucket_hi) = self.bucket_range();
         match bucket_lo.cmp(bucket_hi) {
             Ordering::Less => bucket_lo <= bucket && bucket < bucket_hi,
@@ -48,14 +46,37 @@ impl<K, DB: LockedMapDb<Bucket, Vec<u8>>> Dht<K, DB> {
     }
 }
 
-pub enum LightMessage {
-    Store(Vec<u8>),
-    FindNode(Bucket, usize),
-    FindValue(Bucket, usize),
+pub enum DhtId {
+    Block,
+    State,
 }
 
+impl From<u32> for DhtId {
+    fn from(val: u32) -> Self {
+        match val {
+            0 => Self::Block,
+            _ => unimplemented!(),
+        }
+    }
+}
+
+pub enum LightMessage {
+    Store(DhtId, Vec<u8>),
+    FindNode(DhtId, Bucket),
+    FindValue(DhtId, Bucket),
+}
+
+pub struct LightError {
+    pub code: i32,
+    pub message: String,
+}
+
+pub type LightResult = Result<Option<ValueOrNodes<Vec<u8>>>, LightError>;
+
 pub trait Task {
-    async fn process_message(&mut self, message: &LightMessage);
+    fn store(&self, value: Vec<u8>) -> LightResult;
+    fn find_node(&self, bucket: Bucket) -> LightResult;
+    fn find_value(&self, bucket: Bucket) -> LightResult;
 }
 
 #[cfg(test)]
@@ -66,7 +87,7 @@ mod tests {
 
     #[test]
     fn dht_buckets() {
-        type MyDht = Dht<Bucket, RwLock<HashMap<Bucket, Vec<u8>>>>;
+        type MyDht = Dht<RwLock<HashMap<Bucket, Vec<u8>>>>;
 
         let num_to_bucket = |num: u16| -> Bucket {
             let mut arr: [u8; 20] = [0; 20];

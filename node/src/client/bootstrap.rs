@@ -31,12 +31,29 @@ pub struct Bootstrappers<'a> {
     pub path: &'a Path,
 }
 
-impl Bootstrappers<'_> {
+impl<'a> Bootstrappers<'a> {
+    pub fn new(bootstrapper_path: &'a Path) -> Self {
+        Self {
+            path: bootstrapper_path,
+        }
+    }
+
     fn read_bootsrappers(&self) -> HashMap<String, Vec<Bootstrapper>> {
         let mut content = String::new();
         let mut file = File::open(self.path).unwrap();
         File::read_to_string(&mut file, &mut content).unwrap();
         serde_json::from_str(&content).unwrap()
+    }
+
+    pub fn bootstrappers(&self, network_name: &str) -> Vec<NodeId> {
+        let bootstrappers = self.read_bootsrappers();
+        let bootstrappers = bootstrappers
+            .get(network_name)
+            .expect("this network is not listed in the bootstrappers file");
+        bootstrappers
+            .iter()
+            .map(|bootstrapper| bootstrapper.id)
+            .collect()
     }
 
     pub async fn bootstrap_all(
@@ -85,7 +102,7 @@ impl Bootstrappers<'_> {
                         },
                     )
                     .await
-                    .and_then(|_| Ok(node_id))
+                    .map(|_| node_id)
             });
         }
 

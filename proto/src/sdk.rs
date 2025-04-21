@@ -16,3 +16,59 @@ pub struct PushGossip {
     #[prost(bytes = "vec", repeated, tag = "1")]
     pub gossip: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
 }
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct LightMessage {
+    #[prost(oneof = "light_message::Message", tags = "1, 11, 12, 13, 14")]
+    pub message: ::core::option::Option<light_message::Message>,
+}
+/// Nested message and enum types in `LightMessage`.
+pub mod light_message {
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Message {
+        #[prost(message, tag = "1")]
+        LightHandshake(super::LightHandshake),
+        #[prost(message, tag = "11")]
+        FindValue(super::FindValue),
+        #[prost(message, tag = "12")]
+        FindNode(super::FindNode),
+        #[prost(message, tag = "13")]
+        Nodes(super::Nodes),
+        #[prost(message, tag = "14")]
+        Value(super::Value),
+    }
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct LightHandshake {
+    #[prost(bytes = "vec", tag = "1")]
+    pub k: ::prost::alloc::vec::Vec<u8>,
+}
+/// FindValue is used to find content at a bucket by recursively getting closer
+///
+/// Works as defined in the Kademlia DHT paper: <https://pdos.csail.mit.edu/~petar/papers/maymounkov-kademlia-lncs.pdf>
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct FindValue {
+    #[prost(uint32, tag = "1")]
+    pub dht: u32,
+    #[prost(bytes = "vec", tag = "2")]
+    pub bucket: ::prost::alloc::vec::Vec<u8>,
+}
+/// FindNode is used to find nodes that are close from a bucket
+///
+/// Works as defined in the Kademlia DHT paper: <https://pdos.csail.mit.edu/~petar/papers/maymounkov-kademlia-lncs.pdf>
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct FindNode {
+    #[prost(uint32, tag = "1")]
+    pub dht: u32,
+    #[prost(bytes = "vec", tag = "2")]
+    pub bucket: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct Nodes {
+    #[prost(bytes = "vec", repeated, tag = "1")]
+    pub node_ids: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct Value {
+    #[prost(bytes = "vec", tag = "1")]
+    pub value: ::prost::alloc::vec::Vec<u8>,
+}

@@ -1,3 +1,4 @@
+use crate::client::bootstrap::Bootstrappers;
 use crate::id::ChainId;
 use crate::net::node::{NetworkConfig, NodeError};
 use crate::net::{BackoffParams, Intervals};
@@ -160,6 +161,8 @@ impl Args {
             bucket_size: 500_000,           // 500 kB
             max_concurrent_handshakes: self.max_handshakes,
             max_peers: self.max_peers,
+            bootstrappers: Bootstrappers::new(&self.bootstrappers_path)
+                .bootstrappers(&self.network_id.to_string()),
         }
     }
 }

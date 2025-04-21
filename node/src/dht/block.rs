@@ -1,5 +1,5 @@
-use crate::dht::Bucket;
 use crate::dht::LightMessage;
+use crate::dht::{Bucket, LightError, LightResult};
 use crate::dht::{ConcreteDht, Dht, Task};
 use crate::id::NodeId;
 use crate::message::SubscribableMessage;
@@ -14,8 +14,9 @@ use proto_lib::p2p::{AcceptedFrontier, EngineType, Get, GetAncestors};
 use std::collections::HashMap;
 use std::sync::RwLock;
 use std::time::Duration;
+use tokio::sync::broadcast;
 
-pub type DhtBlocks = Dht<u64, RwLock<HashMap<Bucket, Vec<u8>>>>;
+pub type DhtBlocks = Dht<RwLock<HashMap<Bucket, Vec<u8>>>>;
 
 impl ConcreteDht<u64> for DhtBlocks {
     fn key_to_bucket(block_number: u64) -> Bucket {
@@ -27,7 +28,7 @@ impl ConcreteDht<u64> for DhtBlocks {
 }
 
 impl DhtBlocks {
-    pub async fn sync_headers(&self, node: Arc<Node>) {
+    async fn sync_process(self: Arc<Self>, node: Arc<Node>) {
         let chain_id = node.network.config.c_chain_id.as_ref().to_vec();
         let mut bootstrapper = Self::pick_random_bootstrapper(&node).await;
 
@@ -87,6 +88,15 @@ impl DhtBlocks {
         }
     }
 
+    pub async fn sync_headers(self: Arc<Self>, node: Arc<Node>, mut rx: broadcast::Receiver<()>) {
+        let dht = self.clone();
+        let process = tokio::spawn(dht.sync_process(node));
+        tokio::select! {
+            _ = process => {},
+            _ = rx.recv() => {},
+        }
+    }
+
     async fn pick_random_bootstrapper(node: &Arc<Node>) -> NodeId {
         let mut maybe_bootstrapper = node.pick_peer(SinglePickerConfig::Bootstrapper);
         while maybe_bootstrapper.is_none() {
@@ -98,27 +108,30 @@ impl DhtBlocks {
 }
 
 impl Task for DhtBlocks {
-    async fn process_message(&mut self, message: &LightMessage) {
-        match message {
-            LightMessage::Store(value) => {
-                let block = StatelessBlock::unpack(value).unwrap();
-                let number =
-                    u64::from_be_bytes(block.block.header.number()[24..].try_into().unwrap());
-                let key = Self::key_to_bucket(number);
-                if self.is_desired_bucket(&key) {
-                    self.kademlia_dht.store(key, value.to_owned());
-                } else {
-                    // lower reputation? Could also be a mistake if our k was just updated.
-                    // We should send a warn if not already done.
-                }
-            }
-            LightMessage::FindNode(bucket, n) => {
-                self.kademlia_dht.find_node(bucket, *n);
-            }
-            LightMessage::FindValue(bucket, n) => {
-                self.kademlia_dht.find_value(bucket, *n);
-            }
+    fn store(&self, value: Vec<u8>) -> LightResult {
+        let block = StatelessBlock::unpack(&value).unwrap();
+        let number = u64::from_be_bytes(block.block.header.number()[24..].try_into().unwrap());
+        let key = Self::key_to_bucket(number);
+        if self.is_desired_bucket(&key) {
+            self.kademlia_dht.store(key, value.to_owned());
+            Ok(None)
+        } else {
+            // TODO Lower reputation? Could also be a mistake if our k was just updated.
+            //   We should send a warn if not already done.
+            Err(LightError {
+                code: 0,
+                message: "undesired bucket".to_string(),
+            })
         }
-        todo!()
+    }
+
+    fn find_node(&self, bucket: Bucket) -> LightResult {
+        self.kademlia_dht.find_node(&bucket);
+        Ok(None)
+    }
+
+    fn find_value(&self, bucket: Bucket) -> LightResult {
+        self.kademlia_dht.find_value(&bucket);
+        Ok(None)
     }
 }

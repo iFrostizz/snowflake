@@ -1,5 +1,5 @@
 use prost::{DecodeError, EncodeError, Message};
-use proto_lib::p2p;
+use proto_lib::{p2p, sdk};
 use thiserror::Error;
 
 #[derive(Debug)]
@@ -53,6 +53,21 @@ impl InboundMessage {
         }
 
         let decoded = p2p::Message::decode(message).map_err(DecodingError::Prost)?;
+
+        decoded.message.ok_or(DecodingError::EmptyMessage)
+    }
+}
+
+pub struct InLightMessage;
+
+impl InLightMessage {
+    pub fn decode(message: &[u8]) -> Result<sdk::light_message::Message, DecodingError> {
+        let len = message.len();
+        if len == 0 {
+            return Err(DecodingError::EmptyMessage);
+        }
+
+        let decoded = sdk::LightMessage::decode(message).map_err(DecodingError::Prost)?;
 
         decoded.message.ok_or(DecodingError::EmptyMessage)
     }

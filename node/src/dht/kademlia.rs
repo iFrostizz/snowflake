@@ -11,7 +11,8 @@ pub trait LockedMapDb<K, V> {
 
 impl<K, V> LockedMapDb<K, V> for RwLock<HashMap<K, V>>
 where
-    K: Eq + Hash, V: Clone
+    K: Eq + Hash,
+    V: Clone,
 {
     fn insert(&self, key: K, value: V) -> Option<V> {
         self.write().unwrap().insert(key, value)
@@ -52,8 +53,14 @@ impl<V, DB: LockedMapDb<Bucket, V>> KademliaDht<V, DB> {
         self.store.insert(key, value)
     }
 
+    pub fn get(&self, key: &Bucket) -> Option<V> {
+        self.store.get(key)
+    }
+
     /// Find up to `n` unique nodes that are the closest to the `bucket`.
-    pub fn find_node(&self, bucket: &Bucket, mut n: usize) -> Vec<NodeId> {
+    pub fn find_node(&self, bucket: &Bucket) -> Vec<NodeId> {
+        let mut n = 8; // TODO param
+
         if self.nodes.is_empty() {
             return vec![];
         }
@@ -84,14 +91,14 @@ impl<V, DB: LockedMapDb<Bucket, V>> KademliaDht<V, DB> {
             .collect()
     }
 
-    /// Find up to `n` unique nodes that are the closest to the `bucket` or return the value
+    /// Find unique nodes that are the closest to the `bucket` or return the value
     /// if it is in the store.
-    pub fn find_value(&self, bucket: &Bucket, n: usize) -> ValueOrNodes<V> {
+    pub fn find_value(&self, bucket: &Bucket) -> ValueOrNodes<V> {
         if let Some(value) = self.store.get(bucket) {
             return ValueOrNodes::Value(value);
         }
 
-        let nodes = self.find_node(bucket, n);
+        let nodes = self.find_node(bucket);
         ValueOrNodes::Nodes(nodes)
     }
 }
@@ -132,7 +139,8 @@ mod tests {
             .into_iter()
             .map(extend_to_node_id)
             .collect::<Vec<_>>();
-        let dht: KademliaDht<(), RwLock<HashMap<Bucket, ()>>> = KademliaDht::new(node_ids, RwLock::new(HashMap::new()));
+        let dht: KademliaDht<(), RwLock<HashMap<Bucket, ()>>> =
+            KademliaDht::new(node_ids, RwLock::new(HashMap::new()));
         let closest = dht.find_node(&extend_to_bucket(buckets[4]), 3);
         assert_eq!(closest.len(), 3);
         assert_eq!(

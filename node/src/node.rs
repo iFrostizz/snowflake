@@ -1,9 +1,7 @@
-use crate::client::bootstrap::Bootstrapper;
-use crate::dht::block::DhtBlocks;
-use crate::dht::kademlia::KademliaDht;
-use crate::dht::Bucket;
-use crate::id::{Id, NodeId};
+use crate::dht::{LightMessage, LightResult};
+use crate::id::{ChainId, Id, NodeId};
 use crate::message::{mail_box::MailBox, SubscribableMessage};
+use crate::net::light::LightNetwork;
 use crate::net::{
     node::NodeError,
     queue::{ConnectionData, ConnectionQueue},
@@ -24,13 +22,14 @@ use proto_lib::p2p::{
     message::Message, AppGossip, BloomFilter, ClaimedIpPort, GetPeerList, PeerList,
 };
 use rand::random;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::io::ErrorKind;
 use std::net::ToSocketAddrs;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::io::{ReadHalf, WriteHalf};
 use tokio::net::TcpStream;
+use tokio::sync::oneshot;
 use tokio::sync::{broadcast, OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinHandle;
 use tokio::time::{self};
@@ -38,6 +37,7 @@ use tokio_rustls::TlsStream;
 
 pub struct Node {
     pub(crate) network: Arc<Network>,
+    pub(crate) light_network: LightNetwork,
     connection_queue: ConnectionQueue,
     // TODO for now, we only use it for subscribable messages, but they are not currently supported.
     // TODO We should maybe handle ping / pong messages in order to build peer the latency ranking.
@@ -63,11 +63,18 @@ pub enum SinglePickerConfig {
 }
 
 impl Node {
-    pub fn new(network: Arc<Network>, max_concurrent: usize, max_latency_records: usize) -> Self {
+    pub fn new(
+        network: Arc<Network>,
+        max_concurrent: usize,
+        max_latency_records: usize,
+        sync_headers: bool,
+    ) -> Self {
         let mail_box = MailBox::new(max_latency_records);
+        let light_network = LightNetwork::new(network.node_id, sync_headers);
 
         Self {
             network,
+            light_network,
             connection_queue: ConnectionQueue::new(max_concurrent),
             mail_box: Arc::new(mail_box),
         }
@@ -119,6 +126,11 @@ impl Node {
 
         let node = self.clone();
         let rx2 = rx.resubscribe();
+        // TODO this is probably bad design to have the node being passed twice here.
+        let light = tokio::spawn(async move { node.light_network.start(node.clone(), rx2).await });
+
+        let node = self.clone();
+        let rx2 = rx.resubscribe();
         let mbox = tokio::spawn(async move {
             node.mail_box.start(rx2).await;
             Ok(())
@@ -130,7 +142,7 @@ impl Node {
             Ok(())
         });
 
-        vec![conn, net, watch, mbox, pip]
+        vec![conn, net, watch, light, mbox, pip]
     }
 
     /// A created connection that may create a new peer.
@@ -234,6 +246,7 @@ impl Node {
         NodeError,
     > {
         let node_id = peer.node_id;
+        let c_chain_id = self.network.config.c_chain_id.clone();
 
         let (snp, rnp) = flume::unbounded();
         let sender: PeerSender = snp.into();
@@ -243,11 +256,13 @@ impl Node {
             .await;
 
         let (spn, rpn) = flume::unbounded();
+        let (spl, rpl) = flume::unbounded();
         let (tx, _) = broadcast::channel(1);
-        let manage_peer = self.manage_peer(rpn, node_id, hs_permit, tx.subscribe());
+        let manage_peer = self.manage_peer(rpn, rpl, node_id, hs_permit, tx.subscribe());
         let (read, write) = peer.take_tls();
         let write_peer = self.write_peer(write, rnp, tx.subscribe());
-        let read_peer = self.read_peer(&sender, node_id, read, spn, tx.subscribe());
+        let read_peer =
+            self.read_peer(&sender, node_id, c_chain_id, read, spn, spl, tx.subscribe());
 
         let hand_peer = match self
             .network
@@ -274,13 +289,14 @@ impl Node {
     fn manage_peer(
         self: &Arc<Node>,
         rpn: Receiver<PeerMessage>,
+        rpl: Receiver<(LightMessage, oneshot::Sender<LightResult>)>,
         node_id: NodeId,
         hs_permit: OwnedSemaphorePermit,
         rx: broadcast::Receiver<()>,
     ) -> JoinHandle<Result<(), NodeError>> {
         let node = self.clone();
         tokio::spawn(async move {
-            node.execute_peer_operation(rpn, node_id, hs_permit, rx)
+            node.execute_peer_operation(rpn, rpl, node_id, hs_permit, rx)
                 .await;
             Ok(())
         })
@@ -308,16 +324,27 @@ impl Node {
         self: &Arc<Node>,
         sender: &PeerSender,
         node_id: NodeId,
+        c_chain_id: ChainId,
         read: ReadHalf<TlsStream<TcpStream>>,
         spn: Sender<PeerMessage>,
+        spl: Sender<(LightMessage, oneshot::Sender<LightResult>)>,
         rx: broadcast::Receiver<()>,
     ) -> JoinHandle<Result<(), NodeError>> {
         log::trace!("read");
         let peer_sender = sender.clone();
         let mail_box = self.mail_box.clone();
         tokio::spawn(async move {
-            let res =
-                Network::read_messages(&node_id, read, &peer_sender, &mail_box, &spn, rx).await;
+            let res = Network::read_messages(
+                &node_id,
+                &c_chain_id,
+                read,
+                &peer_sender,
+                &mail_box,
+                &spn,
+                &spl,
+                rx,
+            )
+            .await;
 
             if res.is_err() {
                 log::debug!("error on read");
@@ -374,6 +401,7 @@ impl Node {
     pub async fn execute_peer_operation(
         self: Arc<Node>,
         rpn: Receiver<PeerMessage>,
+        rpl: Receiver<(LightMessage, oneshot::Sender<LightResult>)>,
         node_id: NodeId,
         hs_permit: OwnedSemaphorePermit,
         mut rx: broadcast::Receiver<()>,
@@ -386,6 +414,11 @@ impl Node {
                 res = rpn.recv_async() => {
                     if let Ok(msg) = res {
                         self.manage_inner_message(&node_id, msg, &mut maybe_hs_permit);
+                    }
+                }
+                res = rpl.recv_async() => {
+                    if let Ok((msg, resp)) = res {
+                        self.light_network.manage_message(msg, resp);
                     }
                 }
                 _ = rx.recv() => {
@@ -494,9 +527,13 @@ impl Node {
             gossip: vec![signed_tx],
         };
 
-        // prefix the message with the client handler prefix, here it's 0 apparently
+        // prefix the message with the client handler prefix,
         // for more information, check the PrefixMessage function
-        let mut app_bytes = Vec::from([constants::AVALANCHEGO_APP_PREFIX]);
+        let mut app_bytes = unsigned_varint::encode::u64(
+            constants::AVALANCHEGO_HANDLER_ID,
+            &mut unsigned_varint::encode::u64_buffer(),
+        )
+        .to_vec();
         push_gossip
             .encode(&mut app_bytes)
             .expect("the buffer capacity should be dynamically updated");

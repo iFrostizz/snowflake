@@ -18,10 +18,7 @@ pub async fn start(
     // TODO we need tracing to have these function-level logs
     log::debug!("starting client");
 
-    let boot = Bootstrappers {
-        path: bootstrappers_path,
-    };
-
+    let boot = Bootstrappers::new(bootstrappers_path);
     let res = boot
         .bootstrap_all(node, max_connections, network_name)
         .await;

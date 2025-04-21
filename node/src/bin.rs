@@ -58,6 +58,7 @@ async fn main() -> Result<(), NodeError> {
         network,
         args.max_out_connections,
         args.max_latency_records,
+        args.sync_headers,
     ));
 
     let (node_tx, node_ops, server) = server(&node, &args).await;
