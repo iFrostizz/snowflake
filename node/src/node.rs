@@ -1,3 +1,7 @@
+use crate::client::bootstrap::Bootstrapper;
+use crate::dht::block::DhtBlocks;
+use crate::dht::kademlia::KademliaDht;
+use crate::dht::Bucket;
 use crate::id::{Id, NodeId};
 use crate::message::{mail_box::MailBox, SubscribableMessage};
 use crate::net::{
@@ -20,7 +24,7 @@ use proto_lib::p2p::{
     message::Message, AppGossip, BloomFilter, ClaimedIpPort, GetPeerList, PeerList,
 };
 use rand::random;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::ErrorKind;
 use std::net::ToSocketAddrs;
 use std::sync::Arc;
@@ -50,6 +54,12 @@ pub enum MessageOrSubscribable {
 struct PickerConfig {
     fastest: usize,
     random: usize,
+}
+
+pub enum SinglePickerConfig {
+    Bootstrapper,
+    Random,
+    Light,
 }
 
 impl Node {
@@ -385,6 +395,22 @@ impl Node {
         }
     }
 
+    pub async fn start_light(self: Arc<Node>, bootstrappers: Vec<NodeId>, sync_headers: bool) {
+        todo!();
+        // *self.network.bootstrappers.write().unwrap() = bootstrappers.into_iter().collect();
+        // let mut store = HashMap::new();
+        // let mut dht = DhtBlocks::new(
+        //     self.network.node_id,
+        //     Bucket::from(10),
+        //     KademliaDht::new(vec![], store),
+        // );
+        // if sync_headers {
+        //     tokio::spawn(async move {
+        //         dht.sync_headers(self).await;
+        //     });
+        // }
+    }
+
     fn manage_inner_message(
         self: &Arc<Node>,
         node_id: &NodeId,
@@ -470,7 +496,7 @@ impl Node {
 
         // prefix the message with the client handler prefix, here it's 0 apparently
         // for more information, check the PrefixMessage function
-        let mut app_bytes = Vec::from([constants::APP_PREFIX]);
+        let mut app_bytes = Vec::from([constants::AVALANCHEGO_APP_PREFIX]);
         push_gossip
             .encode(&mut app_bytes)
             .expect("the buffer capacity should be dynamically updated");
@@ -484,7 +510,7 @@ impl Node {
             fastest: 10,
             random: 10,
         });
-        self.send_to_peers(&peers, &message);
+        self.send_to_peers(&peers, &message).await;
 
         Ok(())
     }
@@ -673,44 +699,175 @@ impl Node {
         peers.into_iter().collect()
     }
 
-    pub fn send_to_peers(&self, node_ids: &[NodeId], message: &MessageOrSubscribable) {
-        let peers = self.network.peers_infos.read().unwrap();
-        if peers.is_empty() {
-            log::debug!("the set of peers is empty, cannot send to any");
-            return;
-        }
-
-        let n = node_ids.len();
-        let to_remove: Vec<_> = node_ids
-            .iter()
-            .filter_map(|node_id| match peers.get(node_id) {
-                Some(peer) => {
-                    if peer.handshook() {
-                        let sender = &peer.sender;
-                        let res = match message {
-                            MessageOrSubscribable::Subscribable(message) => sender
-                                .send_with_subscribe(self.mail_box.tx(), *node_id, message.clone()),
-                            MessageOrSubscribable::Message(message) => sender.send(message.clone()),
-                        };
-
-                        match res {
-                            Err(_err) => Some((*node_id, Some(&NodeError::SendError))),
-                            Ok(_) => None,
-                        }
-                    } else {
-                        None
-                    }
+    pub fn pick_peer(&self, config: SinglePickerConfig) -> Option<NodeId> {
+        match config {
+            SinglePickerConfig::Bootstrapper => {
+                let peers = self.network.peers_infos.read().unwrap();
+                let available_peers: HashSet<_> = peers.keys().collect();
+                let bootstrappers = self.network.bootstrappers.read().unwrap();
+                let bootstrappers: HashSet<_> = bootstrappers.iter().collect();
+                let mut inter: Vec<_> = bootstrappers.intersection(&available_peers).collect();
+                if inter.is_empty() {
+                    None
+                } else {
+                    let i = random::<usize>() % inter.len();
+                    Some(**inter[i])
                 }
-                None => Some((*node_id, None)),
-            })
-            .collect();
-        drop(peers);
+            }
+            _ => todo!(),
+        }
+    }
 
-        log::debug!("sending to {} peers", n);
+    pub async fn send_to_bootstrappers(
+        &self,
+        message: &MessageOrSubscribable,
+        n_bootstrappers: usize,
+    ) -> Vec<Message> {
+        let node_ids: Vec<_> = {
+            let bootstrappers = self.network.bootstrappers.read().unwrap();
+            bootstrappers
+                .iter()
+                .take(n_bootstrappers)
+                .copied()
+                .collect()
+        };
+        self.send_to_peers(&node_ids, message).await
+    }
+
+    pub async fn send_to_peers(
+        &self,
+        node_ids: &[NodeId],
+        message: &MessageOrSubscribable,
+    ) -> Vec<Message> {
+        let (to_remove, handles) = {
+            let peers = self.network.peers_infos.read().unwrap();
+            if peers.is_empty() {
+                log::debug!("the set of peers is empty, cannot send to any");
+                return vec![];
+            }
+
+            let n = node_ids.len();
+            let mut handles = Vec::new();
+            let to_remove: Vec<_> = node_ids
+                .iter()
+                .filter_map(|node_id| match peers.get(node_id) {
+                    Some(peer) => {
+                        if peer.handshook() {
+                            let sender = &peer.sender;
+                            let res = match message {
+                                MessageOrSubscribable::Subscribable(message) => {
+                                    match sender.send_and_response(
+                                        self.mail_box.tx(),
+                                        *node_id,
+                                        message.clone(),
+                                    ) {
+                                        Ok(handle) => {
+                                            handles.push(handle);
+                                            Ok(())
+                                        }
+                                        Err(err) => Err(err),
+                                    }
+                                }
+                                MessageOrSubscribable::Message(message) => {
+                                    sender.send(message.clone())
+                                }
+                            };
+
+                            match res {
+                                Err(_err) => Some((*node_id, Some(&NodeError::SendError))),
+                                Ok(_) => None,
+                            }
+                        } else {
+                            None
+                        }
+                    }
+                    None => Some((*node_id, None)),
+                })
+                .collect();
+            drop(peers);
+
+            log::debug!("sending to {} peers", n);
+
+            (to_remove, handles)
+        };
+
+        let handles = handles.into_iter().map(|handle| tokio::spawn(handle));
 
         if !to_remove.is_empty() {
             self.network.remove_peers(&to_remove);
         }
+
+        let mut messages = Vec::new();
+        for handle in handles {
+            if let Ok(Ok(message)) = handle.await {
+                messages.push(message);
+            }
+        }
+        messages
+    }
+
+    pub async fn send_to_peer(
+        &self,
+        message: &MessageOrSubscribable,
+        node_id: &NodeId,
+    ) -> Option<Message> {
+        let (mut remove_peer, mut err) = (false, None);
+
+        let peer_opt = {
+            let peers = self.network.peers_infos.read().unwrap();
+            if peers.is_empty() {
+                log::debug!("the set of peers is empty, cannot send to any");
+                return None;
+            }
+            peers.get(node_id).cloned()
+        };
+
+        if let Some(peer) = peer_opt {
+            if peer.handshook() {
+                let sender = &peer.sender;
+
+                match message {
+                    MessageOrSubscribable::Subscribable(message) => {
+                        match sender.send_and_response(
+                            self.mail_box.tx(),
+                            *node_id,
+                            message.clone(),
+                        ) {
+                            Ok(handle) => match handle.await.map_err(|_| NodeError::SendError) {
+                                Ok(message) => return Some(message),
+                                Err(_err) => {
+                                    remove_peer = true;
+                                    err = Some(_err);
+                                }
+                            },
+                            Err(_err) => {
+                                remove_peer = true;
+                                err = Some(_err);
+                            }
+                        }
+                    }
+                    MessageOrSubscribable::Message(message) => {
+                        if let Err(_err) = sender.send(message.clone()) {
+                            remove_peer = true;
+                            err = Some(_err);
+                        }
+                    }
+                }
+            } else {
+                remove_peer = true;
+                err = None;
+            }
+        } else {
+            remove_peer = true;
+            err = None;
+        }
+
+        let is_bootstrapper = self.network.bootstrappers.read().unwrap().contains(node_id);
+        if !is_bootstrapper && remove_peer {
+            self.network.remove_peers(&vec![(*node_id, err.as_ref())]);
+        }
+
+        None
     }
 
     pub async fn hs_permit(&self) -> OwnedSemaphorePermit {

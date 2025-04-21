@@ -1,30 +1,124 @@
 use crate::dht::Bucket;
+use crate::dht::LightMessage;
 use crate::dht::{ConcreteDht, Dht, Task};
 use crate::id::NodeId;
+use crate::message::SubscribableMessage;
+use crate::node::{MessageOrSubscribable, Node, SinglePickerConfig};
+use crate::utils::constants::DEFAULT_DEADLINE;
+use crate::utils::unpacker::StatelessBlock;
+use crate::Arc;
 use alloy::primitives::keccak256;
+use proto_lib::p2p::message::Message;
+use proto_lib::p2p::GetAcceptedFrontier;
+use proto_lib::p2p::{AcceptedFrontier, EngineType, Get, GetAncestors};
+use std::collections::HashMap;
+use std::sync::RwLock;
+use std::time::Duration;
 
-type BlockId = [u8; 32]; // TODO change to end type
+pub type DhtBlocks = Dht<u64, RwLock<HashMap<Bucket, Vec<u8>>>>;
 
-pub type DhtBlocks = Dht<BlockId>;
-
-impl ConcreteDht<BlockId> for DhtBlocks {
-    fn from_node_id(node_id: NodeId, k: Bucket) -> Self {
-        DhtBlocks::_from_node_id(node_id, k)
-    }
-
-    fn is_desired_bucket(&self, bucket: Bucket) -> bool {
-        self._is_desired_bucket(bucket)
-    }
-
-    fn in_to_bucket(val: BlockId) -> Bucket {
-        let arr: [u8; 20] = keccak256(val)[0..20].try_into().unwrap();
+impl ConcreteDht<u64> for DhtBlocks {
+    fn key_to_bucket(block_number: u64) -> Bucket {
+        let arr: [u8; 20] = keccak256(block_number.to_be_bytes())[0..20]
+            .try_into()
+            .unwrap();
         <Bucket>::from_be_bytes(arr)
     }
 }
 
+impl DhtBlocks {
+    pub async fn sync_headers(&self, node: Arc<Node>) {
+        let chain_id = node.network.config.c_chain_id.as_ref().to_vec();
+        let mut bootstrapper = Self::pick_random_bootstrapper(&node).await;
+
+        let message = SubscribableMessage::GetAcceptedFrontier(GetAcceptedFrontier {
+            chain_id: chain_id.clone(),
+            request_id: rand::random(),
+            deadline: DEFAULT_DEADLINE,
+        });
+        let message = loop {
+            if let Some(Message::AcceptedFrontier(res)) = node
+                .send_to_peer(
+                    &MessageOrSubscribable::Subscribable(message.clone()),
+                    &bootstrapper,
+                )
+                .await
+            {
+                break res;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        };
+
+        let mut last_container_id = message.container_id;
+        loop {
+            let message = SubscribableMessage::GetAncestors(GetAncestors {
+                chain_id: chain_id.clone(),
+                request_id: rand::random(),
+                deadline: DEFAULT_DEADLINE,
+                container_id: last_container_id.clone(),
+                engine_type: EngineType::Snowman.into(),
+            });
+            let message = loop {
+                if let Some(Message::Ancestors(res)) = node
+                    .send_to_peer(
+                        &MessageOrSubscribable::Subscribable(message.clone()),
+                        &bootstrapper,
+                    )
+                    .await
+                {
+                    break res;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            };
+
+            let len = message.containers.len();
+            for (i, container) in message.containers.into_iter().enumerate() {
+                let block = StatelessBlock::unpack(&container).unwrap();
+                if i == len - 1 {
+                    last_container_id = block.id.as_ref().to_vec();
+                }
+                let number =
+                    u64::from_be_bytes(block.block.header.number()[24..].try_into().unwrap());
+                dbg!(&number);
+                self.kademlia_dht
+                    .store(Self::key_to_bucket(number), container);
+                bootstrapper = node.pick_peer(SinglePickerConfig::Bootstrapper).unwrap();
+            }
+        }
+    }
+
+    async fn pick_random_bootstrapper(node: &Arc<Node>) -> NodeId {
+        let mut maybe_bootstrapper = node.pick_peer(SinglePickerConfig::Bootstrapper);
+        while maybe_bootstrapper.is_none() {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            maybe_bootstrapper = node.pick_peer(SinglePickerConfig::Bootstrapper);
+        }
+        maybe_bootstrapper.unwrap()
+    }
+}
+
 impl Task for DhtBlocks {
-    async fn run(&self) {
-        // let
+    async fn process_message(&mut self, message: &LightMessage) {
+        match message {
+            LightMessage::Store(value) => {
+                let block = StatelessBlock::unpack(value).unwrap();
+                let number =
+                    u64::from_be_bytes(block.block.header.number()[24..].try_into().unwrap());
+                let key = Self::key_to_bucket(number);
+                if self.is_desired_bucket(&key) {
+                    self.kademlia_dht.store(key, value.to_owned());
+                } else {
+                    // lower reputation? Could also be a mistake if our k was just updated.
+                    // We should send a warn if not already done.
+                }
+            }
+            LightMessage::FindNode(bucket, n) => {
+                self.kademlia_dht.find_node(bucket, *n);
+            }
+            LightMessage::FindValue(bucket, n) => {
+                self.kademlia_dht.find_value(bucket, *n);
+            }
+        }
         todo!()
     }
 }

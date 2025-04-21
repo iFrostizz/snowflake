@@ -405,7 +405,17 @@ pub struct StateSummaryAcceptResponse {
 }
 /// Nested message and enum types in `StateSummaryAcceptResponse`.
 pub mod state_summary_accept_response {
-    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+    #[derive(
+        Clone,
+        Copy,
+        Debug,
+        PartialEq,
+        Eq,
+        Hash,
+        PartialOrd,
+        Ord,
+        ::prost::Enumeration
+    )]
     #[repr(i32)]
     pub enum Mode {
         Unspecified = 0,

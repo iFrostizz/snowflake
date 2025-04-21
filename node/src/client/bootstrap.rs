@@ -44,7 +44,7 @@ impl Bootstrappers<'_> {
         node: &Arc<Node>,
         max_connections: usize,
         network_name: &str,
-    ) -> Vec<Result<(), NodeError>> {
+    ) -> Vec<Result<NodeId, NodeError>> {
         log::debug!("bootstrapping nodes");
 
         // TODO error handling
@@ -85,6 +85,7 @@ impl Bootstrappers<'_> {
                         },
                     )
                     .await
+                    .and_then(|_| Ok(node_id))
             });
         }
 

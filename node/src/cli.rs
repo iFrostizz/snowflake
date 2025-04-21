@@ -94,6 +94,9 @@ pub struct Args {
     /// RPC port
     #[arg(long, default_value_t = 9781)]
     pub rpc_port: u16,
+
+    #[arg(long, default_value_t = false)]
+    pub sync_headers: bool,
 }
 
 pub async fn read_args() -> Result<Args, NodeError> {

@@ -5,6 +5,7 @@ use crate::{
 };
 use flume::Sender;
 use proto_lib::p2p::{message::Message, Ping};
+use tokio::sync::oneshot;
 
 // TODO better name
 #[derive(Debug)]
@@ -36,20 +37,34 @@ impl PeerSender {
     /// Send a message that is supposed to receive an answer.
     // This function works by generating a random request_id and spawn a task that will timeout at the deadline if the response was not received.
     // These messages are: Get, GetAccepted, GetAcceptedFrontier, GetAcceptedStateSummary, GetAncestors, GetPeerList, GetStateSummaryFrontier, PushQuery, PullQuery, AppRequest
-    pub fn send_with_subscribe(
+    fn send_with_subscribe(
         &self,
         mail_tx: &Sender<Mail>,
         node_id: NodeId,
         message: SubscribableMessage,
+        callback: oneshot::Sender<Message>,
     ) -> Result<(), NodeError> {
+        // TODO: the node_id parameter feels a bit duplicated here, does it really makes sense?
         mail_tx
             .send(Mail {
                 node_id,
                 message: message.clone(),
+                callback,
             })
             .map_err(|_| NodeError::SendError)?;
 
         self.send(message.into())
+    }
+
+    pub fn send_and_response(
+        &self,
+        mail_tx: &Sender<Mail>,
+        node_id: NodeId,
+        message: SubscribableMessage,
+    ) -> Result<oneshot::Receiver<Message>, NodeError> {
+        let (tx, rx) = oneshot::channel();
+        self.send_with_subscribe(mail_tx, node_id, message, tx)?;
+        Ok(rx)
     }
 }
 

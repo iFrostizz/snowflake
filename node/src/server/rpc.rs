@@ -69,8 +69,10 @@ mod rpc_impl {
     use jsonrpsee::core::{async_trait, RpcResult};
     use jsonrpsee::proc_macros::rpc;
     use jsonrpsee::types::ErrorObject;
-    use serde::{Deserialize, Serialize};
+    use serde::de::{EnumAccess, Visitor};
+    use serde::{Deserialize, Deserializer, Serialize};
     use std::env;
+    use std::fmt::Formatter;
     use std::str::FromStr;
     use std::time::Instant;
 
@@ -97,7 +99,8 @@ mod rpc_impl {
         input: Vec<u8>,
     }
 
-    #[derive(Debug, Default, Serialize, Deserialize, Clone)]
+    #[derive(Debug, Default, Serialize, Clone)]
+    #[serde(rename_all = "lowercase")]
     pub enum BlockParameter {
         Number(u64),
         #[default]
@@ -106,6 +109,37 @@ mod rpc_impl {
         Pending,
         Safe,
         Finalized,
+    }
+
+    impl<'de> Deserialize<'de> for BlockParameter {
+        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+        where
+            D: Deserializer<'de>,
+        {
+            let variant = String::deserialize(deserializer)?;
+            if let Some(stripped) = variant.strip_prefix("0x") {
+                let mut stripped = stripped.to_owned();
+                if stripped.len() % 2 != 0 {
+                    stripped = "0".to_owned() + &*stripped;
+                }
+                let bytes = hex::decode(stripped).map_err(serde::de::Error::custom)?;
+                if bytes.len() > 8 {
+                    return Err(serde::de::Error::custom("too many bytes"));
+                }
+                let mut arr = [0; 8];
+                arr[8 - bytes.len()..].copy_from_slice(&bytes);
+                Ok(BlockParameter::Number(u64::from_be_bytes(arr)))
+            } else {
+                match variant.as_str() {
+                    "latest" => Ok(BlockParameter::Latest),
+                    "earliest" => Ok(BlockParameter::Earliest),
+                    "pending" => Ok(BlockParameter::Pending),
+                    "safe" => Ok(BlockParameter::Safe),
+                    "finalized" => Ok(BlockParameter::Finalized),
+                    _ => Err(serde::de::Error::custom("unknown block parameter")),
+                }
+            }
+        }
     }
 
     #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -309,6 +343,7 @@ mod rpc_impl {
         fn get_block_by_number(
             &self,
             block_parameter: BlockParameter,
+            full: bool,
         ) -> RpcResult<Option<BlockObject>>;
 
         #[method(name = "getTransaction_by_hash")]
@@ -519,7 +554,9 @@ mod rpc_impl {
         fn get_block_by_number(
             &self,
             _block_parameter: BlockParameter,
+            _full: bool,
         ) -> RpcResult<Option<BlockObject>> {
+            // self.network.
             not_implemented!()
         }
 

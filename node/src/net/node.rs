@@ -20,6 +20,7 @@ use indexmap::IndexMap;
 use openssl::x509;
 use prost::EncodeError;
 use proto_lib::p2p::{self};
+use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
@@ -42,6 +43,8 @@ pub enum NodeError {
     TcpConnection(#[from] std::io::Error),
     #[error("send error: all receivers have been dropped")]
     SendError,
+    #[error("recv error: all sender have been dropped")]
+    RecvError(#[from] oneshot::error::RecvError),
     #[error("error when decoding inbound message {0}")]
     Decoding(#[from] DecodingError),
     #[error("error when encoding outbound message {0}")]
@@ -149,6 +152,7 @@ impl Network {
         ));
 
         let handshake_semaphore = Arc::new(Semaphore::new(config.max_concurrent_handshakes));
+        let bootstrappers = RwLock::new(HashSet::new());
 
         Ok(Self {
             node_id,
@@ -157,11 +161,13 @@ impl Network {
             client,
             client_config,
             peers_infos: RwLock::new(IndexMap::new()),
+            bootstrappers,
             signed_ip,
             bloom_filter,
             public_key,
             node_pop,
             handshake_semaphore,
+            light_network: todo!(),
         })
     }
 
@@ -375,6 +381,7 @@ impl Network {
 
     pub fn can_add_peer(&self, node_id: &NodeId) -> bool {
         let peers_infos = self.peers_infos.read().unwrap();
-        !self.has_reached_max_peers(&peers_infos) && !peers_infos.contains_key(node_id)
+        self.bootstrappers.read().unwrap().contains(node_id)
+            || !self.has_reached_max_peers(&peers_infos) && !peers_infos.contains_key(node_id)
     }
 }

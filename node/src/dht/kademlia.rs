@@ -1,25 +1,46 @@
 use crate::dht::Bucket;
 use crate::id::NodeId;
 use std::collections::HashMap;
-use std::ops::Deref;
+use std::hash::Hash;
+use std::sync::RwLock;
 
-#[derive(Debug)]
-pub struct KademliaDht {
-    store: HashMap<Bucket, Vec<u8>>,
+pub trait LockedMapDb<K, V> {
+    fn insert(&self, key: K, value: V) -> Option<V>;
+    fn get(&self, key: &K) -> Option<V>;
+}
+
+impl<K, V> LockedMapDb<K, V> for RwLock<HashMap<K, V>>
+where
+    K: Eq + Hash, V: Clone
+{
+    fn insert(&self, key: K, value: V) -> Option<V> {
+        self.write().unwrap().insert(key, value)
+    }
+
+    fn get(&self, key: &K) -> Option<V> {
+        self.read().unwrap().get(key).cloned()
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct KademliaDht<V, DB: LockedMapDb<Bucket, V>> {
+    store: DB,
     nodes: Vec<NodeId>,
+    _marker: std::marker::PhantomData<V>,
 }
 
 #[derive(Debug, Eq, PartialEq)]
-pub enum ValueOrNodes {
-    Value(Vec<u8>),
+pub enum ValueOrNodes<V> {
+    Value(V),
     Nodes(Vec<NodeId>),
 }
 
-impl KademliaDht {
-    pub fn new(nodes: Vec<NodeId>) -> Self {
+impl<V, DB: LockedMapDb<Bucket, V>> KademliaDht<V, DB> {
+    pub fn new(nodes: Vec<NodeId>, store: DB) -> Self {
         Self {
-            store: HashMap::new(),
+            store,
             nodes,
+            _marker: Default::default(),
         }
     }
 
@@ -27,7 +48,7 @@ impl KademliaDht {
         a ^ b
     }
 
-    pub fn store(&mut self, key: Bucket, value: Vec<u8>) -> Option<Vec<u8>> {
+    pub fn store(&self, key: Bucket, value: V) -> Option<V> {
         self.store.insert(key, value)
     }
 
@@ -65,9 +86,9 @@ impl KademliaDht {
 
     /// Find up to `n` unique nodes that are the closest to the `bucket` or return the value
     /// if it is in the store.
-    pub fn find_value(&self, bucket: &Bucket, n: usize) -> ValueOrNodes {
+    pub fn find_value(&self, bucket: &Bucket, n: usize) -> ValueOrNodes<V> {
         if let Some(value) = self.store.get(bucket) {
-            return ValueOrNodes::Value(value.clone());
+            return ValueOrNodes::Value(value);
         }
 
         let nodes = self.find_node(bucket, n);
@@ -111,7 +132,7 @@ mod tests {
             .into_iter()
             .map(extend_to_node_id)
             .collect::<Vec<_>>();
-        let dht = KademliaDht::new(node_ids);
+        let dht: KademliaDht<(), RwLock<HashMap<Bucket, ()>>> = KademliaDht::new(node_ids, RwLock::new(HashMap::new()));
         let closest = dht.find_node(&extend_to_bucket(buckets[4]), 3);
         assert_eq!(closest.len(), 3);
         assert_eq!(
@@ -126,7 +147,7 @@ mod tests {
 
     #[test]
     fn find_value() {
-        let mut dht = KademliaDht::new(vec![]);
+        let dht = KademliaDht::new(vec![], RwLock::new(HashMap::new()));
         let key = [5, 6];
         let value = vec![1, 2, 3, 4];
 

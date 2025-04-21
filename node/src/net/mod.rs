@@ -3,6 +3,7 @@ use crate::message::{mail_box::MailBox, pipeline::Pipeline, MiniMessage, Subscri
 use crate::net::{
     ip::SignedIp,
     node::{NetworkConfig, NodeError},
+    light::LightNetwork
 };
 use crate::server::{
     msg::InboundMessage,
@@ -18,6 +19,7 @@ use ripemd::Digest;
 use rustls::ClientConfig;
 use rustls_pki_types::ServerName;
 use sha2::Sha256;
+use std::collections::HashSet;
 use std::io::BufReader;
 use std::net::SocketAddr;
 use std::sync::{Arc, RwLock};
@@ -31,6 +33,7 @@ pub mod ip;
 pub mod latency;
 pub mod node;
 pub mod queue;
+pub mod light;
 
 #[derive(Debug)]
 pub struct BackoffParams {
@@ -62,12 +65,14 @@ pub struct Network {
     pub client_config: Arc<ClientConfig>,
     /// All peers discovered by the node
     pub peers_infos: RwLock<IndexMap<NodeId, PeerInfo>>, // TODO can we find a way to do it lock-less ?
+    pub bootstrappers: RwLock<HashSet<NodeId>>,
     pub out_pipeline: Arc<Pipeline>,
     /// The canonically sorted validators map
     pub bloom_filter: RwLock<Filter>,
     pub public_key: [u8; Bls::PUBLIC_KEY_BYTES],
     pub node_pop: Vec<u8>,
     pub handshake_semaphore: Arc<Semaphore>,
+    pub light_network: LightNetwork,
 }
 
 /// Intervals of operations in milliseconds
@@ -103,7 +108,7 @@ impl HandshakeInfos {
     }
 }
 
-/// A peer bi-directional connection. It can either be initiated by the node or by a distant peer.
+/// A peer bidirectional connection. It can either be initiated by the node or by a distant peer.
 #[derive(Debug)]
 pub struct Peer {
     pub node_id: NodeId,
@@ -232,7 +237,7 @@ impl Peer {
         }
 
         if let Some(request_id) = SubscribableMessage::response_request_id(&decoded) {
-            mail_box.mark_mail_received(node_id, request_id)
+            mail_box.mark_mail_received(node_id, request_id, decoded.clone())
         } else {
             None
         };
