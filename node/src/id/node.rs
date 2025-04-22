@@ -88,11 +88,11 @@ impl NodeId {
     pub fn from_cert(cert: Vec<u8>) -> Self {
         let mut hasher = <Sha256 as Digest>::new();
         hasher.update(cert);
-        let inner = hasher.finalize();
+        let inner = dbg!(hasher.finalize());
 
         let mut hasher = <Ripemd160 as Digest>::new();
         hasher.update(inner);
-        let node_id = hasher.finalize();
+        let node_id = dbg!(hasher.finalize());
 
         let mut fixed_node_id = [0; Self::LEN];
         fixed_node_id.copy_from_slice(&node_id);
@@ -112,6 +112,17 @@ mod tests {
     use openssl::x509;
 
     use super::NodeId;
+
+    #[test]
+    fn node_id_aaa() {
+        let bytes = include_bytes!("../../../staker.crt");
+        let x509 = x509::X509::from_pem(bytes).unwrap();
+        let cert = x509.to_der().unwrap();
+        dbg!(cert.len());
+        dbg!(&hex::encode(&cert));
+        let node_id = NodeId::from_cert(cert.to_vec());
+        assert_eq!(node_id.to_string(), "NodeID-aaa");
+    }
 
     #[test]
     fn node_id_conversion() {

@@ -161,7 +161,7 @@ mod tests {
             .collect::<Vec<_>>();
         let dht: KademliaDht<(), RwLock<HashMap<Bucket, ()>>> =
             KademliaDht::new(node_ids, RwLock::new(HashMap::new()));
-        let closest = dht.find_node(&extend_to_bucket(buckets[4]), 3);
+        let closest = dht.find_node(&extend_to_bucket(buckets[4]));
         assert_eq!(closest.len(), 3);
         assert_eq!(
             closest.into_iter().collect::<HashSet<_>>(),
@@ -181,10 +181,10 @@ mod tests {
 
         let uint_key = extend_to_bucket(key);
         assert!(matches!(
-            dht.find_value(&uint_key, 0),
+            dht.find_value(&uint_key),
             ValueOrNodes::Nodes(_)
         ));
         dht.store(uint_key, value.clone());
-        assert_eq!(dht.find_value(&uint_key, 0), ValueOrNodes::Value(value));
+        assert_eq!(dht.find_value(&uint_key), ValueOrNodes::Value(value));
     }
 }

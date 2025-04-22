@@ -69,10 +69,8 @@ mod rpc_impl {
     use jsonrpsee::core::{async_trait, RpcResult};
     use jsonrpsee::proc_macros::rpc;
     use jsonrpsee::types::ErrorObject;
-    use serde::de::{EnumAccess, Visitor};
     use serde::{Deserialize, Deserializer, Serialize};
     use std::env;
-    use std::fmt::Formatter;
     use std::str::FromStr;
     use std::time::Instant;
 
@@ -738,6 +736,7 @@ mod tests {
                 bucket_size: 0,
                 max_concurrent_handshakes: 0,
                 max_peers: None,
+                bootstrappers: vec![],
             })
             .unwrap(),
         );
