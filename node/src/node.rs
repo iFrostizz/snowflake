@@ -448,22 +448,6 @@ impl Node {
         }
     }
 
-    pub async fn start_light(self: Arc<Node>, bootstrappers: Vec<NodeId>, sync_headers: bool) {
-        todo!();
-        // *self.network.bootstrappers.write().unwrap() = bootstrappers.into_iter().collect();
-        // let mut store = HashMap::new();
-        // let mut dht = DhtBlocks::new(
-        //     self.network.node_id,
-        //     Bucket::from(10),
-        //     KademliaDht::new(vec![], store),
-        // );
-        // if sync_headers {
-        //     tokio::spawn(async move {
-        //         dht.sync_headers(self).await;
-        //     });
-        // }
-    }
-
     fn manage_inner_message(
         self: &Arc<Node>,
         node_id: &NodeId,
@@ -826,7 +810,7 @@ impl Node {
                 let available_peers: HashSet<_> = peers.keys().collect();
                 let bootstrappers = self.network.bootstrappers.read().unwrap();
                 let bootstrappers: HashSet<_> = bootstrappers.iter().collect();
-                let mut inter: Vec<_> = bootstrappers.intersection(&available_peers).collect();
+                let inter: Vec<_> = bootstrappers.intersection(&available_peers).collect();
                 if inter.is_empty() {
                     None
                 } else {

@@ -1,5 +1,4 @@
 use crate::client::bootstrap::Bootstrappers;
-use crate::id::NodeId;
 use crate::net::node::NodeError;
 use crate::node::Node;
 use std::path::Path;
@@ -14,7 +13,7 @@ pub async fn start(
     bootstrappers_path: &Path,
     max_connections: usize,
     network_name: &str,
-) -> Result<Vec<NodeId>, NodeError> {
+) -> Result<(), NodeError> {
     // TODO we need tracing to have these function-level logs
     log::debug!("starting client");
 
@@ -23,12 +22,10 @@ pub async fn start(
         .bootstrap_all(node, max_connections, network_name)
         .await;
     let bootstrapped = res.len();
-    let (oks, errs): (Vec<_>, Vec<_>) = res.into_iter().partition(Result::is_ok);
-    let node_ids: Vec<_> = oks.into_iter().map(Result::unwrap).collect();
-    let errs: Vec<_> = errs.into_iter().map(Result::unwrap_err).collect();
+    let errs: Vec<_> = res.into_iter().filter_map(Result::err).collect();
     if !errs.is_empty() && errs.len() == bootstrapped {
         return Err(NodeError::Bootstrap(errs));
     }
 
-    Ok(node_ids)
+    Ok(())
 }
