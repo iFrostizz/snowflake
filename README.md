@@ -57,3 +57,10 @@
 | eth_getFilterChanges                    | ❌         |
 | eth_getFilterLogs                       | ❌         |
 | eth_getLogs                             | ❌         |
+
+# Development
+## Testing
+### Docker
+```sh
+docker compose -f docker/docker-compose.yml up
+```

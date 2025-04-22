@@ -1,11 +1,13 @@
 #!/bin/bash
-set -e
+set -ex
 
 # Create keypair
 make keys
 
+PORT=$((3000 + RANDOM))
+
 # Derive NodeID from staker.crt
-NODE_ID=$(cargo run -- get-node-id --cert staker.crt)
+NODE_ID=$(bash ./docker/get_node_id.sh staker.crt)
 
 # Use hostname to get a unique ID
 PEER_ID=$(hostname | grep -oE '[0-9]+')
@@ -24,4 +26,4 @@ while [ ! -f /shared/peers.json ]; do
 done
 
 # Start the app
-cargo run -- --port $PORT --peers /shared/peers.json
+cargo run -- --http-port $PORT # --peers /shared/peers.json

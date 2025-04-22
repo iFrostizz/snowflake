@@ -1,0 +1,46 @@
+volumes:
+  snowflake:
+
+services:
+  snowflake:
+    build:
+      context: ../
+      dockerfile: docker/Dockerfile
+    image: snowflake:latest
+
+  bootstrap:
+    container_name: bootstrap
+    image: snowflake:latest
+    volumes:
+      - snowflake:/shared
+    entrypoint:
+      - /bin/bash
+      - ./docker/bootstrap.sh
+
+  peer1:
+    container_name: peer1
+    image: snowflake:latest
+    hostname: peer1
+    volumes:
+      - snowflake:/shared
+    depends_on:
+      - bootstrap
+
+  peer2:
+    container_name: peer2
+    image: snowflake:latest
+    hostname: peer2
+    volumes:
+      - snowflake:/shared
+    depends_on:
+      - bootstrap
+
+  peer3:
+    container_name: peer3
+    image: snowflake:latest
+    hostname: peer3
+    volumes:
+      - snowflake:/shared
+    depends_on:
+      - bootstrap
+

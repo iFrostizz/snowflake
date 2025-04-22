@@ -1,5 +1,5 @@
 #!/bin/bash
-set -e
+set -ex
 
 EXPECTED_PEERS=3
 PEER_DIR=/shared/peer-info
