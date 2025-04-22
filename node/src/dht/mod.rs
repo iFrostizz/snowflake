@@ -4,7 +4,13 @@ pub mod kademlia;
 use crate::dht::kademlia::{KademliaDht, LockedMapDb, ValueOrNodes};
 use crate::id::NodeId;
 use ruint::Uint;
+use serde::Deserialize;
 use std::cmp::Ordering;
+
+#[derive(Debug, Clone, Eq, Deserialize, PartialEq)]
+pub struct DhtBuckets {
+    pub block: Bucket,
+}
 
 pub type Bucket = Uint<160, 3>;
 

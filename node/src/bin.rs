@@ -67,6 +67,7 @@ async fn main() -> Result<(), NodeError> {
         client::start(
             &node,
             &args.bootstrappers_path,
+            &args.light_bootstrappers_path,
             args.max_out_connections,
             &args.network_id.to_string(),
         )

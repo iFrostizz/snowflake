@@ -1,3 +1,4 @@
+use crate::dht::DhtBuckets;
 use crate::dht::LightError;
 use crate::dht::{Bucket, DhtId, LightMessage, LightResult};
 use crate::id::{ChainId, NodeId};
@@ -26,7 +27,7 @@ use ripemd::Digest;
 use rustls::ClientConfig;
 use rustls_pki_types::ServerName;
 use sha2::Sha256;
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::io::BufReader;
 use std::net::SocketAddr;
 use std::sync::{Arc, RwLock};
@@ -73,14 +74,14 @@ pub struct Network {
     pub client_config: Arc<ClientConfig>,
     /// All peers discovered by the node
     pub peers_infos: RwLock<IndexMap<NodeId, PeerInfo>>, // TODO can we find a way to do it lock-less ?
-    pub light_peers: RwLock<IndexMap<NodeId, Bucket>>,
-    pub bootstrappers: RwLock<HashSet<NodeId>>,
+    pub bootstrappers: RwLock<HashMap<NodeId, Option<DhtBuckets>>>,
     pub out_pipeline: Arc<Pipeline>,
     /// The canonically sorted validators map
     pub bloom_filter: RwLock<Filter>,
     pub public_key: [u8; Bls::PUBLIC_KEY_BYTES],
     pub node_pop: Vec<u8>,
     pub handshake_semaphore: Arc<Semaphore>,
+    pub buckets: DhtBuckets,
 }
 
 /// Intervals of operations in milliseconds
@@ -397,6 +398,7 @@ impl Peer {
         light_message: sdk::light_message::Message,
     ) -> Result<(), NodeError> {
         let chain_id = c_chain_id.as_ref().to_vec();
+        log::info!("received light message {light_message:?}");
         let res = match light_message {
             sdk::light_message::Message::LightHandshake(LightHandshake { k }) => {
                 let bucket_arr: [u8; 20] = k

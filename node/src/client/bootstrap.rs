@@ -1,3 +1,4 @@
+use crate::dht::DhtBuckets;
 use crate::id::NodeId;
 use crate::net::{node::NodeError, queue::ConnectionData};
 use crate::node::Node;
@@ -18,6 +19,14 @@ pub struct Bootstrapper {
     pub ip: SocketAddr,
 }
 
+#[derive(Deserialize, Debug)]
+pub struct LightBootstrapper {
+    #[serde(deserialize_with = "string_to_node_id")]
+    pub id: NodeId,
+    pub ip: SocketAddr,
+    pub buckets: DhtBuckets,
+}
+
 fn string_to_node_id<'de, D>(de: D) -> Result<NodeId, D::Error>
 where
     D: Deserializer<'de>,
@@ -28,32 +37,76 @@ where
 }
 
 pub struct Bootstrappers<'a> {
-    pub path: &'a Path,
+    pub bootstrapper_path: &'a Path,
+    pub light_bootstrapper_path: &'a Path,
 }
 
 impl<'a> Bootstrappers<'a> {
-    pub fn new(bootstrapper_path: &'a Path) -> Self {
+    pub fn new(bootstrapper_path: &'a Path, light_bootstrapper_path: &'a Path) -> Self {
         Self {
-            path: bootstrapper_path,
+            bootstrapper_path,
+            light_bootstrapper_path,
         }
     }
 
     fn read_bootsrappers(&self) -> HashMap<String, Vec<Bootstrapper>> {
         let mut content = String::new();
-        let mut file = File::open(self.path).unwrap();
+        let mut file = File::open(self.bootstrapper_path).unwrap();
         File::read_to_string(&mut file, &mut content).unwrap();
         serde_json::from_str(&content).unwrap()
     }
 
-    pub fn bootstrappers(&self, network_name: &str) -> Vec<NodeId> {
+    fn read_light_bootsrappers(&self) -> HashMap<String, Vec<Bootstrapper>> {
+        // TODO here, handle a new type of bootstrapper with the dht buckets.
+        //   actually, no, these are announced on the handshake.
+        let mut content = String::new();
+        let mut file = File::open(self.light_bootstrapper_path).unwrap();
+        File::read_to_string(&mut file, &mut content).unwrap();
+        serde_json::from_str(&content).unwrap()
+    }
+
+    fn read_all_bootsrappers(&self) -> HashMap<String, Vec<Bootstrapper>> {
+        let mut content = String::new();
+        let mut file = File::open(self.bootstrapper_path).unwrap();
+        File::read_to_string(&mut file, &mut content).unwrap();
+        let mut bootstrappers: HashMap<String, Vec<Bootstrapper>> = serde_json::from_str(&content).unwrap();
+        
+        let mut content2 = String::new();
+        let mut file2 = File::open(self.light_bootstrapper_path).unwrap();
+        File::read_to_string(&mut file2, &mut content2).unwrap();
+        let light_bootstrappers: HashMap<String, Vec<Bootstrapper>> = serde_json::from_str(&content2).unwrap();
+        
+        bootstrappers.extend(light_bootstrappers);
+        bootstrappers
+    }
+
+    pub fn bootstrappers(&self, network_name: &str) -> HashMap<NodeId, Option<DhtBuckets>> {
         let bootstrappers = self.read_bootsrappers();
         let bootstrappers = bootstrappers
             .get(network_name)
             .expect("this network is not listed in the bootstrappers file");
-        bootstrappers
+        let mut ret: HashMap<_, _> = bootstrappers
             .iter()
-            .map(|bootstrapper| bootstrapper.id)
-            .collect()
+            .map(|bootstrapper| (bootstrapper.id, None))
+            .collect();
+        let light_bootstrappers = self.read_light_bootsrappers();
+        let light_bootstrappers = light_bootstrappers
+            .get(network_name)
+            .expect("this network is not listed in the bootstrappers file");
+        ret.extend(
+            light_bootstrappers
+                .iter()
+                .map(|bootstrapper| {
+                    (
+                        bootstrapper.id,
+                        Some(DhtBuckets {
+                            block: Default::default(),
+                        }),
+                    )
+                })
+                .collect::<HashMap<_, _>>(),
+        );
+        ret
     }
 
     pub async fn bootstrap_all(
@@ -65,7 +118,7 @@ impl<'a> Bootstrappers<'a> {
         log::debug!("bootstrapping nodes");
 
         // TODO error handling
-        let bootstrappers = self.read_bootsrappers();
+        let bootstrappers = self.read_all_bootsrappers();
         let bootstrappers = bootstrappers
             .get(network_name)
             .expect("this network is not listed in the bootstrappers file");

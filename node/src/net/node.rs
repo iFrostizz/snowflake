@@ -1,5 +1,5 @@
 use crate::client::config;
-use crate::dht::{LightMessage, LightResult};
+use crate::dht::{DhtBuckets, LightMessage, LightResult};
 use crate::id::{ChainId, NodeId};
 use crate::message::{mail_box::MailBox, pipeline::Pipeline, MiniMessage};
 use crate::net::{
@@ -22,8 +22,10 @@ use flume::{Receiver, Sender};
 use futures::future;
 use indexmap::IndexMap;
 use openssl::x509;
-use prost::EncodeError;
+use prost::{EncodeError, Message};
 use proto_lib::p2p::{self};
+use proto_lib::sdk::LightHandshake;
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
@@ -35,6 +37,8 @@ use tokio::sync::{broadcast, oneshot, Semaphore};
 use tokio::task::JoinHandle;
 use tokio::time::{self};
 use tokio_rustls::TlsStream;
+use proto_lib::sdk;
+use crate::server::msg::DELIMITER_LEN;
 
 #[derive(Error, Debug)]
 pub enum NodeError {
@@ -82,7 +86,8 @@ pub struct NetworkConfig {
     pub bucket_size: usize,
     pub max_concurrent_handshakes: usize,
     pub max_peers: Option<usize>,
-    pub bootstrappers: Vec<NodeId>,
+    pub bootstrappers: HashMap<NodeId, Option<DhtBuckets>>,
+    pub dht_buckets: DhtBuckets
 }
 
 #[derive(Debug)]
@@ -158,7 +163,9 @@ impl Network {
         ));
 
         let handshake_semaphore = Arc::new(Semaphore::new(config.max_concurrent_handshakes));
-        let bootstrappers = RwLock::new(config.bootstrappers.iter().copied().collect());
+        let bootstrappers = RwLock::new(config.bootstrappers.clone());
+
+        let buckets = config.dht_buckets.clone();
 
         Ok(Self {
             node_id,
@@ -167,13 +174,13 @@ impl Network {
             client,
             client_config,
             peers_infos: RwLock::new(IndexMap::new()),
-            light_peers: RwLock::new(IndexMap::new()),
             bootstrappers,
             signed_ip,
             bloom_filter,
             public_key,
             node_pop,
             handshake_semaphore,
+            buckets,
         })
     }
 
@@ -300,11 +307,14 @@ impl Network {
         let sleep = tokio::time::sleep(handshake_deadline);
         let network = self.clone();
 
+        // TODO instead of this, have a oneshot channel return back the handshake result.
+        //   This should be sent once the PeerMessage::NewPeer is received.
+        let sender = sender.clone();
         let hand_peer = tokio::spawn(async move {
             tokio::select! {
                 _ = sleep => {
                     // timeout, we might have received the handshake before though
-                    // TODO maybe use a loop to continuously check
+                    // TODO use a loop to continuously check for faster confirmation.
                     let peer_infos = network.peers_infos.read().unwrap();
                     if !peer_infos.get(&node_id).is_some_and(|peer| peer.handshook()) {
                         return Err(NodeError::Message("handshake expired".to_string()));
@@ -314,6 +324,9 @@ impl Network {
                     return Ok(())
                 }
             }
+
+            network.light_handshake(&sender)?;
+
             // the handshake was successful, the channel can still stop this thread remotely
             rx.recv().await.unwrap();
             Ok(())
@@ -346,6 +359,31 @@ impl Network {
         log::trace!("handshaking the peer");
         sender
             .send(p2p::message::Message::Handshake(handshake))
+            .map_err(|_| NodeError::SendError)
+    }
+
+    fn light_handshake(&self, sender: &PeerSender) -> Result<(), NodeError> {
+        let chain_id = self.config.c_chain_id.as_ref().to_vec();
+        let mut bytes = unsigned_varint::encode::u64_buffer();
+        let bytes = unsigned_varint::encode::u64(constants::SNOWFLAKE_HANDLER_ID, &mut bytes);
+        let mut app_bytes = bytes.to_vec();
+        let k = self.buckets.block;
+        let message = sdk::LightMessage {
+            message: Some(sdk::light_message::Message::LightHandshake(LightHandshake {
+                k: k.to_be_bytes_vec(),
+            }))
+        };
+        message.encode(&mut app_bytes)?;
+        let app_request = p2p::AppRequest {
+            chain_id,
+            request_id: rand::random(),
+            deadline: constants::DEFAULT_DEADLINE,
+            app_bytes,
+        };
+
+        sender
+            .send(p2p::message::Message::AppRequest(app_request))
+            // TODO include this variant in thiserror and watch all the dup lines being deleted!
             .map_err(|_| NodeError::SendError)
     }
 
@@ -389,8 +427,10 @@ impl Network {
     }
 
     pub fn can_add_peer(&self, node_id: &NodeId) -> bool {
+        if self.bootstrappers.read().unwrap().contains_key(node_id) {
+            return true;
+        }
         let peers_infos = self.peers_infos.read().unwrap();
-        self.bootstrappers.read().unwrap().contains(node_id)
-            || !self.has_reached_max_peers(&peers_infos) && !peers_infos.contains_key(node_id)
+        !peers_infos.contains_key(node_id) && !self.has_reached_max_peers(&peers_infos)
     }
 }

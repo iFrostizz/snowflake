@@ -180,10 +180,7 @@ mod tests {
         let value = vec![1, 2, 3, 4];
 
         let uint_key = extend_to_bucket(key);
-        assert!(matches!(
-            dht.find_value(&uint_key),
-            ValueOrNodes::Nodes(_)
-        ));
+        assert!(matches!(dht.find_value(&uint_key), ValueOrNodes::Nodes(_)));
         dht.store(uint_key, value.clone());
         assert_eq!(dht.find_value(&uint_key), ValueOrNodes::Value(value));
     }

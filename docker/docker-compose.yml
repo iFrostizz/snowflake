@@ -3,10 +3,12 @@ volumes:
 
 services:
   snowflake:
+    container_name: snowflake
     build:
       context: ../
       dockerfile: docker/Dockerfile
     image: snowflake:latest
+    entrypoint: /bin/true
 
   bootstrap:
     container_name: bootstrap
@@ -16,11 +18,18 @@ services:
     entrypoint:
       - /bin/bash
       - ./docker/bootstrap.sh
+    depends_on:
+      - snowflake
 
   peer1:
     container_name: peer1
+    build:
+      context: ../
+      dockerfile: docker/Dockerfile
     image: snowflake:latest
     hostname: peer1
+    ports:
+      - "3001:3001"
     volumes:
       - snowflake:/shared
     depends_on:
@@ -28,8 +37,13 @@ services:
 
   peer2:
     container_name: peer2
+    build:
+      context: ../
+      dockerfile: docker/Dockerfile
     image: snowflake:latest
     hostname: peer2
+    ports:
+      - "3002:3002"
     volumes:
       - snowflake:/shared
     depends_on:
@@ -37,8 +51,13 @@ services:
 
   peer3:
     container_name: peer3
+    build:
+      context: ../
+      dockerfile: docker/Dockerfile
     image: snowflake:latest
     hostname: peer3
+    ports:
+      - "3003:3003"
     volumes:
       - snowflake:/shared
     depends_on:

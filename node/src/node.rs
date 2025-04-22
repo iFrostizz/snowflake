@@ -35,6 +35,7 @@ use tokio::sync::{broadcast, OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinHandle;
 use tokio::time::{self};
 use tokio_rustls::TlsStream;
+use proto_lib::sdk;
 
 pub struct Node {
     pub(crate) network: Arc<Network>,
@@ -287,6 +288,17 @@ impl Node {
             }
         };
 
+        if self
+            .network
+            .bootstrappers
+            .read()
+            .unwrap()
+            .get(&node_id)
+            .is_some_and(Option::is_some)
+        {
+            // is a light bootstrapper, we need to initiate handshake.
+        }
+
         let mut tasks = vec![manage_peer, write_peer, read_peer, hand_peer];
 
         let sender = sender.clone();
@@ -490,25 +502,6 @@ impl Node {
                             let mut bloom_filter = self.network.bloom_filter.write().unwrap();
                             bloom_filter.feed(gossip_id); // we write it to the filter even if it fails to avoid always hearing about it
                             Self::regen_bloom_if_necessary(&peers, &mut bloom_filter);
-
-                            let chain_id = self.network.config.c_chain_id.as_ref().to_vec();
-                            let k = self.light_network.block_dht.k;
-                            let handshake = LightHandshake {
-                                k: k.to_be_bytes_vec(),
-                            };
-                            let mut bytes = unsigned_varint::encode::u64_buffer();
-                            let bytes = unsigned_varint::encode::u64(
-                                constants::SNOWFLAKE_HANDLER_ID,
-                                &mut bytes,
-                            );
-                            let mut app_bytes = bytes.to_vec();
-                            handshake.encode(&mut app_bytes).unwrap();
-                            let _ = sender.send(Message::AppRequest(AppRequest {
-                                chain_id,
-                                request_id: rand::random(),
-                                deadline: constants::DEFAULT_DEADLINE,
-                                app_bytes,
-                            }));
                         } else {
                             log::debug!("received NewPeer twice {}", node_id);
                         }
@@ -528,21 +521,11 @@ impl Node {
         let chain_id = self.network.config.c_chain_id.as_ref().to_vec();
         match message {
             LightPeerMessage::NewPeer { sender, k } => {
-                {
-                    let light_peers = self.network.light_peers.read().unwrap();
-                    if light_peers.contains_key(node_id) {
-                        log::debug!("discarding light duplicate handshake {node_id}");
-                        return;
-                    }
-                }
-                self.network
-                    .light_peers
-                    .write()
-                    .unwrap()
-                    .insert(*node_id, k);
                 let k = self.light_network.block_dht.k;
-                let handshake = LightHandshake {
-                    k: k.to_be_bytes_vec(),
+                let handshake = sdk::LightMessage {
+                    message: Some(sdk::light_message::Message::LightHandshake(LightHandshake {
+                        k: k.to_be_bytes_vec(),
+                    }))
                 };
                 // TODO this is duplicated code, we should refactor
                 let mut bytes = unsigned_varint::encode::u64_buffer();
@@ -809,7 +792,16 @@ impl Node {
                 let peers = self.network.peers_infos.read().unwrap();
                 let available_peers: HashSet<_> = peers.keys().collect();
                 let bootstrappers = self.network.bootstrappers.read().unwrap();
-                let bootstrappers: HashSet<_> = bootstrappers.iter().collect();
+                let bootstrappers: HashSet<_> = bootstrappers
+                    .iter()
+                    .filter_map(|(node_id, buckets)| {
+                        if buckets.is_none() {
+                            Some(node_id)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
                 let inter: Vec<_> = bootstrappers.intersection(&available_peers).collect();
                 if inter.is_empty() {
                     None
@@ -831,6 +823,7 @@ impl Node {
             let bootstrappers = self.network.bootstrappers.read().unwrap();
             bootstrappers
                 .iter()
+                .filter_map(|(node_id, buckets)| if buckets.is_none() { Some(node_id) } else { None })
                 .take(n_bootstrappers)
                 .copied()
                 .collect()
@@ -966,7 +959,7 @@ impl Node {
             err = None;
         }
 
-        let is_bootstrapper = self.network.bootstrappers.read().unwrap().contains(node_id);
+        let is_bootstrapper = self.network.bootstrappers.read().unwrap().contains_key(node_id);
         if !is_bootstrapper && remove_peer {
             self.network.remove_peers(&vec![(*node_id, err.as_ref())]);
         }

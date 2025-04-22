@@ -9,6 +9,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::{fmt::Display, time::Duration};
 use tokio::sync::Semaphore;
+use crate::dht::{Bucket, DhtBuckets};
 
 #[derive(clap::ValueEnum, Clone, Default, Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -55,6 +56,10 @@ pub struct Args {
     #[arg(long, default_value = "./bootstrappers.json")]
     pub bootstrappers_path: PathBuf,
 
+    /// Path of the light bootstrappers path in the .json format
+    #[arg(long, default_value = "./light_bootstrappers.json")]
+    pub light_bootstrappers_path: PathBuf,
+
     /// Network to operate on
     #[arg(short, long, default_value = "mainnet")]
     pub network_id: NetworkName,
@@ -98,6 +103,10 @@ pub struct Args {
 
     #[arg(long, default_value_t = false)]
     pub sync_headers: bool,
+
+    // TODO if sync-headers is true, then this should be the max.
+    #[arg(long, default_value_t = 100)]
+    pub block_dht_buckets: usize,
 }
 
 pub async fn read_args() -> Result<Args, NodeError> {
@@ -161,8 +170,11 @@ impl Args {
             bucket_size: 500_000,           // 500 kB
             max_concurrent_handshakes: self.max_handshakes,
             max_peers: self.max_peers,
-            bootstrappers: Bootstrappers::new(&self.bootstrappers_path)
+            bootstrappers: Bootstrappers::new(&self.bootstrappers_path, &self.light_bootstrappers_path)
                 .bootstrappers(&self.network_id.to_string()),
+            dht_buckets: DhtBuckets {
+                block: Bucket::try_from(self.block_dht_buckets).unwrap(),
+            }
         }
     }
 }
