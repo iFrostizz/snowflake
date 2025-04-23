@@ -1,10 +1,19 @@
-use crate::dht::Bucket;
-use crate::id::NodeId;
+use crate::dht::{Bucket, BucketDht, DhtBuckets, DhtId, LightError};
+use crate::id::{ChainId, NodeId};
+use crate::message::mail_box::Mail;
+use crate::message::SubscribableMessage;
+use crate::net::node::NodeError;
+use crate::server::peers::PeerInfo;
+use crate::utils::constants;
+use flume::Sender;
+use indexmap::IndexMap;
 use prost::Message;
-use proto_lib::sdk;
+use proto_lib::{p2p, sdk};
 use std::collections::HashMap;
 use std::hash::Hash;
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock, RwLockReadGuard};
+use tokio::task::JoinSet;
+use crate::server::msg::{InLightMessage2};
 
 pub trait LockedMapDb<K, V> {
     fn insert(&self, key: K, value: V) -> Option<V>;
@@ -25,11 +34,13 @@ where
     }
 }
 
-#[derive(Debug, Default)]
-pub struct KademliaDht<V, DB: LockedMapDb<Bucket, V>> {
-    store: DB,
-    nodes: Vec<NodeId>,
-    _marker: std::marker::PhantomData<V>,
+#[derive(Debug)]
+pub struct KademliaDht {
+    peers_infos: Arc<RwLock<IndexMap<NodeId, PeerInfo>>>,
+    light_peers: Arc<RwLock<HashMap<NodeId, DhtBuckets>>>,
+    mail_tx: Sender<Mail>,
+    chain_id: ChainId,
+    n: usize,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -42,7 +53,6 @@ impl ValueOrNodes<Vec<u8>> {
     pub fn encode(self, buf: &mut Vec<u8>) -> Result<(), prost::EncodeError> {
         match self {
             ValueOrNodes::Value(value) => sdk::Value::encode(&sdk::Value { value }, buf),
-
             ValueOrNodes::Nodes(nodes) => sdk::Nodes::encode(
                 &sdk::Nodes {
                     node_ids: nodes
@@ -56,12 +66,20 @@ impl ValueOrNodes<Vec<u8>> {
     }
 }
 
-impl<V, DB: LockedMapDb<Bucket, V>> KademliaDht<V, DB> {
-    pub fn new(nodes: Vec<NodeId>, store: DB) -> Self {
+impl KademliaDht {
+    pub fn new(
+        peers_infos: Arc<RwLock<IndexMap<NodeId, PeerInfo>>>,
+        light_peers: Arc<RwLock<HashMap<NodeId, DhtBuckets>>>,
+        mail_tx: Sender<Mail>,
+        chain_id: ChainId,
+        n: usize,
+    ) -> Self {
         Self {
-            store,
-            nodes,
-            _marker: Default::default(),
+            peers_infos,
+            light_peers,
+            mail_tx,
+            chain_id,
+            n,
         }
     }
 
@@ -69,29 +87,23 @@ impl<V, DB: LockedMapDb<Bucket, V>> KademliaDht<V, DB> {
         a ^ b
     }
 
-    pub fn store(&self, key: Bucket, value: V) -> Option<V> {
-        self.store.insert(key, value)
-    }
-
-    pub fn get(&self, key: &Bucket) -> Option<V> {
-        self.store.get(key)
-    }
-
     /// Find up to `n` unique nodes that are the closest to the `bucket`.
-    pub fn find_node(&self, bucket: &Bucket) -> Vec<NodeId> {
-        let mut n = 8; // TODO param
-
-        if self.nodes.is_empty() {
+    fn find_closest_nodes(
+        &self,
+        nodes: RwLockReadGuard<HashMap<NodeId, DhtBuckets>>,
+        bucket: &Bucket,
+        mut n: usize,
+    ) -> Vec<NodeId> {
+        if nodes.is_empty() {
             return vec![];
         }
 
-        if n >= self.nodes.len() {
-            n = self.nodes.len() - 1;
+        if n >= nodes.len() {
+            n = nodes.len() - 1;
         }
 
-        let distances: Vec<Bucket> = self
-            .nodes
-            .iter()
+        let distances: Vec<Bucket> = nodes
+            .keys()
             .map(|node_id| Self::distance(bucket, Bucket::from_be_bytes((*node_id).into())))
             .collect();
 
@@ -100,26 +112,115 @@ impl<V, DB: LockedMapDb<Bucket, V>> KademliaDht<V, DB> {
         let closest_buckets: Vec<_> = closest_buckets.to_vec();
 
         closest_buckets
-            .iter()
-            .map(|bucket| {
-                let i = distances
-                    .iter()
-                    .position(|sorted_bucket| bucket == sorted_bucket)
-                    .unwrap();
-                self.nodes[i]
-            })
+            .into_iter()
+            .map(|bucket| bucket.to_be_bytes().into())
             .collect()
     }
 
-    /// Find unique nodes that are the closest to the `bucket` or return the value
-    /// if it is in the store.
-    pub fn find_value(&self, bucket: &Bucket) -> ValueOrNodes<V> {
-        if let Some(value) = self.store.get(bucket) {
-            return ValueOrNodes::Value(value);
+    /// Find nodes that potentially hold the content at bucket because their k spans it
+    /// and complete the list with closest nodes.
+    fn find_content_and_closest_nodes(&self, dht_id: &DhtId, bucket: &Bucket) -> Vec<NodeId> {
+        let nodes = self.light_peers.read().unwrap();
+        let mut nodes_with_content: Vec<_> = nodes
+            .iter()
+            .filter_map(|(node_id, buckets)| {
+                let k = match dht_id {
+                    DhtId::Block => buckets.block,
+                    _ => todo!(),
+                };
+                let dht = BucketDht::new(*node_id, k);
+                if dht.is_desired_bucket(bucket) {
+                    Some(*node_id)
+                } else {
+                    None
+                }
+            })
+            .take(self.n)
+            .collect();
+        if nodes_with_content.len() < self.n {
+            let closest = self
+                .find_closest_nodes(nodes, bucket, self.n * 2)
+                .into_iter()
+                .take(self.n - nodes_with_content.len());
+            nodes_with_content.extend(closest);
+        }
+        nodes_with_content
+    }
+
+    /// Find up to `n` unique nodes that are the closest to the `bucket`.
+    pub fn find_node(&self, bucket: &Bucket) -> Vec<NodeId> {
+        let nodes = self.light_peers.read().unwrap();
+        self.find_closest_nodes(nodes, bucket, self.n)
+    }
+
+    pub async fn search_value(
+        &self,
+        dht_id: DhtId,
+        bucket: &Bucket,
+    ) -> Result<Vec<u8>, LightError> {
+        // TODO should allow to exclude already-queried nodes in the find_content_and_closest_nodes function
+        let mut set = JoinSet::new();
+
+        {
+            let nodes = self.find_content_and_closest_nodes(&dht_id, bucket);
+            let peers_infos = self.peers_infos.read().unwrap();
+
+            for node_id in nodes {
+                if let Some(info) = peers_infos.get(&node_id) {
+                    let sender = info.sender.clone();
+                    let chain_id = self.chain_id.as_ref().to_vec();
+                    let mut bytes = unsigned_varint::encode::u64_buffer();
+                    let bytes =
+                        unsigned_varint::encode::u64(constants::SNOWFLAKE_HANDLER_ID, &mut bytes);
+                    let mut app_bytes = bytes.to_vec();
+                    let dht: u32 = (&dht_id).into();
+                    let bucket = bucket.to_be_bytes::<20>().to_vec();
+                    let find_value = sdk::FindValue { dht, bucket };
+                    find_value.encode(&mut app_bytes).expect("should not fail");
+                    let message = p2p::AppRequest {
+                        chain_id,
+                        request_id: rand::random(),
+                        deadline: constants::DEFAULT_DEADLINE,
+                        app_bytes,
+                    };
+                    let mail_tx = self.mail_tx.clone();
+                    set.spawn(async move {
+                        let handle = sender.send_and_response(
+                            &mail_tx,
+                            node_id,
+                            SubscribableMessage::AppRequest(message),
+                        )?;
+                        Result::<p2p::message::Message, NodeError>::Ok(handle.await?)
+                    });
+                }
+            }
         }
 
-        let nodes = self.find_node(bucket);
-        ValueOrNodes::Nodes(nodes)
+        while let Some(result) = set.join_next().await {
+            let Ok(Ok(p2p::message::Message::AppResponse(response))) = result else {
+                continue;
+            };
+            if response.chain_id != self.chain_id.as_ref().to_vec() {
+                continue;
+            }
+            let Ok(light_message) = InLightMessage2::decode(&response.app_bytes) else {
+                continue;
+            };
+            match light_message {
+                sdk::light_response::Message::Value(sdk::Value { value }) => {
+                    return Ok(value);
+                }
+                sdk::light_response::Message::Nodes(sdk::Nodes {node_ids}) => {
+                    // recursively search value
+                    todo!()
+                }
+                sdk::light_response::Message::Ack(_) => {
+                    continue;
+                }
+            }
+        }
+
+        todo!()
     }
 }
 
@@ -159,8 +260,7 @@ mod tests {
             .into_iter()
             .map(extend_to_node_id)
             .collect::<Vec<_>>();
-        let dht: KademliaDht<(), RwLock<HashMap<Bucket, ()>>> =
-            KademliaDht::new(node_ids, RwLock::new(HashMap::new()));
+        let dht: KademliaDht = KademliaDht::new(node_ids, 3);
         let closest = dht.find_node(&extend_to_bucket(buckets[4]));
         assert_eq!(closest.len(), 3);
         assert_eq!(
@@ -175,7 +275,7 @@ mod tests {
 
     #[test]
     fn find_value() {
-        let dht = KademliaDht::new(vec![], RwLock::new(HashMap::new()));
+        let dht = KademliaDht::new(vec![], 3);
         let key = [5, 6];
         let value = vec![1, 2, 3, 4];
 

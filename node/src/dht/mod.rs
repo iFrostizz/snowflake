@@ -1,7 +1,7 @@
 pub mod block;
 pub mod kademlia;
 
-use crate::dht::kademlia::{KademliaDht, LockedMapDb, ValueOrNodes};
+use crate::dht::kademlia::{LockedMapDb, ValueOrNodes};
 use crate::id::NodeId;
 use ruint::Uint;
 use serde::Deserialize;
@@ -15,27 +15,25 @@ pub struct DhtBuckets {
 pub type Bucket = Uint<160, 3>;
 
 pub trait ConcreteDht<K> {
+    fn id() -> DhtId;
     fn key_to_bucket(val: K) -> Bucket;
 }
 
 #[derive(Debug)]
-pub struct Dht<DB: LockedMapDb<Bucket, Vec<u8>>> {
-    pub k: Bucket,
+struct BucketDht {
+    k: Bucket,
     bucket_lo: Bucket,
     bucket_hi: Bucket,
-    pub kademlia_dht: KademliaDht<Vec<u8>, DB>,
 }
 
-impl<DB: LockedMapDb<Bucket, Vec<u8>>> Dht<DB> {
-    pub(crate) fn new(node_id: NodeId, k: Bucket, kademlia_dht: KademliaDht<Vec<u8>, DB>) -> Self {
-        let arr: [u8; 20] = node_id.into();
-        let bucket = Bucket::from_be_bytes(arr);
+impl BucketDht {
+    pub(crate) fn new(node_id: NodeId, k: Bucket) -> Self {
+        let bucket = Bucket::from_be_bytes(node_id.into());
         let (bucket_lo, bucket_hi) = (bucket.wrapping_sub(k), bucket.wrapping_add(k));
         Self {
             k,
             bucket_lo,
             bucket_hi,
-            kademlia_dht,
         }
     }
 
@@ -54,6 +52,28 @@ impl<DB: LockedMapDb<Bucket, Vec<u8>>> Dht<DB> {
     }
 }
 
+#[derive(Debug)]
+pub struct Dht<DB: LockedMapDb<Bucket, Vec<u8>>> {
+    bucket_dht: BucketDht,
+    pub store: DB,
+}
+
+impl<DB: LockedMapDb<Bucket, Vec<u8>>> Dht<DB> {
+    pub(crate) fn new(node_id: NodeId, k: Bucket, store: DB) -> Self {
+        let bucket_dht = BucketDht::new(node_id, k);
+        Self { bucket_dht, store }
+    }
+
+    pub fn is_desired_bucket(&self, bucket: &Bucket) -> bool {
+        self.bucket_dht.is_desired_bucket(bucket)
+    }
+
+    pub fn k(&self) -> Bucket {
+        self.bucket_dht.k
+    }
+}
+
+#[derive(Debug)]
 pub enum DhtId {
     Block,
     State,
@@ -68,35 +88,74 @@ impl From<u32> for DhtId {
     }
 }
 
+impl From<&DhtId> for u32 {
+    fn from(value: &DhtId) -> Self {
+        match value {
+            DhtId::Block => 0,
+            _ => unimplemented!(),
+        }
+    }
+}
+
 pub enum LightMessage {
     Store(DhtId, Vec<u8>),
-    FindNode(DhtId, Bucket),
+    FindNode(Bucket),
     FindValue(DhtId, Bucket),
 }
 
+#[derive(Debug)]
 pub struct LightError {
     pub code: i32,
-    pub message: String,
+    pub message: &'static str,
 }
 
-pub type LightResult = Result<Option<ValueOrNodes<Vec<u8>>>, LightError>;
+pub mod light_errors {
+    use super::LightError;
 
+    pub(crate) const CONTENT_NOT_FOUND: LightError = LightError {
+        code: 1,
+        message: "Content not found",
+    };
+    pub(crate) const DECODING_FAILED: LightError = LightError {
+        code: 2,
+        message: "Invalid encoded value",
+    };
+    pub(crate) const UNDESIRED_BUCKET: LightError = LightError {
+        code: 3,
+        message: "This bucket is not desired",
+    };
+    pub(crate) const INVALID_DHT: LightError = LightError {
+        code: 4,
+        message: "Unimplemented dht",
+    };
+}
+
+pub enum LightValue<T = Vec<u8>> {
+    Ok,
+    ValueOrNodes(ValueOrNodes<T>),
+}
+
+pub type LightResult<T = Vec<u8>> = Result<LightValue<T>, LightError>;
+
+// TODO refactor into another trait
 pub trait Task {
-    fn store(&self, value: Vec<u8>) -> LightResult;
-    fn find_node(&self, bucket: Bucket) -> LightResult;
-    fn find_value(&self, bucket: Bucket) -> LightResult;
+    fn store(&self, value: Vec<u8>) -> Result<(), LightError>;
+}
+
+/// Definition of the Kademlia protocol.
+/// Recursively query the DHT to find content or nodes.
+/// For external use only.
+pub trait Kademlia {
+    async fn find_node(&self, bucket: Bucket) -> Vec<NodeId>;
+    async fn find_value(&self, bucket: Bucket) -> LightResult;
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
-    use std::sync::RwLock;
 
     #[test]
     fn dht_buckets() {
-        type MyDht = Dht<RwLock<HashMap<Bucket, Vec<u8>>>>;
-
         let num_to_bucket = |num: u16| -> Bucket {
             let mut arr: [u8; 20] = [0; 20];
             arr[18..].copy_from_slice(&num.to_be_bytes());
@@ -109,7 +168,7 @@ mod tests {
             arr
         };
 
-        let dht = MyDht::new(NodeId::default(), num_to_bucket(8), Default::default());
+        let dht = BucketDht::new(NodeId::default(), num_to_bucket(8));
         let (lo, hi) = dht.bucket_range();
         assert_eq!(lo, &Bucket::from_be_bytes(bytes_with_last(0xff, 0xf8)));
         assert_eq!(hi, &Bucket::from_be_bytes(bytes_with_last(0, 8)));
@@ -119,7 +178,7 @@ mod tests {
         assert!(dht.is_desired_bucket(&Bucket::from_be_bytes([0xff; 20])));
         assert!(!dht.is_desired_bucket(&num_to_bucket(16)));
 
-        let dht = MyDht::new(NodeId::default(), Bucket::ZERO, Default::default());
+        let dht = BucketDht::new(NodeId::default(), Bucket::ZERO);
         let (lo, hi) = dht.bucket_range();
         assert_eq!(lo, &Bucket::from_be_bytes([0; 20]));
         assert_eq!(lo, hi);
@@ -127,11 +186,7 @@ mod tests {
         assert!(!dht.is_desired_bucket(&Bucket::from_be_bytes([0xff; 20])));
         assert!(!dht.is_desired_bucket(&num_to_bucket(1)));
 
-        let dht = MyDht::new(
-            NodeId::from(bytes_with_last(0, 8)),
-            num_to_bucket(8),
-            Default::default(),
-        );
+        let dht = BucketDht::new(NodeId::from(bytes_with_last(0, 8)), num_to_bucket(8));
         let (lo, hi) = dht.bucket_range();
         assert_eq!(lo, &Bucket::from_be_bytes([0; 20]));
         assert_eq!(hi, &Bucket::from_be_bytes(bytes_with_last(0, 16)));

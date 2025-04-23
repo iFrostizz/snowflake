@@ -69,13 +69,15 @@ impl<'a> Bootstrappers<'a> {
         let mut content = String::new();
         let mut file = File::open(self.bootstrapper_path).unwrap();
         File::read_to_string(&mut file, &mut content).unwrap();
-        let mut bootstrappers: HashMap<String, Vec<Bootstrapper>> = serde_json::from_str(&content).unwrap();
-        
+        let mut bootstrappers: HashMap<String, Vec<Bootstrapper>> =
+            serde_json::from_str(&content).unwrap();
+
         let mut content2 = String::new();
         let mut file2 = File::open(self.light_bootstrapper_path).unwrap();
         File::read_to_string(&mut file2, &mut content2).unwrap();
-        let light_bootstrappers: HashMap<String, Vec<Bootstrapper>> = serde_json::from_str(&content2).unwrap();
-        
+        let light_bootstrappers: HashMap<String, Vec<Bootstrapper>> =
+            serde_json::from_str(&content2).unwrap();
+
         bootstrappers.extend(light_bootstrappers);
         bootstrappers
     }

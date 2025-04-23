@@ -1,33 +1,47 @@
 use crate::dht::block::DhtBlocks;
-use crate::dht::kademlia::KademliaDht;
-use crate::dht::{Bucket, ConcreteDht, DhtId, LightMessage, LightResult, Task};
-use crate::id::NodeId;
+use crate::dht::kademlia::{KademliaDht, LockedMapDb, ValueOrNodes};
+use crate::dht::{light_errors, DhtBuckets, LightValue};
+use crate::dht::{Bucket, ConcreteDht, DhtId, Kademlia, LightMessage, LightResult, Task};
+use crate::id::{ChainId, NodeId};
+use crate::message::mail_box::Mail;
 use crate::net::node::NodeError;
+use crate::net::LightError;
 use crate::net::RwLock;
 use crate::node::Node;
+use crate::server::peers::PeerInfo;
 use crate::utils::rlp::Block;
 use crate::utils::unpacker::StatelessBlock;
 use crate::Arc;
+use flume::Sender;
+use indexmap::IndexMap;
 use std::collections::HashMap;
 use tokio::sync::broadcast;
 use tokio::sync::oneshot;
 
 #[derive(Debug)]
 pub struct LightNetwork {
+    pub kademlia_dht: KademliaDht,
     pub block_dht: Arc<DhtBlocks>,
+    pub light_peers: Arc<RwLock<HashMap<NodeId, DhtBuckets>>>,
     sync_headers: bool,
 }
 
 impl LightNetwork {
-    pub fn new(node_id: NodeId, sync_headers: bool) -> Self {
+    pub fn new(
+        node_id: NodeId,
+        peer_infos: Arc<RwLock<IndexMap<NodeId, PeerInfo>>>,
+        mail_tx: Sender<Mail>,
+        chain_id: ChainId,
+        sync_headers: bool,
+    ) -> Self {
         let store = RwLock::new(HashMap::new());
-        let block_dht = Arc::new(DhtBlocks::new(
-            node_id,
-            Bucket::from(10),
-            KademliaDht::new(vec![], store),
-        ));
+        let block_dht = Arc::new(DhtBlocks::new(node_id, Bucket::from(10), store));
+        let light_peers = Arc::new(RwLock::new(Default::default()));
+        let kademlia_dht = KademliaDht::new(peer_infos, light_peers.clone(), mail_tx, chain_id, 10);
         Self {
+            kademlia_dht,
             block_dht,
+            light_peers,
             sync_headers,
         }
     }
@@ -38,24 +52,12 @@ impl LightNetwork {
         mut rx: broadcast::Receiver<()>,
     ) -> Result<(), NodeError> {
         if self.sync_headers {
-            let mut block_dht = self.block_dht.clone();
+            let block_dht = self.block_dht.clone();
             let rx = rx.resubscribe();
             tokio::spawn(async move {
                 block_dht.sync_headers(node, rx).await;
             });
         }
-
-        // let (tx_light_message, rx_light_message) = flume::unbounded();
-
-        // TODO listen to light messages
-        // loop {
-        //     tokio::select! {
-        //         // message = rx_light_message.recv_async() => {},
-        //         _ = rx.recv() => {
-        //             return Ok(())
-        //         }
-        //     }
-        // }
 
         let _ = rx.recv().await;
         Ok(())
@@ -64,48 +66,104 @@ impl LightNetwork {
     pub fn manage_message(&self, message: LightMessage, resp: oneshot::Sender<LightResult>) {
         let res = match message {
             LightMessage::Store(dht_id, value) => match dht_id {
-                DhtId::Block => self.block_dht.store(value),
-                _ => unimplemented!(),
+                DhtId::Block => self.block_dht.store(value).map(|_| LightValue::Ok),
+                _ => Err(light_errors::INVALID_DHT),
             },
-            LightMessage::FindNode(dht_id, bucket) => match dht_id {
-                DhtId::Block => self.block_dht.find_node(bucket),
-                _ => unimplemented!(),
-            },
+            LightMessage::FindNode(bucket) => Ok(LightValue::ValueOrNodes(ValueOrNodes::Nodes(
+                self.find_node(&bucket),
+            ))),
             LightMessage::FindValue(dht_id, bucket) => match dht_id {
-                DhtId::Block => self.block_dht.find_value(bucket),
-                _ => unimplemented!(),
+                DhtId::Block => self.find_value(&self.block_dht, &bucket),
+                _ => Err(light_errors::INVALID_DHT),
             },
         };
 
         let _ = resp.send(res);
     }
 
-    async fn find_value<V>(&self, bucket: &Bucket) -> Result<V, ()> {
-        // TODO externally request to other nodes
-        todo!()
+    /// Lookup locally for nodes spanning the bucket.
+    fn find_node(&self, bucket: &Bucket) -> Vec<NodeId> {
+        self.kademlia_dht.find_node(bucket)
     }
 
-    pub async fn find_content<DHT, K, V>(&self, dht: DHT, key: K) -> Result<V, ()>
+    /// Lookup locally for a value or nodes spanning the bucket.
+    fn find_value<DHT>(&self, dht: &Arc<DHT>, bucket: &Bucket) -> LightResult
     where
-        DHT: ConcreteDht<K> + DhtContent<V>,
+        DHT: DhtStore,
+    {
+        let value_or_nodes = match dht.get(bucket) {
+            Some(value) => ValueOrNodes::Value(value),
+            None => ValueOrNodes::Nodes(self.find_node(bucket)),
+        };
+        Ok(LightValue::ValueOrNodes(value_or_nodes))
+    }
+
+    /// Check if the value is stored locally.
+    /// If not, lookup the DHT for it.
+    async fn find_content<DHT, K, V>(&self, dht: &Arc<DHT>, key: K) -> Result<V, LightError>
+    where
+        DHT: ConcreteDht<K> + DhtContent<V> + Kademlia,
     {
         let bucket = DHT::key_to_bucket(key);
-        if let Some(value) = dht.get_from_store(&bucket) {
-            return Ok(value);
+        match dht
+            .get_from_store(&bucket)
+            .expect("should not be stored if ill-formed")
+        {
+            Some(value) => Ok(value),
+            None => {
+                let closest = self.find_node(&bucket);
+                todo!()
+                // Err(light_errors::CONTENT_NOT_FOUND)
+            }
         }
-        self.find_value(&bucket).await
+    }
+
+    pub async fn find_block(&self, number: u64) -> Result<Block, LightError> {
+        self.find_content(&self.block_dht, number)
+            .await
+            .map(|stateless_block| stateless_block.block)
     }
 }
 
 pub trait DhtContent<V> {
-    fn get_from_store(&self, key: &Bucket) -> Option<V>;
+    fn get_from_store(&self, key: &Bucket) -> Result<Option<V>, LightError>;
+    fn encode(value: V) -> Result<Vec<u8>, LightError>;
+    fn decode(bytes: Vec<u8>) -> Result<V, LightError>;
 }
 
-impl DhtContent<Block> for DhtBlocks {
-    fn get_from_store(&self, key: &Bucket) -> Option<Block> {
-        let block_bytes = self.kademlia_dht.get(key)?;
-        let block =
-            StatelessBlock::unpack(&block_bytes).expect("should not be stored if ill-formed");
-        Some(block.block)
+impl DhtContent<StatelessBlock> for DhtBlocks {
+    fn get_from_store(&self, key: &Bucket) -> Result<Option<StatelessBlock>, LightError> {
+        match self.store.get(key) {
+            Some(block_bytes) => {
+                let block = Self::decode(block_bytes)?;
+                Ok(Some(block))
+            }
+            None => Ok(None),
+        }
+    }
+
+    fn encode(value: StatelessBlock) -> Result<Vec<u8>, LightError> {
+        todo!()
+    }
+
+    fn decode(bytes: Vec<u8>) -> Result<StatelessBlock, LightError> {
+        StatelessBlock::unpack(&bytes).map_err(|_| light_errors::DECODING_FAILED)
+    }
+}
+
+pub trait DhtStore {
+    fn get(&self, bucket: &Bucket) -> Option<Vec<u8>>;
+    fn insert(&self, bucket: Bucket, value: Vec<u8>) -> Option<Vec<u8>>;
+}
+
+impl DhtStore for DhtBlocks {
+    fn get(&self, bucket: &Bucket) -> Option<Vec<u8>> {
+        // TODO: can't hold the lock while returning a reference.
+        //   This memory db should not be used in production anyway.
+        self.store.read().unwrap().get(bucket).cloned()
+    }
+
+    fn insert(&self, bucket: Bucket, value: Vec<u8>) -> Option<Vec<u8>> {
+        self.store.write().unwrap().insert(bucket, value)
     }
 }

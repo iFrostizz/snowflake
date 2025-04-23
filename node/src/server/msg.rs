@@ -61,13 +61,28 @@ impl InboundMessage {
 pub struct InLightMessage;
 
 impl InLightMessage {
-    pub fn decode(message: &[u8]) -> Result<sdk::light_message::Message, DecodingError> {
+    pub fn decode(message: &[u8]) -> Result<sdk::light_request::Message, DecodingError> {
         let len = message.len();
         if len == 0 {
             return Err(DecodingError::EmptyMessage);
         }
 
-        let decoded = sdk::LightMessage::decode(message).map_err(DecodingError::Prost)?;
+        let decoded = sdk::LightRequest::decode(message).map_err(DecodingError::Prost)?;
+
+        decoded.message.ok_or(DecodingError::EmptyMessage)
+    }
+}
+
+pub struct InLightMessage2;
+
+impl InLightMessage2 {
+    pub fn decode(message: &[u8]) -> Result<sdk::light_response::Message, DecodingError> {
+        let len = message.len();
+        if len == 0 {
+            return Err(DecodingError::EmptyMessage);
+        }
+
+        let decoded = sdk::LightResponse::decode(message).map_err(DecodingError::Prost)?;
 
         decoded.message.ok_or(DecodingError::EmptyMessage)
     }

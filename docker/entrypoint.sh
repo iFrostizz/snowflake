@@ -1,9 +1,7 @@
 #!/bin/bash
 set -ex
 
-LOG_LEVEL=debug
-PEER_DIR=/shared/peer-info
-PEER_FILE=/shared/peers.json
+source docker/common.sh
 
 # Create keypair
 make keys
@@ -29,4 +27,5 @@ while [ ! -f "$PEER_FILE" ]; do
 done
 
 # Start the app
-RUST_LOG=$LOG_LEVEL cargo run -- --http-port $HTTP_PORT --rpc-port $RPC_PORT --max-peers 0 --light-bootstrappers-path "$PEER_FILE"
+RUST_LOG=$LOG_LEVEL cargo run -- --http-port $HTTP_PORT --rpc-port $RPC_PORT \
+  --max-peers 0 --bootstrappers-path "$BOOTSTRAPPERS_FILE" --light-bootstrappers-path "$PEER_FILE"

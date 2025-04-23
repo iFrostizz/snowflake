@@ -291,6 +291,10 @@ impl TransactionEnvelope {
     pub fn decode(bytes: &[u8]) -> Result<Self, RlpError> {
         todo!()
     }
+
+    pub fn hash(&self) -> B32 {
+        todo!()
+    }
 }
 
 #[derive(Debug)]

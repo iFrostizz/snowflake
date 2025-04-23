@@ -22,6 +22,7 @@ use prost::Message as _;
 use proto_lib::p2p::{
     message::Message, AppGossip, AppRequest, BloomFilter, ClaimedIpPort, GetPeerList, PeerList,
 };
+use proto_lib::sdk;
 use proto_lib::sdk::LightHandshake;
 use std::collections::HashSet;
 use std::io::ErrorKind;
@@ -35,7 +36,6 @@ use tokio::sync::{broadcast, OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinHandle;
 use tokio::time::{self};
 use tokio_rustls::TlsStream;
-use proto_lib::sdk;
 
 pub struct Node {
     pub(crate) network: Arc<Network>,
@@ -72,7 +72,13 @@ impl Node {
         sync_headers: bool,
     ) -> Self {
         let mail_box = MailBox::new(max_latency_records);
-        let light_network = LightNetwork::new(network.node_id, sync_headers);
+        let light_network = LightNetwork::new(
+            network.node_id,
+            network.peers_infos.clone(),
+            mail_box.tx().clone(),
+            network.config.c_chain_id.clone(),
+            sync_headers,
+        );
 
         Self {
             network,
@@ -445,7 +451,7 @@ impl Node {
                 }
                 res = rpln.recv_async() => {
                     if let Ok(msg) = res {
-                        self.manage_inner_light_message(&node_id, msg);
+                        self.manage_inner_light_message(node_id, msg);
                     }
                 }
                 res = rpl.recv_async() => {
@@ -517,15 +523,26 @@ impl Node {
         }
     }
 
-    fn manage_inner_light_message(self: &Arc<Node>, node_id: &NodeId, message: LightPeerMessage) {
+    fn manage_inner_light_message(self: &Arc<Node>, node_id: NodeId, message: LightPeerMessage) {
         let chain_id = self.network.config.c_chain_id.as_ref().to_vec();
         match message {
-            LightPeerMessage::NewPeer { sender, k } => {
-                let k = self.light_network.block_dht.k;
-                let handshake = sdk::LightMessage {
-                    message: Some(sdk::light_message::Message::LightHandshake(LightHandshake {
-                        k: k.to_be_bytes_vec(),
-                    }))
+            LightPeerMessage::NewPeer { sender, buckets } => {
+                self.light_network
+                    .light_peers
+                    .write()
+                    .unwrap()
+                    .insert(node_id, buckets);
+
+                let block_k = self.light_network.block_dht.k();
+                let buckets = sdk::DhtBuckets {
+                    block: block_k.to_be_bytes_vec(),
+                };
+                let handshake = sdk::LightRequest {
+                    message: Some(sdk::light_request::Message::LightHandshake(
+                        LightHandshake {
+                            buckets: Some(buckets),
+                        },
+                    )),
                 };
                 // TODO this is duplicated code, we should refactor
                 let mut bytes = unsigned_varint::encode::u64_buffer();
@@ -823,7 +840,13 @@ impl Node {
             let bootstrappers = self.network.bootstrappers.read().unwrap();
             bootstrappers
                 .iter()
-                .filter_map(|(node_id, buckets)| if buckets.is_none() { Some(node_id) } else { None })
+                .filter_map(|(node_id, buckets)| {
+                    if buckets.is_none() {
+                        Some(node_id)
+                    } else {
+                        None
+                    }
+                })
                 .take(n_bootstrappers)
                 .copied()
                 .collect()
@@ -959,7 +982,12 @@ impl Node {
             err = None;
         }
 
-        let is_bootstrapper = self.network.bootstrappers.read().unwrap().contains_key(node_id);
+        let is_bootstrapper = self
+            .network
+            .bootstrappers
+            .read()
+            .unwrap()
+            .contains_key(node_id);
         if !is_bootstrapper && remove_peer {
             self.network.remove_peers(&vec![(*node_id, err.as_ref())]);
         }

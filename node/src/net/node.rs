@@ -24,7 +24,7 @@ use indexmap::IndexMap;
 use openssl::x509;
 use prost::{EncodeError, Message};
 use proto_lib::p2p::{self};
-use proto_lib::sdk::LightHandshake;
+use proto_lib::sdk;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -37,8 +37,6 @@ use tokio::sync::{broadcast, oneshot, Semaphore};
 use tokio::task::JoinHandle;
 use tokio::time::{self};
 use tokio_rustls::TlsStream;
-use proto_lib::sdk;
-use crate::server::msg::DELIMITER_LEN;
 
 #[derive(Error, Debug)]
 pub enum NodeError {
@@ -87,7 +85,7 @@ pub struct NetworkConfig {
     pub max_concurrent_handshakes: usize,
     pub max_peers: Option<usize>,
     pub bootstrappers: HashMap<NodeId, Option<DhtBuckets>>,
-    pub dht_buckets: DhtBuckets
+    pub dht_buckets: DhtBuckets,
 }
 
 #[derive(Debug)]
@@ -165,6 +163,7 @@ impl Network {
         let handshake_semaphore = Arc::new(Semaphore::new(config.max_concurrent_handshakes));
         let bootstrappers = RwLock::new(config.bootstrappers.clone());
 
+        let peers_infos = Arc::new(RwLock::new(IndexMap::new()));
         let buckets = config.dht_buckets.clone();
 
         Ok(Self {
@@ -173,7 +172,7 @@ impl Network {
             config,
             client,
             client_config,
-            peers_infos: RwLock::new(IndexMap::new()),
+            peers_infos,
             bootstrappers,
             signed_ip,
             bloom_filter,
@@ -367,11 +366,16 @@ impl Network {
         let mut bytes = unsigned_varint::encode::u64_buffer();
         let bytes = unsigned_varint::encode::u64(constants::SNOWFLAKE_HANDLER_ID, &mut bytes);
         let mut app_bytes = bytes.to_vec();
-        let k = self.buckets.block;
-        let message = sdk::LightMessage {
-            message: Some(sdk::light_message::Message::LightHandshake(LightHandshake {
-                k: k.to_be_bytes_vec(),
-            }))
+        let block_k = self.buckets.block;
+        let buckets = sdk::DhtBuckets {
+            block: block_k.to_be_bytes_vec(),
+        };
+        let message = sdk::LightRequest {
+            message: Some(sdk::light_request::Message::LightHandshake(
+                sdk::LightHandshake {
+                    buckets: Some(buckets),
+                },
+            )),
         };
         message.encode(&mut app_bytes)?;
         let app_request = p2p::AppRequest {

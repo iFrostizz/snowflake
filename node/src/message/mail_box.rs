@@ -18,6 +18,7 @@ pub struct Mail {
     pub callback: oneshot::Sender<Message>,
 }
 
+#[derive(Debug)]
 pub struct MailBox {
     mails: Mails,
     peers_latency: Arc<RwLock<PeersLatency>>,

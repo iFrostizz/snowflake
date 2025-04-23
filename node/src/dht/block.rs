@@ -1,7 +1,8 @@
-use crate::dht::{Bucket, LightError, LightResult};
+use crate::dht::{light_errors, Bucket, DhtId, Kademlia, LightError, LightResult};
 use crate::dht::{ConcreteDht, Dht, Task};
 use crate::id::NodeId;
 use crate::message::SubscribableMessage;
+use crate::net::light::DhtStore;
 use crate::node::{MessageOrSubscribable, Node, SinglePickerConfig};
 use crate::utils::constants::DEFAULT_DEADLINE;
 use crate::utils::unpacker::StatelessBlock;
@@ -18,6 +19,10 @@ use tokio::sync::broadcast;
 pub type DhtBlocks = Dht<RwLock<HashMap<Bucket, Vec<u8>>>>;
 
 impl ConcreteDht<u64> for DhtBlocks {
+    fn id() -> DhtId {
+        DhtId::Block
+    }
+
     fn key_to_bucket(block_number: u64) -> Bucket {
         let arr: [u8; 20] = keccak256(block_number.to_be_bytes())[0..20]
             .try_into()
@@ -80,8 +85,7 @@ impl DhtBlocks {
                 let number =
                     u64::from_be_bytes(block.block.header.number()[24..].try_into().unwrap());
                 dbg!(&number);
-                self.kademlia_dht
-                    .store(Self::key_to_bucket(number), container);
+                self.insert(Self::key_to_bucket(number), container);
                 bootstrapper = node.pick_peer(SinglePickerConfig::Bootstrapper).unwrap();
             }
         }
@@ -107,30 +111,27 @@ impl DhtBlocks {
 }
 
 impl Task for DhtBlocks {
-    fn store(&self, value: Vec<u8>) -> LightResult {
+    fn store(&self, value: Vec<u8>) -> Result<(), LightError> {
         let block = StatelessBlock::unpack(&value).unwrap();
         let number = u64::from_be_bytes(block.block.header.number()[24..].try_into().unwrap());
         let key = Self::key_to_bucket(number);
         if self.is_desired_bucket(&key) {
-            self.kademlia_dht.store(key, value.to_owned());
-            Ok(None)
+            self.insert(key, value.to_owned());
+            Ok(())
         } else {
             // TODO Lower reputation? Could also be a mistake if our k was just updated.
             //   We should send a warn if not already done.
-            Err(LightError {
-                code: 0,
-                message: "undesired bucket".to_string(),
-            })
+            Err(light_errors::UNDESIRED_BUCKET)
         }
     }
+}
 
-    fn find_node(&self, bucket: Bucket) -> LightResult {
-        self.kademlia_dht.find_node(&bucket);
-        Ok(None)
+impl Kademlia for DhtBlocks {
+    async fn find_node(&self, bucket: Bucket) -> Vec<NodeId> {
+        todo!()
     }
 
-    fn find_value(&self, bucket: Bucket) -> LightResult {
-        self.kademlia_dht.find_value(&bucket);
-        Ok(None)
+    async fn find_value(&self, bucket: Bucket) -> LightResult {
+        todo!()
     }
 }

@@ -34,7 +34,7 @@ impl Display for Method {
 }
 
 pub struct Rpc {
-    network: Arc<Network>,
+    node: Arc<Node>,
     server: Server,
     local_addr: SocketAddr,
     tx: Sender<(Vec<u8>, Instant)>,
@@ -60,12 +60,14 @@ macro_rules! not_implemented {
 }
 
 mod rpc_impl {
-    use super::jsonrpc_errors::*;
+    use super::*;
+    use crate::node::Node;
     use crate::utils::constants;
+    use crate::utils::rlp::{Block, TransactionEnvelope};
     use crate::Arc;
-    use crate::Network;
     use alloy::primitives::{keccak256, Address, Bytes, FixedBytes, U256, U64};
     use flume::Sender;
+    use jsonrpc_errors::*;
     use jsonrpsee::core::{async_trait, RpcResult};
     use jsonrpsee::proc_macros::rpc;
     use jsonrpsee::types::ErrorObject;
@@ -158,6 +160,27 @@ mod rpc_impl {
         s: u64,
     }
 
+    impl From<TransactionEnvelope> for TransactionObject {
+        fn from(value: TransactionEnvelope) -> Self {
+            Self {
+                block_hash: Default::default(),
+                block_number: 0,
+                from: Default::default(),
+                gas: 0,
+                gas_price: 0,
+                hash: Default::default(),
+                input: vec![],
+                nonce: 0,
+                to: Default::default(),
+                transaction_index: None,
+                value: Default::default(),
+                v: 0,
+                r: 0,
+                s: 0,
+            }
+        }
+    }
+
     #[derive(Debug, Serialize, Deserialize, Clone)]
     pub enum TransactionOrHash {
         Transactions(Vec<TransactionObject>),
@@ -185,6 +208,42 @@ mod rpc_impl {
         timestamp: u64,
         transactions: TransactionOrHash,
         uncles: Vec<Bytes32>,
+    }
+
+    fn block_to_block_object(block: Block, full: bool) -> BlockObject {
+        BlockObject {
+            number: None,
+            hash: None,
+            parent_hash: Default::default(),
+            nonce: 0,
+            sha3uncles: Default::default(),
+            logs_bloom: Default::default(),
+            transactions_root: Default::default(),
+            state_root: Default::default(),
+            receipts_root: Default::default(),
+            miner: Default::default(),
+            difficulty: Default::default(),
+            total_difficulty: Default::default(),
+            extra_data: vec![],
+            size: 0,
+            gas_limit: 0,
+            gas_used: 0,
+            timestamp: 0,
+            transactions: if full {
+                TransactionOrHash::Transactions(
+                    block.transactions.into_iter().map(Into::into).collect(),
+                )
+            } else {
+                TransactionOrHash::Hashes(
+                    block
+                        .transactions
+                        .into_iter()
+                        .map(|tx| tx.hash().into())
+                        .collect(),
+                )
+            },
+            uncles: vec![],
+        }
     }
 
     #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -338,7 +397,7 @@ mod rpc_impl {
         fn get_block_by_hash(&self, hash: Bytes32, full: bool) -> RpcResult<Option<BlockObject>>;
 
         #[method(name = "getBlockByNumber")]
-        fn get_block_by_number(
+        async fn get_block_by_number(
             &self,
             block_parameter: BlockParameter,
             full: bool,
@@ -403,9 +462,9 @@ mod rpc_impl {
         fn get_logs(&self, filter_object: FilterObject) -> RpcResult<Vec<LogObject>>;
     }
 
-    #[derive(Debug, Clone)]
+    #[derive(Clone)]
     pub struct RpcServerImpl {
-        pub(crate) network: Arc<Network>,
+        pub(crate) node: Arc<Node>,
         pub(crate) tx: Sender<(Vec<u8>, Instant)>,
     }
 
@@ -423,11 +482,11 @@ mod rpc_impl {
 
     impl NetServer for RpcServerImpl {
         fn version(&self) -> RpcResult<String> {
-            Ok(self.network.config.eth_network_id.to_string())
+            Ok(self.node.network.config.eth_network_id.to_string())
         }
 
         fn peer_count(&self) -> RpcResult<U64> {
-            let peer_count = self.network.peers_infos.read().unwrap().len() as u64;
+            let peer_count = self.node.network.peers_infos.read().unwrap().len() as u64;
             Ok(U64::from(peer_count))
         }
     }
@@ -439,7 +498,7 @@ mod rpc_impl {
         }
 
         fn chain_id(&self) -> RpcResult<U64> {
-            Ok(U64::from(self.network.config.eth_network_id))
+            Ok(U64::from(self.node.network.config.eth_network_id))
         }
 
         fn hashrate(&self) -> RpcResult<u64> {
@@ -549,13 +608,22 @@ mod rpc_impl {
             not_implemented!()
         }
 
-        fn get_block_by_number(
+        async fn get_block_by_number(
             &self,
-            _block_parameter: BlockParameter,
-            _full: bool,
+            block_parameter: BlockParameter,
+            full: bool,
         ) -> RpcResult<Option<BlockObject>> {
-            // self.network.
-            not_implemented!()
+            let number = match block_parameter {
+                BlockParameter::Number(number) => number,
+                _ => not_implemented!(), // resolve block
+            };
+            match self.node.light_network.find_block(number).await {
+                Ok(block) => Ok(Some(block_to_block_object(block, full))),
+                Err(_e) => {
+                    // TODO provide functions for automatically converting errors to rpc errors
+                    Err(ErrorObject::borrowed(0, "failed to find block", None))
+                }
+            }
         }
 
         fn get_transaction_by_hash(&self, _hash: Bytes32) -> RpcResult<Option<TransactionObject>> {
@@ -632,12 +700,12 @@ mod rpc_impl {
 }
 
 use crate::net::node::NodeError;
-use crate::net::Network;
+use crate::node::Node;
 use rpc_impl::{EthServer, NetServer, RpcServerImpl, Web3Server};
 
 impl Rpc {
     pub async fn new(
-        network: Arc<Network>,
+        node: Arc<Node>,
         rpc_port: u16,
         tx: Sender<(Vec<u8>, Instant)>,
     ) -> Result<Self, NodeError> {
@@ -647,7 +715,7 @@ impl Rpc {
         let local_addr = server.local_addr()?;
 
         Ok(Self {
-            network,
+            node,
             server,
             local_addr,
             tx,
@@ -661,7 +729,7 @@ impl Rpc {
     pub async fn start(self, mut shutdown_rx: oneshot::Receiver<()>) {
         log::debug!("Listening on {}", self.local_addr());
         let rpc_impl = RpcServerImpl {
-            network: self.network.clone(),
+            node: self.node.clone(),
             tx: self.tx,
         };
         let mut rpc = Web3Server::into_rpc(rpc_impl.clone());
@@ -685,14 +753,16 @@ impl Rpc {
 #[cfg(test)]
 mod tests {
     use super::Rpc;
+    use crate::dht::DhtBuckets;
     use crate::id::ChainId;
     use crate::net::node::NetworkConfig;
     use crate::net::BackoffParams;
     use crate::net::Intervals;
     use crate::net::Network;
+    use crate::node::Node;
     use alloy::providers::{network::EthereumWallet, Provider, ProviderBuilder};
     use alloy::signers::local::PrivateKeySigner;
-
+    use std::collections::HashMap;
     use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
     use std::path::Path;
     use std::sync::Arc;
@@ -736,12 +806,16 @@ mod tests {
                 bucket_size: 0,
                 max_concurrent_handshakes: 0,
                 max_peers: None,
-                bootstrappers: vec![],
+                bootstrappers: HashMap::new(),
+                dht_buckets: DhtBuckets {
+                    block: Default::default(),
+                },
             })
             .unwrap(),
         );
+        let node = Node::new(network, 1, 1, false);
 
-        let rpc = Rpc::new(network, 0, tx).await.unwrap();
+        let rpc = Rpc::new(Arc::from(node), 0, tx).await.unwrap();
         let addr = rpc.local_addr();
 
         tokio::spawn(async move {

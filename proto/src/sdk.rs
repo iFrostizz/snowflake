@@ -17,12 +17,12 @@ pub struct PushGossip {
     pub gossip: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct LightMessage {
-    #[prost(oneof = "light_message::Message", tags = "1, 11, 12")]
-    pub message: ::core::option::Option<light_message::Message>,
+pub struct LightRequest {
+    #[prost(oneof = "light_request::Message", tags = "1, 11, 12")]
+    pub message: ::core::option::Option<light_request::Message>,
 }
-/// Nested message and enum types in `LightMessage`.
-pub mod light_message {
+/// Nested message and enum types in `LightRequest`.
+pub mod light_request {
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Message {
         #[prost(message, tag = "1")]
@@ -34,9 +34,14 @@ pub mod light_message {
     }
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct LightHandshake {
+pub struct DhtBuckets {
     #[prost(bytes = "vec", tag = "1")]
-    pub k: ::prost::alloc::vec::Vec<u8>,
+    pub block: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct LightHandshake {
+    #[prost(message, optional, tag = "1")]
+    pub buckets: ::core::option::Option<DhtBuckets>,
 }
 /// FindValue is used to find content at a bucket by recursively getting closer
 ///
@@ -53,11 +58,28 @@ pub struct FindValue {
 /// Works as defined in the Kademlia DHT paper: <https://pdos.csail.mit.edu/~petar/papers/maymounkov-kademlia-lncs.pdf>
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct FindNode {
-    #[prost(uint32, tag = "1")]
-    pub dht: u32,
-    #[prost(bytes = "vec", tag = "2")]
+    #[prost(bytes = "vec", tag = "1")]
     pub bucket: ::prost::alloc::vec::Vec<u8>,
 }
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct LightResponse {
+    #[prost(oneof = "light_response::Message", tags = "1, 2, 3")]
+    pub message: ::core::option::Option<light_response::Message>,
+}
+/// Nested message and enum types in `LightResponse`.
+pub mod light_response {
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Message {
+        #[prost(message, tag = "1")]
+        Ack(super::Ack),
+        #[prost(message, tag = "2")]
+        Nodes(super::Nodes),
+        #[prost(message, tag = "3")]
+        Value(super::Value),
+    }
+}
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+pub struct Ack {}
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Nodes {
     #[prost(bytes = "vec", repeated, tag = "1")]

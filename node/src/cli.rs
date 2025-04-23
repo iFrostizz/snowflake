@@ -1,4 +1,5 @@
 use crate::client::bootstrap::Bootstrappers;
+use crate::dht::{Bucket, DhtBuckets};
 use crate::id::ChainId;
 use crate::net::node::{NetworkConfig, NodeError};
 use crate::net::{BackoffParams, Intervals};
@@ -9,7 +10,6 @@ use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::{fmt::Display, time::Duration};
 use tokio::sync::Semaphore;
-use crate::dht::{Bucket, DhtBuckets};
 
 #[derive(clap::ValueEnum, Clone, Default, Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -170,11 +170,14 @@ impl Args {
             bucket_size: 500_000,           // 500 kB
             max_concurrent_handshakes: self.max_handshakes,
             max_peers: self.max_peers,
-            bootstrappers: Bootstrappers::new(&self.bootstrappers_path, &self.light_bootstrappers_path)
-                .bootstrappers(&self.network_id.to_string()),
+            bootstrappers: Bootstrappers::new(
+                &self.bootstrappers_path,
+                &self.light_bootstrappers_path,
+            )
+            .bootstrappers(&self.network_id.to_string()),
             dht_buckets: DhtBuckets {
                 block: Bucket::try_from(self.block_dht_buckets).unwrap(),
-            }
+            },
         }
     }
 }
