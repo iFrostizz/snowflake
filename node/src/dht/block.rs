@@ -1,8 +1,8 @@
-use crate::dht::{light_errors, Bucket, DhtId, Kademlia, LightError, LightResult};
-use crate::dht::{ConcreteDht, Dht, Task};
+use crate::dht::kademlia::LockedMapDb;
+use crate::dht::{light_errors, Bucket, DhtId, LightError};
+use crate::dht::{ConcreteDht, Dht};
 use crate::id::NodeId;
 use crate::message::SubscribableMessage;
-use crate::net::light::DhtStore;
 use crate::node::{MessageOrSubscribable, Node, SinglePickerConfig};
 use crate::utils::constants::DEFAULT_DEADLINE;
 use crate::utils::unpacker::StatelessBlock;
@@ -85,7 +85,7 @@ impl DhtBlocks {
                 let number =
                     u64::from_be_bytes(block.block.header.number()[24..].try_into().unwrap());
                 dbg!(&number);
-                self.insert(Self::key_to_bucket(number), container);
+                self.store.insert(Self::key_to_bucket(number), container);
                 bootstrapper = node.pick_peer(SinglePickerConfig::Bootstrapper).unwrap();
             }
         }
@@ -107,31 +107,5 @@ impl DhtBlocks {
             maybe_bootstrapper = node.pick_peer(SinglePickerConfig::Bootstrapper);
         }
         maybe_bootstrapper.unwrap()
-    }
-}
-
-impl Task for DhtBlocks {
-    fn store(&self, value: Vec<u8>) -> Result<(), LightError> {
-        let block = StatelessBlock::unpack(&value).unwrap();
-        let number = u64::from_be_bytes(block.block.header.number()[24..].try_into().unwrap());
-        let key = Self::key_to_bucket(number);
-        if self.is_desired_bucket(&key) {
-            self.insert(key, value.to_owned());
-            Ok(())
-        } else {
-            // TODO Lower reputation? Could also be a mistake if our k was just updated.
-            //   We should send a warn if not already done.
-            Err(light_errors::UNDESIRED_BUCKET)
-        }
-    }
-}
-
-impl Kademlia for DhtBlocks {
-    async fn find_node(&self, bucket: Bucket) -> Vec<NodeId> {
-        todo!()
-    }
-
-    async fn find_value(&self, bucket: Bucket) -> LightResult {
-        todo!()
     }
 }

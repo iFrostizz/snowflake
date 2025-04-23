@@ -128,6 +128,10 @@ pub mod light_errors {
         code: 4,
         message: "Unimplemented dht",
     };
+    pub(crate) const INVALID_CONTENT: LightError = LightError {
+        code: 5,
+        message: "Content failed verification",
+    };
 }
 
 pub enum LightValue<T = Vec<u8>> {
@@ -136,19 +140,6 @@ pub enum LightValue<T = Vec<u8>> {
 }
 
 pub type LightResult<T = Vec<u8>> = Result<LightValue<T>, LightError>;
-
-// TODO refactor into another trait
-pub trait Task {
-    fn store(&self, value: Vec<u8>) -> Result<(), LightError>;
-}
-
-/// Definition of the Kademlia protocol.
-/// Recursively query the DHT to find content or nodes.
-/// For external use only.
-pub trait Kademlia {
-    async fn find_node(&self, bucket: Bucket) -> Vec<NodeId>;
-    async fn find_value(&self, bucket: Bucket) -> LightResult;
-}
 
 #[cfg(test)]
 mod tests {

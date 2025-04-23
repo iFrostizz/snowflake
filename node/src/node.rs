@@ -8,6 +8,7 @@ use crate::net::{
     queue::{ConnectionData, ConnectionQueue},
     HandshakeInfos, Network, Peer, PeerMessage,
 };
+use crate::server::msg::AppRequestMessage;
 use crate::server::peers::{PeerInfo, PeerLessInfo, PeerSender};
 use crate::stats::{self, Metrics};
 use crate::utils::{
@@ -20,7 +21,7 @@ use futures::future;
 use indexmap::IndexMap;
 use prost::Message as _;
 use proto_lib::p2p::{
-    message::Message, AppGossip, AppRequest, BloomFilter, ClaimedIpPort, GetPeerList, PeerList,
+    message::Message, AppGossip, BloomFilter, ClaimedIpPort, GetPeerList, PeerList,
 };
 use proto_lib::sdk;
 use proto_lib::sdk::LightHandshake;
@@ -524,7 +525,6 @@ impl Node {
     }
 
     fn manage_inner_light_message(self: &Arc<Node>, node_id: NodeId, message: LightPeerMessage) {
-        let chain_id = self.network.config.c_chain_id.as_ref().to_vec();
         match message {
             LightPeerMessage::NewPeer { sender, buckets } => {
                 self.light_network
@@ -534,29 +534,16 @@ impl Node {
                     .insert(node_id, buckets);
 
                 let block_k = self.light_network.block_dht.k();
-                let buckets = sdk::DhtBuckets {
-                    block: block_k.to_be_bytes_vec(),
-                };
-                let handshake = sdk::LightRequest {
-                    message: Some(sdk::light_request::Message::LightHandshake(
-                        LightHandshake {
-                            buckets: Some(buckets),
-                        },
-                    )),
-                };
-                // TODO this is duplicated code, we should refactor
-                let mut bytes = unsigned_varint::encode::u64_buffer();
-                let bytes =
-                    unsigned_varint::encode::u64(constants::SNOWFLAKE_HANDLER_ID, &mut bytes);
-                let mut app_bytes = bytes.to_vec();
-                handshake.encode(&mut app_bytes).unwrap();
-                let message = Message::AppRequest(AppRequest {
-                    chain_id,
-                    request_id: rand::random(),
-                    deadline: constants::DEFAULT_DEADLINE,
-                    app_bytes,
+                let message = sdk::light_request::Message::LightHandshake(LightHandshake {
+                    buckets: Some(sdk::DhtBuckets {
+                        block: block_k.to_be_bytes_vec(),
+                    }),
                 });
-                let _ = sender.send(message);
+                if let Ok(app_request) =
+                    AppRequestMessage::encode(self.network.config.c_chain_id.clone(), message)
+                {
+                    let _ = sender.send(app_request);
+                }
             }
         }
     }

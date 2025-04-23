@@ -6,6 +6,7 @@ use crate::net::{
     ip::UnsignedIp, BackoffParams, Intervals, LightPeerMessage, Network, Peer, PeerInfo,
     PeerMessage,
 };
+use crate::server::msg::AppRequestMessage;
 use crate::server::{
     msg::{DecodingError, OutboundMessage},
     peers::PeerSender,
@@ -219,8 +220,7 @@ impl Network {
                         if let Ok(message) = maybe_message {
                             log::trace!("sending message {message:?}");
                             let mini = MiniMessage::from(&message);
-                            if let Ok(outbound_message) = OutboundMessage::create(message) {
-                                let bytes = outbound_message.bytes;
+                            if let Ok(bytes) = OutboundMessage::encode(message) {
                                 out_pipeline.queue_message(bytes.into(), WriteHandler(ptx.clone(), mini)).await;
                             }
                         }
@@ -362,31 +362,16 @@ impl Network {
     }
 
     fn light_handshake(&self, sender: &PeerSender) -> Result<(), NodeError> {
-        let chain_id = self.config.c_chain_id.as_ref().to_vec();
-        let mut bytes = unsigned_varint::encode::u64_buffer();
-        let bytes = unsigned_varint::encode::u64(constants::SNOWFLAKE_HANDLER_ID, &mut bytes);
-        let mut app_bytes = bytes.to_vec();
         let block_k = self.buckets.block;
         let buckets = sdk::DhtBuckets {
             block: block_k.to_be_bytes_vec(),
         };
-        let message = sdk::LightRequest {
-            message: Some(sdk::light_request::Message::LightHandshake(
-                sdk::LightHandshake {
-                    buckets: Some(buckets),
-                },
-            )),
-        };
-        message.encode(&mut app_bytes)?;
-        let app_request = p2p::AppRequest {
-            chain_id,
-            request_id: rand::random(),
-            deadline: constants::DEFAULT_DEADLINE,
-            app_bytes,
-        };
-
+        let message = sdk::light_request::Message::LightHandshake(sdk::LightHandshake {
+            buckets: Some(buckets),
+        });
+        let app_request = AppRequestMessage::encode(self.config.c_chain_id.clone(), message)?;
         sender
-            .send(p2p::message::Message::AppRequest(app_request))
+            .send(app_request)
             // TODO include this variant in thiserror and watch all the dup lines being deleted!
             .map_err(|_| NodeError::SendError)
     }

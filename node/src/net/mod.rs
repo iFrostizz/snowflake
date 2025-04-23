@@ -8,7 +8,7 @@ use crate::net::{
     ip::SignedIp,
     node::{NetworkConfig, NodeError},
 };
-use crate::server::msg::InLightMessage;
+use crate::server::msg::InboundMessageExt;
 use crate::server::{
     msg::InboundMessage,
     peers::{PeerInfo, PeerSender},
@@ -375,7 +375,7 @@ impl Peer {
                 if app_id != SNOWFLAKE_HANDLER_ID {
                     return Ok(());
                 }
-                let light_message = InLightMessage::decode(bytes).map_err(NodeError::Decoding)?;
+                let light_message = InboundMessage::decode(bytes).map_err(NodeError::Decoding)?;
                 Self::manage_light_message(
                     c_chain_id,
                     app_request.request_id,
