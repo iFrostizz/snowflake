@@ -24,6 +24,8 @@ pub struct LightNetwork {
     pub block_dht: Arc<DhtBlocks>,
     pub light_peers: Arc<RwLock<HashMap<NodeId, DhtBuckets>>>,
     sync_headers: bool,
+    max_lookups: usize,
+    alpha: usize,
 }
 
 impl LightNetwork {
@@ -33,6 +35,8 @@ impl LightNetwork {
         mail_tx: Sender<Mail>,
         chain_id: ChainId,
         sync_headers: bool,
+        max_lookups: usize,
+        alpha: usize,
     ) -> Self {
         let store = RwLock::new(HashMap::new());
         let block_dht = Arc::new(DhtBlocks::new(node_id, Bucket::from(10), store));
@@ -43,6 +47,8 @@ impl LightNetwork {
             block_dht,
             light_peers,
             sync_headers,
+            max_lookups,
+            alpha,
         }
     }
 
@@ -66,7 +72,10 @@ impl LightNetwork {
     pub fn manage_message(&self, message: LightMessage, resp: oneshot::Sender<LightResult>) {
         let res = match message {
             LightMessage::Store(dht_id, value) => match dht_id {
-                DhtId::Block => self.block_dht.insert_to_store(value).map(|_| LightValue::Ok),
+                DhtId::Block => self
+                    .block_dht
+                    .insert_to_store(value)
+                    .map(|_| LightValue::Ok),
                 _ => Err(light_errors::INVALID_DHT),
             },
             LightMessage::FindNode(bucket) => Ok(LightValue::ValueOrNodes(ValueOrNodes::Nodes(
@@ -111,7 +120,10 @@ impl LightNetwork {
         {
             Some(value) => Ok(value),
             None => {
-                let value = self.kademlia_dht.search_value(DHT::id(), &bucket).await?;
+                let value = self
+                    .kademlia_dht
+                    .search_value(&DHT::id(), &bucket, self.max_lookups, self.alpha)
+                    .await?;
                 DHT::decode(&value)
             }
         }
@@ -125,16 +137,24 @@ impl LightNetwork {
 }
 
 pub trait DhtContent<K, V>: ConcreteDht<K> {
-    fn get_from_store(&self, key: &Bucket) -> Result<Option<V>, LightError>;
+    /// Get a typed value from the store.
+    fn get_from_store(&self, bucket: &Bucket) -> Result<Option<V>, LightError>;
+    /// Insert an encoded value into the store.
+    /// If the value is ill-formed, it should not be stored.
     fn insert_to_store(&self, bytes: Vec<u8>) -> Result<Option<V>, LightError>;
+    /// Verification of the validity of the content.
+    /// It is used to check if the content is well-formed.
+    /// If the content is ill-formed, it should not be stored.
     fn verify(&self, value: &V) -> bool;
+    /// Typed to encoded value
     fn encode(value: V) -> Result<Vec<u8>, LightError>;
+    /// Encoded to typed value
     fn decode(bytes: &[u8]) -> Result<V, LightError>;
 }
 
 impl DhtContent<u64, StatelessBlock> for DhtBlocks {
-    fn get_from_store(&self, key: &Bucket) -> Result<Option<StatelessBlock>, LightError> {
-        match self.store.get(key) {
+    fn get_from_store(&self, bucket: &Bucket) -> Result<Option<StatelessBlock>, LightError> {
+        match self.store.get(bucket) {
             Some(block_bytes) => {
                 let block = Self::decode(&block_bytes)?;
                 Ok(Some(block))
@@ -146,7 +166,7 @@ impl DhtContent<u64, StatelessBlock> for DhtBlocks {
     fn insert_to_store(&self, bytes: Vec<u8>) -> Result<Option<StatelessBlock>, LightError> {
         let decoded = Self::decode(&bytes)?;
         if !self.verify(&decoded) {
-            return Err(light_errors::INVALID_CONTENT)
+            return Err(light_errors::INVALID_CONTENT);
         }
         let number = u64::from_be_bytes(decoded.block.header.number()[24..].try_into().unwrap());
         let bucket = Self::key_to_bucket(number);

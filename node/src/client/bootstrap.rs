@@ -65,18 +65,24 @@ impl<'a> Bootstrappers<'a> {
         serde_json::from_str(&content).unwrap()
     }
 
-    fn read_all_bootsrappers(&self) -> HashMap<String, Vec<Bootstrapper>> {
+    fn read_all_bootsrappers(&self, network_name: &str) -> Vec<Bootstrapper> {
         let mut content = String::new();
         let mut file = File::open(self.bootstrapper_path).unwrap();
         File::read_to_string(&mut file, &mut content).unwrap();
         let mut bootstrappers: HashMap<String, Vec<Bootstrapper>> =
             serde_json::from_str(&content).unwrap();
+        let mut bootstrappers = bootstrappers
+            .remove(network_name)
+            .expect("this network is not listed in the bootstrappers file");
 
         let mut content2 = String::new();
         let mut file2 = File::open(self.light_bootstrapper_path).unwrap();
         File::read_to_string(&mut file2, &mut content2).unwrap();
-        let light_bootstrappers: HashMap<String, Vec<Bootstrapper>> =
+        let mut light_bootstrappers: HashMap<String, Vec<Bootstrapper>> =
             serde_json::from_str(&content2).unwrap();
+        let light_bootstrappers = light_bootstrappers
+            .remove(network_name)
+            .expect("this network is not listed in the bootstrappers file");
 
         bootstrappers.extend(light_bootstrappers);
         bootstrappers
@@ -120,10 +126,7 @@ impl<'a> Bootstrappers<'a> {
         log::debug!("bootstrapping nodes");
 
         // TODO error handling
-        let bootstrappers = self.read_all_bootsrappers();
-        let bootstrappers = bootstrappers
-            .get(network_name)
-            .expect("this network is not listed in the bootstrappers file");
+        let bootstrappers = dbg!(self.read_all_bootsrappers(network_name));
 
         // TODO should not create a new semaphore but use the common one
         let semaphore = Arc::new(Semaphore::new(max_connections));

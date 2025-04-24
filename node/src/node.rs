@@ -67,7 +67,7 @@ pub enum SinglePickerConfig {
 
 impl Node {
     pub fn new(
-        network: Arc<Network>,
+        mut network: Network,
         max_concurrent: usize,
         max_latency_records: usize,
         sync_headers: bool,
@@ -79,10 +79,13 @@ impl Node {
             mail_box.tx().clone(),
             network.config.c_chain_id.clone(),
             sync_headers,
+            10,
+            3,
         );
 
+        network.todo_remove_attach_light_peers(light_network.light_peers.clone());
         Self {
-            network,
+            network: Arc::new(network),
             light_network,
             connection_queue: ConnectionQueue::new(max_concurrent),
             mail_box: Arc::new(mail_box),
@@ -527,11 +530,13 @@ impl Node {
     fn manage_inner_light_message(self: &Arc<Node>, node_id: NodeId, message: LightPeerMessage) {
         match message {
             LightPeerMessage::NewPeer { sender, buckets } => {
-                self.light_network
+                let is_new = self
+                    .light_network
                     .light_peers
                     .write()
                     .unwrap()
-                    .insert(node_id, buckets);
+                    .insert(node_id, buckets)
+                    .is_none();
 
                 let block_k = self.light_network.block_dht.k();
                 let message = sdk::light_request::Message::LightHandshake(LightHandshake {
@@ -539,10 +544,12 @@ impl Node {
                         block: block_k.to_be_bytes_vec(),
                     }),
                 });
-                if let Ok(app_request) =
-                    AppRequestMessage::encode(self.network.config.c_chain_id.clone(), message)
-                {
-                    let _ = sender.send(app_request);
+                if is_new {
+                    if let Ok(app_request) =
+                        AppRequestMessage::encode(&self.network.config.c_chain_id, message)
+                    {
+                        let _ = sender.send(app_request);
+                    }
                 }
             }
         }

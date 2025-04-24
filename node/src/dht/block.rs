@@ -1,5 +1,5 @@
 use crate::dht::kademlia::LockedMapDb;
-use crate::dht::{light_errors, Bucket, DhtId, LightError};
+use crate::dht::{Bucket, DhtId};
 use crate::dht::{ConcreteDht, Dht};
 use crate::id::NodeId;
 use crate::message::SubscribableMessage;
@@ -86,7 +86,7 @@ impl DhtBlocks {
                     u64::from_be_bytes(block.block.header.number()[24..].try_into().unwrap());
                 dbg!(&number);
                 self.store.insert(Self::key_to_bucket(number), container);
-                bootstrapper = node.pick_peer(SinglePickerConfig::Bootstrapper).unwrap();
+                bootstrapper = Self::pick_random_bootstrapper(&node).await;
             }
         }
     }

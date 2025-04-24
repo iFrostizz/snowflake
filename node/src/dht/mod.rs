@@ -3,6 +3,7 @@ pub mod kademlia;
 
 use crate::dht::kademlia::{LockedMapDb, ValueOrNodes};
 use crate::id::NodeId;
+use jsonrpsee::types::ErrorObject;
 use ruint::Uint;
 use serde::Deserialize;
 use std::cmp::Ordering;
@@ -132,6 +133,12 @@ pub mod light_errors {
         code: 5,
         message: "Content failed verification",
     };
+}
+
+impl From<LightError> for jsonrpsee::types::ErrorObjectOwned {
+    fn from(value: LightError) -> Self {
+        ErrorObject::borrowed(value.code, value.message, None)
+    }
 }
 
 pub enum LightValue<T = Vec<u8>> {

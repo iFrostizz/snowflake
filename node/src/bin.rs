@@ -52,7 +52,7 @@ async fn main() -> Result<(), NodeError> {
     log::debug!("args: {:?}", args);
 
     let network_config = args.network_config();
-    let network = Arc::new(Network::new(network_config).unwrap());
+    let network = Network::new(network_config).unwrap();
 
     let node = Arc::new(Node::new(
         network,

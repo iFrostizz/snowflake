@@ -1,37 +1,9 @@
 use flume::Sender;
 use jsonrpsee::server::{Server, ServerBuilder};
-use serde::{Deserialize, Serialize};
-use std::fmt::Display;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::oneshot;
-
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
-pub enum Method {
-    #[serde(rename = "eth_chainId")]
-    ChainId,
-    #[serde(rename = "eth_feeHistory")]
-    FeeHistory,
-    #[serde(rename = "eth_sendRawTransaction")]
-    SendRawTransaction,
-    #[serde(rename = "eth_subscribe")]
-    Subscribe,
-    #[serde(rename = "eth_subscription")]
-    Subscription,
-}
-
-impl Display for Method {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Method::ChainId => f.write_str("eth_chainId"),
-            Method::FeeHistory => f.write_str("eth_feeHistory"),
-            Method::SendRawTransaction => f.write_str("eth_sendRawTransaction"),
-            Method::Subscribe => f.write_str("eth_subscribe"),
-            Method::Subscription => f.write_str("eth_subscription"),
-        }
-    }
-}
 
 pub struct Rpc {
     node: Arc<Node>,
@@ -181,69 +153,43 @@ mod rpc_impl {
         }
     }
 
-    #[derive(Debug, Serialize, Deserialize, Clone)]
-    pub enum TransactionOrHash {
-        Transactions(Vec<TransactionObject>),
-        Hashes(Vec<Bytes32>),
-    }
-
-    #[derive(Debug, Serialize, Deserialize, Clone)]
-    pub struct BlockObject {
-        number: Option<u64>,
-        hash: Option<Bytes32>,
-        parent_hash: Bytes32,
-        nonce: u64,
-        sha3uncles: Bytes32,
-        logs_bloom: BloomFilter,
-        transactions_root: Bytes32,
-        state_root: Bytes32,
-        receipts_root: Bytes32,
-        miner: Address,
-        difficulty: U256,
-        total_difficulty: U256,
-        extra_data: Vec<u8>,
-        size: u64,
-        gas_limit: u64,
-        gas_used: u64,
-        timestamp: u64,
-        transactions: TransactionOrHash,
-        uncles: Vec<Bytes32>,
-    }
-
-    fn block_to_block_object(block: Block, full: bool) -> BlockObject {
-        BlockObject {
-            number: None,
-            hash: None,
-            parent_hash: Default::default(),
-            nonce: 0,
-            sha3uncles: Default::default(),
-            logs_bloom: Default::default(),
-            transactions_root: Default::default(),
-            state_root: Default::default(),
-            receipts_root: Default::default(),
-            miner: Default::default(),
-            difficulty: Default::default(),
-            total_difficulty: Default::default(),
-            extra_data: vec![],
-            size: 0,
-            gas_limit: 0,
-            gas_used: 0,
-            timestamp: 0,
-            transactions: if full {
-                TransactionOrHash::Transactions(
-                    block.transactions.into_iter().map(Into::into).collect(),
-                )
-            } else {
-                TransactionOrHash::Hashes(
-                    block
-                        .transactions
-                        .into_iter()
-                        .map(|tx| tx.hash().into())
-                        .collect(),
-                )
+    fn block_to_block_object(block: Block, full: bool) -> alloy::rpc::types::Block {
+        let header = alloy::rpc::types::Header {
+            hash: block.hash.into(),
+            inner: alloy::consensus::Header {
+                parent_hash: Default::default(),
+                ommers_hash: Default::default(),
+                beneficiary: Default::default(),
+                state_root: Default::default(),
+                transactions_root: Default::default(),
+                receipts_root: Default::default(),
+                logs_bloom: Default::default(),
+                difficulty: Default::default(),
+                number: 0,
+                gas_limit: 0,
+                gas_used: 0,
+                timestamp: 0,
+                extra_data: Default::default(),
+                mix_hash: Default::default(),
+                nonce: Default::default(),
+                base_fee_per_gas: None,
+                withdrawals_root: None,
+                blob_gas_used: None,
+                excess_blob_gas: None,
+                parent_beacon_block_root: None,
+                requests_hash: None,
             },
-            uncles: vec![],
-        }
+            total_difficulty: None,
+            size: None,
+        };
+
+        let transactions = if full {
+            alloy::rpc::types::BlockTransactions::Full(vec![])
+        } else {
+            alloy::rpc::types::BlockTransactions::Hashes(vec![])
+        };
+
+        alloy::rpc::types::Block::new(header, transactions)
     }
 
     #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -394,14 +340,18 @@ mod rpc_impl {
         ) -> RpcResult<Vec<u8>>;
 
         #[method(name = "getBlockByHash")]
-        fn get_block_by_hash(&self, hash: Bytes32, full: bool) -> RpcResult<Option<BlockObject>>;
+        fn get_block_by_hash(
+            &self,
+            hash: Bytes32,
+            full: bool,
+        ) -> RpcResult<Option<alloy::rpc::types::Block>>;
 
         #[method(name = "getBlockByNumber")]
         async fn get_block_by_number(
             &self,
             block_parameter: BlockParameter,
             full: bool,
-        ) -> RpcResult<Option<BlockObject>>;
+        ) -> RpcResult<Option<alloy::rpc::types::Block>>;
 
         #[method(name = "getTransaction_by_hash")]
         fn get_transaction_by_hash(&self, hash: Bytes32) -> RpcResult<Option<TransactionObject>>;
@@ -431,14 +381,14 @@ mod rpc_impl {
             &self,
             hash: Bytes32,
             index: u64,
-        ) -> RpcResult<Option<BlockObject>>;
+        ) -> RpcResult<Option<alloy::rpc::types::Block>>;
 
         #[method(name = "getUncleByBlockNumberAndIndex")]
         fn get_uncle_by_block_number_and_index(
             &self,
             block_parameter: BlockParameter,
             index: u64,
-        ) -> RpcResult<Option<BlockObject>>;
+        ) -> RpcResult<Option<alloy::rpc::types::Block>>;
 
         #[method(name = "newFilter")]
         fn new_filter(&self, block_parameter: BlockParameter) -> RpcResult<FilterObject>;
@@ -604,7 +554,11 @@ mod rpc_impl {
             not_implemented!()
         }
 
-        fn get_block_by_hash(&self, _hash: Bytes32, _full: bool) -> RpcResult<Option<BlockObject>> {
+        fn get_block_by_hash(
+            &self,
+            _hash: Bytes32,
+            _full: bool,
+        ) -> RpcResult<Option<alloy::rpc::types::Block>> {
             not_implemented!()
         }
 
@@ -612,18 +566,17 @@ mod rpc_impl {
             &self,
             block_parameter: BlockParameter,
             full: bool,
-        ) -> RpcResult<Option<BlockObject>> {
+        ) -> RpcResult<Option<alloy::rpc::types::Block>> {
             let number = match block_parameter {
                 BlockParameter::Number(number) => number,
                 _ => not_implemented!(), // resolve block
             };
-            match self.node.light_network.find_block(number).await {
-                Ok(block) => Ok(Some(block_to_block_object(block, full))),
-                Err(_e) => {
-                    // TODO provide functions for automatically converting errors to rpc errors
-                    Err(ErrorObject::borrowed(0, "failed to find block", None))
-                }
-            }
+            self.node
+                .light_network
+                .find_block(number)
+                .await
+                .map(|block| Some(dbg!(block_to_block_object(dbg!(block), full))))
+                .map_err(Into::into)
         }
 
         fn get_transaction_by_hash(&self, _hash: Bytes32) -> RpcResult<Option<TransactionObject>> {
@@ -657,7 +610,7 @@ mod rpc_impl {
             &self,
             _hash: Bytes32,
             _index: u64,
-        ) -> RpcResult<Option<BlockObject>> {
+        ) -> RpcResult<Option<alloy::rpc::types::Block>> {
             not_implemented!()
         }
 
@@ -665,7 +618,7 @@ mod rpc_impl {
             &self,
             _block_parameter: BlockParameter,
             _index: u64,
-        ) -> RpcResult<Option<BlockObject>> {
+        ) -> RpcResult<Option<alloy::rpc::types::Block>> {
             not_implemented!()
         }
 
@@ -783,36 +736,34 @@ mod tests {
         });
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         log::debug!("start");
-        let network = Arc::new(
-            Network::new(NetworkConfig {
-                socket_addr: SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), 0)),
-                network_id: 0,
-                eth_network_id: 0,
-                c_chain_id: ChainId::from([0; 32]),
-                pem_key_path,
-                bls_key_path,
-                cert_path,
-                intervals: Intervals {
-                    ping: 0,
-                    get_peer_list: 0,
-                },
-                back_off: BackoffParams {
-                    initial_duration: Default::default(),
-                    muln: 0,
-                    max_retries: 0,
-                },
-                max_throughput: 0,
-                max_out_queue_size: 0,
-                bucket_size: 0,
-                max_concurrent_handshakes: 0,
-                max_peers: None,
-                bootstrappers: HashMap::new(),
-                dht_buckets: DhtBuckets {
-                    block: Default::default(),
-                },
-            })
-            .unwrap(),
-        );
+        let network = Network::new(NetworkConfig {
+            socket_addr: SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), 0)),
+            network_id: 0,
+            eth_network_id: 0,
+            c_chain_id: ChainId::from([0; 32]),
+            pem_key_path,
+            bls_key_path,
+            cert_path,
+            intervals: Intervals {
+                ping: 0,
+                get_peer_list: 0,
+            },
+            back_off: BackoffParams {
+                initial_duration: Default::default(),
+                muln: 0,
+                max_retries: 0,
+            },
+            max_throughput: 0,
+            max_out_queue_size: 0,
+            bucket_size: 0,
+            max_concurrent_handshakes: 0,
+            max_peers: None,
+            bootstrappers: HashMap::new(),
+            dht_buckets: DhtBuckets {
+                block: Default::default(),
+            },
+        })
+        .unwrap();
         let node = Node::new(network, 1, 1, false);
 
         let rpc = Rpc::new(Arc::from(node), 0, tx).await.unwrap();

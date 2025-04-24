@@ -23,7 +23,7 @@ use flume::{Receiver, Sender};
 use futures::future;
 use indexmap::IndexMap;
 use openssl::x509;
-use prost::{EncodeError, Message};
+use prost::EncodeError;
 use proto_lib::p2p::{self};
 use proto_lib::sdk;
 use std::collections::HashMap;
@@ -117,6 +117,13 @@ impl WriteHandler {
 }
 
 impl Network {
+    pub fn todo_remove_attach_light_peers(
+        &mut self,
+        light_peers: Arc<RwLock<HashMap<NodeId, DhtBuckets>>>,
+    ) {
+        self.light_peers = light_peers;
+    }
+
     /// Initiate the network by specifying this node's IP
     pub fn new(config: NetworkConfig) -> Result<Self, ()> {
         let client_config = Arc::new(config::client_config(
@@ -174,6 +181,7 @@ impl Network {
             client,
             client_config,
             peers_infos,
+            light_peers: Default::default(),
             bootstrappers,
             signed_ip,
             bloom_filter,
@@ -301,7 +309,9 @@ impl Network {
         node_id: NodeId,
         mut rx: broadcast::Receiver<()>,
     ) -> Result<JoinHandle<Result<(), NodeError>>, NodeError> {
-        let handshake_deadline = Duration::from_millis(constants::DEFAULT_DEADLINE); // s // TODO configure
+        // TODO mistake because it's in nanos
+        // let handshake_deadline = Duration::from_millis(constants::DEFAULT_DEADLINE); // s // TODO configure
+        let handshake_deadline = Duration::from_millis(1000);
         self.handshake(sender)?;
         let sleep = tokio::time::sleep(handshake_deadline);
         let network = self.clone();
@@ -369,7 +379,7 @@ impl Network {
         let message = sdk::light_request::Message::LightHandshake(sdk::LightHandshake {
             buckets: Some(buckets),
         });
-        let app_request = AppRequestMessage::encode(self.config.c_chain_id.clone(), message)?;
+        let app_request = AppRequestMessage::encode(&self.config.c_chain_id, message)?;
         sender
             .send(app_request)
             // TODO include this variant in thiserror and watch all the dup lines being deleted!
@@ -384,14 +394,23 @@ impl Network {
                 log::debug!("removing peer {} for an unknown reason", node_id);
             }
         }
-        let mut peers_write = self.peers_infos.write().unwrap();
+        {
+            let mut peers_write = self.peers_infos.write().unwrap();
 
-        for (node_id, _) in node_ids_errs {
-            if let Some(peer) = peers_write.swap_remove(node_id) {
-                if peer.handshook() {
-                    stats::handshook_peers::dec();
+            for (node_id, _) in node_ids_errs {
+                if let Some(peer) = peers_write.swap_remove(node_id) {
+                    if peer.handshook() {
+                        stats::handshook_peers::dec();
+                    }
+                    stats::connected_peers::dec();
                 }
-                stats::connected_peers::dec();
+            }
+        }
+        {
+            let mut peers_write = self.light_peers.write().unwrap();
+
+            for (node_id, _) in node_ids_errs {
+                peers_write.remove(node_id);
             }
         }
     }

@@ -1,3 +1,4 @@
+use alloy::primitives::keccak256;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -16,6 +17,7 @@ pub enum RlpError {
 
 #[derive(Debug)]
 pub struct Block {
+    pub hash: B32,
     pub header: Header,
     pub transactions: Vec<TransactionEnvelope>,
     pub uncles: Vec<Header>,
@@ -23,6 +25,8 @@ pub struct Block {
 
 impl Block {
     pub fn decode(bytes: &[u8]) -> Result<Self, RlpError> {
+        let hash = *keccak256(bytes);
+
         let mut cursor = 0;
         Rlp::decode_list(bytes, &mut cursor)?;
         let header = {
@@ -62,9 +66,9 @@ impl Block {
                 nonce,
             }
         };
-        // dbg!(&header);
-        // todo!();
+
         let block = Block {
+            hash,
             header,
             transactions: vec![],
             uncles: vec![],

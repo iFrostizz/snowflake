@@ -1,3 +1,4 @@
+use crate::dht::kademlia::ValueOrNodes;
 use crate::dht::LightError;
 use crate::dht::{Bucket, DhtId, LightMessage, LightResult};
 use crate::dht::{DhtBuckets, LightValue};
@@ -8,7 +9,7 @@ use crate::net::{
     ip::SignedIp,
     node::{NetworkConfig, NodeError},
 };
-use crate::server::msg::InboundMessageExt;
+use crate::server::msg::{AppResponseMessage, InboundMessageExt};
 use crate::server::{
     msg::InboundMessage,
     peers::{PeerInfo, PeerSender},
@@ -75,6 +76,7 @@ pub struct Network {
     pub client_config: Arc<ClientConfig>,
     /// All peers discovered by the node
     pub peers_infos: Arc<RwLock<IndexMap<NodeId, PeerInfo>>>, // TODO can we find a way to do it lock-less ?
+    pub light_peers: Arc<RwLock<HashMap<NodeId, DhtBuckets>>>,
     pub bootstrappers: RwLock<HashMap<NodeId, Option<DhtBuckets>>>,
     pub out_pipeline: Arc<Pipeline>,
     /// The canonically sorted validators map
@@ -386,6 +388,27 @@ impl Peer {
                 )
                 .await?;
             }
+            Message::AppResponse(app_response) => {
+                if app_response.chain_id != c_chain_id.as_ref() {
+                    return Ok(());
+                }
+                let bytes = app_response.app_bytes;
+                let (app_id, bytes) = unsigned_varint::decode::u64(&bytes)
+                    .map_err(|_| NodeError::Message("failed to decode app ID".to_string()))?;
+                if app_id != SNOWFLAKE_HANDLER_ID {
+                    return Ok(());
+                }
+                let light_message = InboundMessage::decode(bytes).map_err(NodeError::Decoding)?;
+                Self::manage_light_message2(
+                    c_chain_id,
+                    app_response.request_id,
+                    spln,
+                    spl,
+                    sender,
+                    light_message,
+                )
+                .await?;
+            }
             Message::Pong(_pong) => {}
             _ => log::debug!("unsupported message {} {node_id}", mini),
         };
@@ -402,7 +425,7 @@ impl Peer {
         light_message: sdk::light_request::Message,
     ) -> Result<(), NodeError> {
         let chain_id = c_chain_id.as_ref().to_vec();
-        log::info!("received light message {light_message:?}");
+        log::debug!("received light message {light_message:?}");
         let res = match light_message {
             sdk::light_request::Message::LightHandshake(LightHandshake { buckets }) => {
                 if let Some(buckets) = buckets {
@@ -447,32 +470,29 @@ impl Peer {
         };
 
         match res {
-            Some(Ok(light_value)) => {
-                let mut buffer = unsigned_varint::encode::u64_buffer();
-                let app_bytes = unsigned_varint::encode::u64(SNOWFLAKE_HANDLER_ID, &mut buffer);
-                let mut app_bytes = app_bytes.to_vec();
-                match light_value {
-                    LightValue::ValueOrNodes(value_or_nodes) => {
-                        value_or_nodes
-                            .encode(&mut app_bytes)
-                            .map_err(|_| NodeError::Message("failed to encode".to_string()))?;
-                        let _ = sender.send(Message::AppResponse(AppResponse {
-                            chain_id,
-                            request_id,
-                            app_bytes: app_bytes.to_vec(),
-                        }));
-                    }
-                    LightValue::Ok => {
-                        sdk::Ack::encode(&sdk::Ack {}, &mut app_bytes)
-                            .map_err(|_| NodeError::Message("failed to encode".to_string()))?;
-                        let _ = sender.send(Message::AppResponse(AppResponse {
-                            chain_id,
-                            request_id,
-                            app_bytes: app_bytes.to_vec(),
-                        }));
-                    }
+            Some(Ok(light_value)) => match light_value {
+                LightValue::ValueOrNodes(value_or_nodes) => {
+                    let response: sdk::light_response::Message = match value_or_nodes {
+                        ValueOrNodes::Value(value) => sdk::Value { value }.into(),
+                        ValueOrNodes::Nodes(nodes) => sdk::Nodes {
+                            node_ids: nodes
+                                .into_iter()
+                                .map(|node_id| node_id.as_ref().to_vec())
+                                .collect(),
+                        }
+                        .into(),
+                    };
+                    let message = AppResponseMessage::encode(c_chain_id, response, request_id)
+                        .map_err(|_| NodeError::Message("failed to encode".to_string()))?;
+                    let _ = sender.send(message);
                 }
-            }
+                LightValue::Ok => {
+                    let response: sdk::light_response::Message = sdk::Ack {}.into();
+                    let message = AppResponseMessage::encode(c_chain_id, response, request_id)
+                        .map_err(|_| NodeError::Message("failed to encode".to_string()))?;
+                    let _ = sender.send(message);
+                }
+            },
             Some(Err(LightError { code, message })) => {
                 let _ = sender.send(Message::AppError(AppError {
                     chain_id,
@@ -483,6 +503,20 @@ impl Peer {
             }
             _ => (),
         }
+
+        Ok(())
+    }
+
+    pub async fn manage_light_message2(
+        c_chain_id: &ChainId,
+        request_id: u32,
+        spln: &Sender<LightPeerMessage>,
+        spl: &Sender<(LightMessage, oneshot::Sender<LightResult>)>,
+        sender: &PeerSender,
+        light_message: sdk::light_response::Message,
+    ) -> Result<(), NodeError> {
+        let chain_id = c_chain_id.as_ref().to_vec();
+        log::debug!("received light message 2 {light_message:?}");
 
         Ok(())
     }
