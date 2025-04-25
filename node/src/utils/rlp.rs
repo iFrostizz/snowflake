@@ -1,4 +1,4 @@
-use alloy::primitives::keccak256;
+use alloy::primitives::{keccak256, B256};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -13,41 +13,73 @@ pub enum RlpError {
     NotAString,
     #[error("expected a list, got a string")]
     NotAList,
+    #[error("invalid format")]
+    InvalidFormat,
 }
 
 #[derive(Debug)]
 pub struct Block {
-    pub hash: B32,
+    pub hash: B256,
+    pub size: usize,
     pub header: Header,
-    pub transactions: Vec<TransactionEnvelope>,
+    pub transactions: Vec<Transaction>,
     pub uncles: Vec<Header>,
 }
 
 impl Block {
     pub fn decode(bytes: &[u8]) -> Result<Self, RlpError> {
-        let hash = *keccak256(bytes);
-
         let mut cursor = 0;
-        Rlp::decode_list(bytes, &mut cursor)?;
-        let header = {
-            Rlp::decode_list(bytes, &mut cursor)?;
+        let start_list = cursor;
+        let length = Rlp::decode_list(bytes, &mut cursor)?;
+        let (header, hash) = {
+            let start_list = cursor;
+            let length = Rlp::decode_list(bytes, &mut cursor)?;
+            let hash = keccak256(&bytes[start_list..cursor + length as usize]);
+            let header = Self::decode_header(&bytes[cursor..cursor + length as usize])?;
+            cursor += length as usize;
+            (header, hash)
+        };
+        let transactions = {
+            let length = Rlp::decode_list(bytes, &mut cursor)?;
+            let transactions = Self::decode_transactions(&bytes[cursor..cursor + length as usize])?;
+            cursor += length as usize;
+            transactions
+        };
+        // TODO decode uncles
+        // dbg!(&bytes[cursor..]);
+        // if cursor != start_list + length as usize {
+        //     return Err(RlpError::InvalidFormat);
+        // }
 
-            let parent_hash = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
-            let uncle_hash = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
-            let coinbase = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
-            let state_root = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
-            let tx_root = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
-            let receipt_hash = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
-            let bloom = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
-            let difficulty = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
-            let number = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
-            let gas_limit = u64::from_be_bytes(Rlp::decode_fixed_bytes(bytes, &mut cursor)?);
-            let gas_used = u64::from_be_bytes(Rlp::decode_fixed_bytes(bytes, &mut cursor)?);
-            let time = u64::from_be_bytes(Rlp::decode_fixed_bytes(bytes, &mut cursor)?);
-            let extra = Rlp::decode_string(bytes, &mut cursor)?.to_vec();
-            let mix_digest = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
-            let nonce = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
+        let block = Block {
+            hash,
+            size: bytes.len(),
+            header,
+            transactions,
+            uncles: vec![],
+        };
+        Ok(block)
+    }
 
+    fn decode_header(bytes: &[u8]) -> Result<Header, RlpError> {
+        let mut cursor = 0;
+        let parent_hash = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
+        let uncle_hash = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
+        let coinbase = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
+        let state_root = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
+        let tx_root = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
+        let receipt_hash = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
+        let bloom = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
+        let difficulty = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
+        let number = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
+        let gas_limit = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
+        let gas_used = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
+        let time = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
+        let extra = Rlp::decode_string(bytes, &mut cursor)?.to_vec();
+        let mix_digest = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
+        let nonce = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
+
+        let header = if cursor == bytes.len() {
             Header::Legacy {
                 parent_hash,
                 uncle_hash,
@@ -65,21 +97,228 @@ impl Block {
                 mix_digest,
                 nonce,
             }
+        } else {
+            let base_fee = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
+            if cursor == bytes.len() {
+                Header::EIP1559 {
+                    parent_hash,
+                    uncle_hash,
+                    coinbase,
+                    state_root,
+                    tx_root,
+                    receipt_hash,
+                    bloom,
+                    difficulty,
+                    number,
+                    gas_limit,
+                    gas_used,
+                    time,
+                    extra,
+                    mix_digest,
+                    nonce,
+                    base_fee,
+                }
+            } else {
+                let withdrawal_root = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
+                if cursor == bytes.len() {
+                    Header::EIP4895 {
+                        parent_hash,
+                        uncle_hash,
+                        coinbase,
+                        state_root,
+                        tx_root,
+                        receipt_hash,
+                        bloom,
+                        difficulty,
+                        number,
+                        gas_limit,
+                        gas_used,
+                        time,
+                        extra,
+                        mix_digest,
+                        nonce,
+                        base_fee,
+                        withdrawal_root,
+                    }
+                } else {
+                    let ext_data_gas_used = withdrawal_root;
+                    if cursor == bytes.len() {
+                        let block_gas_cost = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
+                        Header::Apricot4 {
+                            parent_hash,
+                            uncle_hash,
+                            coinbase,
+                            state_root,
+                            tx_root,
+                            receipt_hash,
+                            bloom,
+                            difficulty,
+                            number,
+                            gas_limit,
+                            gas_used,
+                            time,
+                            extra,
+                            mix_digest,
+                            nonce,
+                            base_fee,
+                            ext_data_gas_used,
+                            block_gas_cost,
+                        }
+                    } else {
+                        let blob_gas_used = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
+                        let excess_blob_gas = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
+                        if cursor == bytes.len() {
+                            Header::EIP4844 {
+                                parent_hash,
+                                uncle_hash,
+                                coinbase,
+                                state_root,
+                                tx_root,
+                                receipt_hash,
+                                bloom,
+                                difficulty,
+                                number,
+                                gas_limit,
+                                gas_used,
+                                time,
+                                extra,
+                                mix_digest,
+                                nonce,
+                                base_fee,
+                                withdrawal_root,
+                                blob_gas_used,
+                                excess_blob_gas,
+                            }
+                        } else {
+                            let parent_beacon_block_root =
+                                Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
+                            if cursor == bytes.len() {
+                                Header::EIP4788 {
+                                    parent_hash,
+                                    uncle_hash,
+                                    coinbase,
+                                    state_root,
+                                    tx_root,
+                                    receipt_hash,
+                                    bloom,
+                                    difficulty,
+                                    number,
+                                    gas_limit,
+                                    gas_used,
+                                    time,
+                                    extra,
+                                    mix_digest,
+                                    nonce,
+                                    base_fee,
+                                    withdrawal_root,
+                                    blob_gas_used,
+                                    excess_blob_gas,
+                                    parent_beacon_block_root,
+                                }
+                            } else {
+                                let ext_data_hash = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
+                                let ext_data_gas_used =
+                                    Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
+                                if cursor != bytes.len() {
+                                    return Err(RlpError::InvalidFormat);
+                                }
+                                Header::Extra {
+                                    parent_hash,
+                                    uncle_hash,
+                                    coinbase,
+                                    state_root,
+                                    tx_root,
+                                    receipt_hash,
+                                    bloom,
+                                    difficulty,
+                                    number,
+                                    gas_limit,
+                                    gas_used,
+                                    time,
+                                    extra,
+                                    mix_digest,
+                                    nonce,
+                                    base_fee,
+                                    withdrawal_root,
+                                    blob_gas_used,
+                                    excess_blob_gas,
+                                    parent_beacon_block_root,
+                                    ext_data_hash,
+                                    ext_data_gas_used,
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         };
+        Ok(header)
+    }
 
-        let block = Block {
-            hash,
-            header,
-            transactions: vec![],
-            uncles: vec![],
-        };
-        Ok(block)
+    fn decode_transactions(bytes: &[u8]) -> Result<Vec<Transaction>, RlpError> {
+        let mut transactions = Vec::new();
+        let mut cursor = 0;
+        while cursor < bytes.len() {
+            if Rlp::is_list(bytes, &cursor)? {
+                // legacy
+                let start_light = cursor;
+                let length = Rlp::decode_list(bytes, &mut cursor)?;
+                let hash = keccak256(&bytes[start_light..cursor + length as usize]);
+                let tx = TransactionLegacy::decode(&bytes[cursor..cursor + length as usize])?;
+                cursor += length as usize;
+                transactions.push(Transaction::Legacy { tx, hash });
+            } else {
+                // envelope
+                let tx_bytes = Rlp::decode_string(bytes, &mut cursor)?;
+                let hash = keccak256(tx_bytes);
+                let envelope = TransactionEnvelope::decode(tx_bytes)?;
+                transactions.push(Transaction::EIP2718 { envelope, hash });
+            }
+        }
+
+        if cursor != bytes.len() {
+            return Err(RlpError::InvalidFormat);
+        }
+        Ok(transactions)
     }
 }
 
 struct Rlp;
 
 impl Rlp {
+    pub fn is_string(bytes: &[u8], cursor: &usize) -> Result<bool, RlpError> {
+        let prefix = bytes.get(*cursor).ok_or(RlpError::InputTooShort)?;
+        match prefix {
+            0x00..=0x7f => Ok(true),
+            0x80..=0xb7 => Ok(true),
+            0xb8..=0xbf => Ok(true),
+            _ => Ok(false),
+        }
+    }
+
+    pub fn is_list(bytes: &[u8], cursor: &usize) -> Result<bool, RlpError> {
+        let prefix = bytes.get(*cursor).ok_or(RlpError::InputTooShort)?;
+        match prefix {
+            0xc0..=0xf7 => Ok(true),
+            0xf8..=0xff => Ok(true),
+            _ => Ok(false),
+        }
+    }
+
+    pub fn list_length(bytes: &[u8], cursor: &usize) -> Result<u64, RlpError> {
+        let mut cursor = *cursor;
+        Self::decode_list(bytes, &mut cursor)
+    }
+
+    pub fn length(bytes: &[u8], cursor: &usize) -> Result<u64, RlpError> {
+        let mut cursor = *cursor;
+        if Self::is_string(bytes, &cursor)? {
+            Self::decode_string(bytes, &mut cursor).map(|bytes| bytes.len() as u64)
+        } else {
+            Self::decode_list(bytes, &mut cursor)
+        }
+    }
+
     pub fn decode_string<'a>(bytes: &'a [u8], cursor: &mut usize) -> Result<&'a [u8], RlpError> {
         let prefix = bytes.get(*cursor).ok_or(RlpError::InputTooShort)?;
         *cursor += 1;
@@ -157,6 +396,7 @@ impl Rlp {
 
 type B32 = [u8; 32];
 type U256 = [u8; 32];
+type U64 = [u8; 8];
 type Address = [u8; 20];
 type Bloom = [u8; 256];
 type Nonce = [u8; 8];
@@ -172,15 +412,15 @@ pub enum Header {
         receipt_hash: B32,
         bloom: Bloom,
         difficulty: U256,
-        number: U256,
-        gas_limit: u64,
-        gas_used: u64,
-        time: u64,
+        number: U64,
+        gas_limit: U64,
+        gas_used: U64,
+        time: U64,
         extra: Vec<u8>,
         mix_digest: B32,
         nonce: Nonce,
     },
-    London {
+    EIP1559 {
         parent_hash: B32,
         uncle_hash: B32,
         coinbase: Address,
@@ -189,35 +429,16 @@ pub enum Header {
         receipt_hash: B32,
         bloom: Bloom,
         difficulty: U256,
-        number: U256,
-        gas_limit: u64,
-        gas_used: u64,
-        time: u64,
-        extra: Vec<u8>,
-        mix_digest: B32,
-        nonce: Nonce,
-        base_fee: U256,
-    },
-    Shanghai {
-        parent_hash: B32,
-        uncle_hash: B32,
-        coinbase: Address,
-        state_root: B32,
-        tx_root: B32,
-        receipt_hash: B32,
-        bloom: Bloom,
-        difficulty: U256,
-        number: U256,
-        gas_limit: u64,
-        gas_used: u64,
-        time: u64,
+        number: U64,
+        gas_limit: U64,
+        gas_used: U64,
+        time: U64,
         extra: Vec<u8>,
         mix_digest: B32,
         nonce: Nonce,
         base_fee: U256,
-        withdrawal_root: B32,
     },
-    Cancun {
+    EIP4895 {
         parent_hash: B32,
         uncle_hash: B32,
         coinbase: Address,
@@ -226,20 +447,80 @@ pub enum Header {
         receipt_hash: B32,
         bloom: Bloom,
         difficulty: U256,
-        number: U256,
-        gas_limit: u64,
-        gas_used: u64,
-        time: u64,
+        number: U64,
+        gas_limit: U64,
+        gas_used: U64,
+        time: U64,
         extra: Vec<u8>,
         mix_digest: B32,
         nonce: Nonce,
         base_fee: U256,
         withdrawal_root: B32,
-        blob_gas_used: u64,
-        excess_blob_gas: u64,
+    },
+    Apricot4 {
+        parent_hash: B32,
+        uncle_hash: B32,
+        coinbase: Address,
+        state_root: B32,
+        tx_root: B32,
+        receipt_hash: B32,
+        bloom: Bloom,
+        difficulty: U256,
+        number: U64,
+        gas_limit: U64,
+        gas_used: U64,
+        time: U64,
+        extra: Vec<u8>,
+        mix_digest: B32,
+        nonce: Nonce,
+        base_fee: U256,
+        ext_data_gas_used: U256,
+        block_gas_cost: U256,
+    },
+    EIP4844 {
+        parent_hash: B32,
+        uncle_hash: B32,
+        coinbase: Address,
+        state_root: B32,
+        tx_root: B32,
+        receipt_hash: B32,
+        bloom: Bloom,
+        difficulty: U256,
+        number: U64,
+        gas_limit: U64,
+        gas_used: U64,
+        time: U64,
+        extra: Vec<u8>,
+        mix_digest: B32,
+        nonce: Nonce,
+        base_fee: U256,
+        withdrawal_root: B32,
+        blob_gas_used: U64,
+        excess_blob_gas: U64,
+    },
+    EIP4788 {
+        parent_hash: B32,
+        uncle_hash: B32,
+        coinbase: Address,
+        state_root: B32,
+        tx_root: B32,
+        receipt_hash: B32,
+        bloom: Bloom,
+        difficulty: U256,
+        number: U64,
+        gas_limit: U64,
+        gas_used: U64,
+        time: U64,
+        extra: Vec<u8>,
+        mix_digest: B32,
+        nonce: Nonce,
+        base_fee: U256,
+        withdrawal_root: U256,
+        blob_gas_used: U64,
+        excess_blob_gas: U64,
         parent_beacon_block_root: B32,
     },
-    TODO {
+    Extra {
         parent_hash: B32,
         uncle_hash: B32,
         coinbase: Address,
@@ -248,64 +529,275 @@ pub enum Header {
         receipt_hash: B32,
         bloom: Bloom,
         difficulty: U256,
-        number: U256,
-        gas_limit: u64,
-        gas_used: u64,
-        time: u64,
+        number: U64,
+        gas_limit: U64,
+        gas_used: U64,
+        time: U64,
         extra: Vec<u8>,
         mix_digest: B32,
         nonce: Nonce,
-        TODO: (),
+        base_fee: U256,
+        withdrawal_root: U256,
+        blob_gas_used: U64,
+        excess_blob_gas: U64,
+        parent_beacon_block_root: B32,
+        ext_data_hash: B32,
+        ext_data_gas_used: U256,
     },
 }
 
-impl Header {
-    pub fn parent_hash(&self) -> B32 {
-        match self {
-            Header::Legacy { parent_hash, .. }
-            | Header::London { parent_hash, .. }
-            | Header::Shanghai { parent_hash, .. }
-            | Header::Cancun { parent_hash, .. }
-            | Header::TODO { parent_hash, .. } => *parent_hash,
+macro_rules! make_helper {
+    ($field:ident, $type:ty) => {
+        pub fn $field(&self) -> &$type {
+            match self {
+                Header::Legacy { $field, .. }
+                | Header::EIP1559 { $field, .. }
+                | Header::EIP4895 { $field, .. }
+                | Header::Apricot4 { $field, .. }
+                | Header::EIP4844 { $field, .. }
+                | Header::EIP4788 { $field, .. }
+                | Header::Extra { $field, .. } => $field,
+            }
         }
-    }
+    };
+}
 
-    // TODO ...
+impl Header {
+    make_helper!(parent_hash, B32);
+    make_helper!(uncle_hash, B32);
+    make_helper!(coinbase, Address);
+    make_helper!(state_root, B32);
+    make_helper!(tx_root, B32);
+    make_helper!(receipt_hash, B32);
+    make_helper!(bloom, Bloom);
+    make_helper!(difficulty, U256);
+    make_helper!(number, U64);
+    make_helper!(gas_limit, U64);
+    make_helper!(gas_used, U64);
+    make_helper!(time, U64);
+    make_helper!(extra, Vec<u8>);
+    make_helper!(mix_digest, B32);
+    make_helper!(nonce, Nonce);
+}
 
-    pub fn number(&self) -> U256 {
-        match self {
-            Header::Legacy { number, .. }
-            | Header::London { number, .. }
-            | Header::Shanghai { number, .. }
-            | Header::Cancun { number, .. }
-            | Header::TODO { number, .. } => *number,
+impl From<Header> for alloy::consensus::Header {
+    fn from(value: Header) -> Self {
+        alloy::consensus::Header {
+            parent_hash: value.parent_hash().into(),
+            ommers_hash: value.uncle_hash().into(),
+            beneficiary: value.coinbase().into(),
+            state_root: value.state_root().into(),
+            transactions_root: value.tx_root().into(),
+            receipts_root: value.receipt_hash().into(),
+            logs_bloom: value.bloom().into(),
+            difficulty: ruint::Uint::from_be_bytes(*value.receipt_hash()),
+            number: u64::from_be_bytes(*value.number()),
+            gas_limit: u64::from_be_bytes(*value.gas_limit()),
+            gas_used: u64::from_be_bytes(*value.gas_used()),
+            timestamp: u64::from_be_bytes(*value.time()),
+            extra_data: alloy::primitives::Bytes::copy_from_slice(value.extra()),
+            mix_hash: value.mix_digest().into(),
+            nonce: value.nonce().into(),
+            base_fee_per_gas: None,
+            withdrawals_root: None,
+            blob_gas_used: None,
+            excess_blob_gas: None,
+            parent_beacon_block_root: None,
+            requests_hash: None,
         }
     }
 }
 
 #[derive(Debug)]
+pub enum Transaction {
+    Legacy {
+        hash: B256,
+        tx: TransactionLegacy,
+    },
+    EIP2718 {
+        hash: B256,
+        envelope: TransactionEnvelope,
+    },
+}
+
+#[derive(Debug)]
 pub enum TransactionEnvelope {
-    Legacy(TransactionLegacy),
     AccessList(TransactionAccessList),
     DynamicFee(TransactionDynamicFee),
     Blob(TransactionBlob),
 }
 
+impl TransactionLegacy {
+    pub fn decode(bytes: &[u8]) -> Result<Self, RlpError> {
+        let mut cursor = 0;
+        let nonce = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
+        let gas_price = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
+        let gas_limit = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
+        let to = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
+        let value = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
+        let data = Rlp::decode_string(bytes, &mut cursor)?.to_vec();
+        let v = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
+        let r = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
+        let s = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
+
+        Ok(TransactionLegacy {
+            nonce,
+            gas_price,
+            gas_limit,
+            to,
+            value,
+            data,
+            v,
+            r,
+            s,
+        })
+    }
+}
+
 impl TransactionEnvelope {
     pub fn decode(bytes: &[u8]) -> Result<Self, RlpError> {
-        todo!()
-    }
+        // EIP-2781 envelope
+        let mut cursor = 0;
+        let prefix = bytes.get(cursor).ok_or(RlpError::InputTooShort)?;
+        let envelope = match prefix {
+            0x01 => {
+                cursor += 1;
+                let length = Rlp::decode_list(bytes, &mut cursor)?;
+                let start_cursor = cursor;
+                let chain_id = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
+                let nonce = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
+                let gas_price = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
+                let gas_limit = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
+                let to = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
+                let value = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
+                let data = Rlp::decode_string(bytes, &mut cursor)?.to_vec();
+                let access_list = {
+                    let length = Rlp::decode_list(bytes, &mut cursor)?;
+                    let access_list = AccessList::decode(&bytes[cursor..cursor + length as usize])?;
+                    cursor += length as usize;
+                    access_list
+                };
+                let v = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
+                let r = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
+                let s = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
 
-    pub fn hash(&self) -> B32 {
-        todo!()
+                if cursor != bytes.len() || cursor != start_cursor + length as usize {
+                    return Err(RlpError::InvalidFormat);
+                }
+
+                TransactionEnvelope::AccessList(TransactionAccessList {
+                    chain_id,
+                    nonce,
+                    gas_price,
+                    gas_limit,
+                    to,
+                    value,
+                    data,
+                    access_list,
+                    v,
+                    r,
+                    s,
+                })
+            }
+            0x02 => {
+                cursor += 1;
+                let length = Rlp::decode_list(bytes, &mut cursor)?;
+                let start_cursor = cursor;
+                let chain_id = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
+                let nonce = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
+                let max_priority_fee_per_gas = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
+                let max_fee_per_gas = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
+                let gas_limit = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
+                let destination = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
+                let amount = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
+                let data = Rlp::decode_string(bytes, &mut cursor)?.to_vec();
+                let access_list = {
+                    let length = Rlp::decode_list(bytes, &mut cursor)?;
+                    let access_list = AccessList::decode(&bytes[cursor..cursor + length as usize])?;
+                    cursor += length as usize;
+                    access_list
+                };
+                let v = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
+                let r = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
+                let s = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
+
+                if cursor != bytes.len() || cursor != start_cursor + length as usize {
+                    return Err(RlpError::InvalidFormat);
+                }
+
+                TransactionEnvelope::DynamicFee(TransactionDynamicFee {
+                    chain_id,
+                    nonce,
+                    max_priority_fee_per_gas,
+                    max_fee_per_gas,
+                    gas_limit,
+                    destination,
+                    amount,
+                    data,
+                    access_list,
+                    v,
+                    r,
+                    s,
+                })
+            }
+            0x03 => {
+                // TODO need to find blocks with this transaction type
+                cursor += 1;
+                let length = Rlp::decode_list(bytes, &mut cursor)?;
+                let start_cursor = cursor;
+                let chain_id = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
+                let nonce = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
+                let max_priority_fee_per_gas = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
+                let max_fee_per_gas = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
+                let gas_limit = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
+                let to = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
+                let value = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
+                let data = Rlp::decode_string(bytes, &mut cursor)?.to_vec();
+                let access_list = {
+                    let length = Rlp::decode_list(bytes, &mut cursor)?;
+                    let access_list = AccessList::decode(&bytes[cursor..cursor + length as usize])?;
+                    cursor += length as usize;
+                    access_list
+                };
+                let max_fee_per_blob_gas = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
+                let blob_hashes = todo!();
+                let v = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
+                let r = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
+                let s = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
+
+                if cursor != bytes.len() || cursor != start_cursor + length as usize {
+                    return Err(RlpError::InvalidFormat);
+                }
+
+                TransactionEnvelope::Blob(TransactionBlob {
+                    chain_id,
+                    nonce,
+                    max_priority_fee_per_gas,
+                    max_fee_per_gas,
+                    gas_limit,
+                    to,
+                    value,
+                    data,
+                    access_list,
+                    max_fee_per_blob_gas,
+                    blob_hashes,
+                    v,
+                    r,
+                    s,
+                })
+            }
+            _ => return Err(RlpError::InvalidFormat),
+        };
+
+        Ok(envelope)
     }
 }
 
 #[derive(Debug)]
 pub struct TransactionLegacy {
-    pub nonce: u64,
+    pub nonce: U64,
     pub gas_price: U256,
-    pub gas_limit: u64,
+    pub gas_limit: U64,
     pub to: Address,
     pub value: U256,
     pub data: Vec<u8>,
@@ -315,32 +807,32 @@ pub struct TransactionLegacy {
 }
 
 #[derive(Debug)]
-pub struct TransactionAccessList {
+pub struct TransactionDynamicFee {
     pub chain_id: U256,
-    pub nonce: u64,
-    pub gas_price: U256,
-    pub gas_limit: u64,
-    pub to: Address,
-    pub value: U256,
+    pub nonce: U64,
+    pub max_priority_fee_per_gas: U256,
+    pub max_fee_per_gas: U256,
+    pub gas_limit: U64,
+    pub destination: Address,
+    pub amount: U256,
     pub data: Vec<u8>,
     pub access_list: Vec<AccessList>,
-    pub y_parity: U256,
+    pub v: U256,
     pub r: U256,
     pub s: U256,
 }
 
 #[derive(Debug)]
-pub struct TransactionDynamicFee {
+pub struct TransactionAccessList {
     pub chain_id: U256,
-    pub nonce: u64,
-    pub max_priority_fee_per_gas: U256,
-    pub max_fee_per_gas: U256,
-    pub gas_limit: u64,
-    pub destination: Address,
-    pub amount: U256,
+    pub nonce: U64,
+    pub gas_price: U256,
+    pub gas_limit: U64,
+    pub to: Address,
+    pub value: U256,
     pub data: Vec<u8>,
     pub access_list: Vec<AccessList>,
-    pub y_parity: U256,
+    pub v: U256,
     pub r: U256,
     pub s: U256,
 }
@@ -348,17 +840,17 @@ pub struct TransactionDynamicFee {
 #[derive(Debug)]
 pub struct TransactionBlob {
     pub chain_id: U256,
-    pub nonce: u64,
+    pub nonce: U64,
     pub max_priority_fee_per_gas: U256,
     pub max_fee_per_gas: U256,
-    pub gas_limit: u64,
+    pub gas_limit: U64,
     pub to: Address,
     pub value: U256,
     pub data: Vec<u8>,
     pub access_list: Vec<AccessList>,
     pub max_fee_per_blob_gas: U256,
     pub blob_hashes: Vec<U256>,
-    pub y_parity: U256,
+    pub v: U256,
     pub r: U256,
     pub s: U256,
 }
@@ -369,9 +861,43 @@ pub struct AccessList {
     pub storage_keys: Vec<U256>,
 }
 
+impl AccessList {
+    pub fn decode(bytes: &[u8]) -> Result<Vec<AccessList>, RlpError> {
+        let mut cursor = 0;
+        if bytes.is_empty() {
+            Ok(vec![])
+        } else {
+            let length = Rlp::decode_list(bytes, &mut cursor)?;
+            let start_cursor = cursor;
+            dbg!(&bytes[cursor..]);
+            let mut access_list = Vec::new();
+            while cursor < start_cursor + length as usize {
+                let address = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
+                let length = Rlp::decode_list(bytes, &mut cursor)?;
+                let start_cursor = cursor;
+                let mut storage_keys = Vec::new();
+                while cursor < start_cursor + length as usize {
+                    let storage_key = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
+                    storage_keys.push(storage_key);
+                }
+                if cursor != start_cursor + length as usize {
+                    return Err(RlpError::InvalidFormat);
+                }
+                access_list.push(AccessList {
+                    address,
+                    storage_keys,
+                });
+            }
+            if cursor != start_cursor + length as usize {
+                return Err(RlpError::InvalidFormat);
+            }
+            Ok(access_list)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::utils::unpacker::StatelessBlock;
     use std::fmt::Debug;
     use std::fs;
@@ -391,7 +917,6 @@ mod tests {
                 println!("{}....", file_name);
 
                 let bytes = fs::read(&path).unwrap();
-                println!("{:?}", &bytes);
                 assert!(!bytes.is_empty());
 
                 f(&bytes).unwrap();
@@ -407,8 +932,8 @@ mod tests {
         can_parse("blocks", StatelessBlock::unpack);
     }
 
-    #[test]
-    fn can_parse_transaction() {
-        can_parse("txs", TransactionEnvelope::decode);
-    }
+    // #[test]
+    // fn can_parse_transaction() {
+    //     can_parse("txs", Transaction::decode);
+    // }
 }

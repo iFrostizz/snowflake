@@ -153,34 +153,12 @@ mod rpc_impl {
         }
     }
 
-    fn block_to_block_object(block: Block, full: bool) -> alloy::rpc::types::Block {
+    fn block_to_rpc(block: Block, full: bool) -> alloy::rpc::types::Block {
         let header = alloy::rpc::types::Header {
             hash: block.hash.into(),
-            inner: alloy::consensus::Header {
-                parent_hash: Default::default(),
-                ommers_hash: Default::default(),
-                beneficiary: Default::default(),
-                state_root: Default::default(),
-                transactions_root: Default::default(),
-                receipts_root: Default::default(),
-                logs_bloom: Default::default(),
-                difficulty: Default::default(),
-                number: 0,
-                gas_limit: 0,
-                gas_used: 0,
-                timestamp: 0,
-                extra_data: Default::default(),
-                mix_hash: Default::default(),
-                nonce: Default::default(),
-                base_fee_per_gas: None,
-                withdrawals_root: None,
-                blob_gas_used: None,
-                excess_blob_gas: None,
-                parent_beacon_block_root: None,
-                requests_hash: None,
-            },
+            inner: block.header.into(),
             total_difficulty: None,
-            size: None,
+            size: Some(U256::try_from(block.size).unwrap()),
         };
 
         let transactions = if full {
@@ -575,7 +553,7 @@ mod rpc_impl {
                 .light_network
                 .find_block(number)
                 .await
-                .map(|block| Some(dbg!(block_to_block_object(dbg!(block), full))))
+                .map(|block| Some(block_to_rpc(block, full)))
                 .map_err(Into::into)
         }
 

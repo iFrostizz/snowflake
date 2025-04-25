@@ -168,7 +168,7 @@ impl DhtContent<u64, StatelessBlock> for DhtBlocks {
         if !self.verify(&decoded) {
             return Err(light_errors::INVALID_CONTENT);
         }
-        let number = u64::from_be_bytes(decoded.block.header.number()[24..].try_into().unwrap());
+        let number = u64::from_be_bytes(*decoded.block.header.number());
         let bucket = Self::key_to_bucket(number);
         if !self.is_desired_bucket(&bucket) {
             return Err(light_errors::UNDESIRED_BUCKET);

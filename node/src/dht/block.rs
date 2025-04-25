@@ -82,9 +82,13 @@ impl DhtBlocks {
                 if i == len - 1 {
                     last_container_id = block.id.as_ref().to_vec();
                 }
-                let number =
-                    u64::from_be_bytes(block.block.header.number()[24..].try_into().unwrap());
+                let number = u64::from_be_bytes(*block.block.header.number());
                 dbg!(&number);
+                std::fs::write(
+                    format!("./node/testdata/blocks/mainnet_{}.bin", number),
+                    container.clone(),
+                )
+                .unwrap();
                 self.store.insert(Self::key_to_bucket(number), container);
                 bootstrapper = Self::pick_random_bootstrapper(&node).await;
             }
