@@ -54,7 +54,9 @@ struct PickerConfig {
 
 pub enum SinglePickerConfig {
     Bootstrapper,
+    #[allow(unused)]
     Random,
+    #[allow(unused)]
     Light,
 }
 

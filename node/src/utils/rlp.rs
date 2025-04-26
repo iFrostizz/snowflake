@@ -1,4 +1,4 @@
-use alloy::consensus::{SignableTransaction};
+use alloy::consensus::SignableTransaction;
 use alloy::primitives::{keccak256, B256};
 use thiserror::Error;
 
@@ -24,6 +24,7 @@ pub struct Block {
     pub size: usize,
     pub header: Header,
     pub transactions: Vec<Transaction>,
+    #[allow(unused)]
     pub uncles: Vec<Header>,
 }
 
@@ -44,6 +45,7 @@ impl Block {
             let length = Rlp::decode_list(bytes, &mut cursor)?;
             let transactions = Self::decode_transactions(&bytes[cursor..cursor + length as usize])?;
             // cursor += length as usize;
+            #[allow(clippy::let_and_return)]
             transactions
         };
         // TODO decode uncles
@@ -771,21 +773,42 @@ impl TransactionEnvelope {
     }
 }
 
-impl From<Transaction>
-    for alloy::rpc::types::Transaction
-{
+impl From<AccessList> for alloy::eips::eip2930::AccessList {
+    fn from(AccessList(access_list): AccessList) -> Self {
+        alloy::eips::eip2930::AccessList(
+            access_list
+                .into_iter()
+                .map(|item| alloy::eips::eip2930::AccessListItem {
+                    address: item.address.into(),
+                    storage_keys: item
+                        .storage_keys
+                        .into_iter()
+                        .map(|item| item.into())
+                        .collect(),
+                })
+                .collect(),
+        )
+    }
+}
+
+impl From<Transaction> for alloy::rpc::types::Transaction {
     fn from(value: Transaction) -> Self {
+        const NO_PARITY: [u8; 32] = [
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 27,
+        ];
+        const PARITY: [u8; 32] = [
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 28,
+        ];
+        const V_PARITY: [u8; 32] = [
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 1,
+        ];
+
         let transaction = match value {
             Transaction::Legacy { tx, .. } => {
                 let (chain_id, y_parity) = {
-                    const NO_PARITY: [u8; 32] = [
-                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        0, 0, 0, 0, 0, 0, 27,
-                    ];
-                    const PARITY: [u8; 32] = [
-                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                        0, 0, 0, 0, 0, 0, 28,
-                    ];
                     if tx.v == NO_PARITY {
                         (None, false)
                     } else if tx.v == PARITY {
@@ -797,11 +820,14 @@ impl From<Transaction>
                         let v = alloy::primitives::U256::from_be_bytes(tx.v);
                         if v >= 37.try_into().unwrap() {
                             if tx.v[31] % 2 == 0 {
-                                let sub: alloy::primitives::U256 = v - alloy::primitives::U256::from(35);
-                                let chain_id: alloy::primitives::U256 = sub / alloy::primitives::U256::from(2);
+                                let sub: alloy::primitives::U256 =
+                                    v - alloy::primitives::U256::from(35);
+                                let chain_id: alloy::primitives::U256 =
+                                    sub / alloy::primitives::U256::from(2);
                                 (Some(chain_id.try_into().unwrap()), false)
                             } else {
-                                let chain_id: alloy::primitives::U256 = v - alloy::primitives::U256::from(36);
+                                let chain_id: alloy::primitives::U256 =
+                                    v - alloy::primitives::U256::from(36);
                                 (Some(chain_id.try_into().unwrap()), true)
                             }
                         } else if v == 1.try_into().unwrap() {
@@ -816,24 +842,24 @@ impl From<Transaction>
                 };
 
                 alloy::consensus::TxEnvelope::Legacy(
-                        alloy::consensus::TxLegacy {
-                            chain_id,
-                            nonce: u64::from_be_bytes(tx.nonce),
-                            gas_price: u128::from_be_bytes(tx.gas_price[16..].try_into().unwrap()),
-                            gas_limit: u64::from_be_bytes(tx.gas_limit),
-                            to: if tx.to == [0; 20] {
-                                alloy::primitives::TxKind::Create
-                            } else {
-                                alloy::primitives::TxKind::Call(tx.to.into())
-                            },
-                            value: alloy::primitives::U256::from_be_bytes(tx.value),
-                            input: tx.data.into(),
-                        }
-                            .into_signed(alloy::signers::Signature::new(
-                                alloy::primitives::U256::from_be_bytes(tx.r),
-                                alloy::primitives::U256::from_be_bytes(tx.s),
-                                y_parity,
-                            )),
+                    alloy::consensus::TxLegacy {
+                        chain_id,
+                        nonce: u64::from_be_bytes(tx.nonce),
+                        gas_price: u128::from_be_bytes(tx.gas_price[16..].try_into().unwrap()),
+                        gas_limit: u64::from_be_bytes(tx.gas_limit),
+                        to: if tx.to == [0; 20] {
+                            alloy::primitives::TxKind::Create
+                        } else {
+                            alloy::primitives::TxKind::Call(tx.to.into())
+                        },
+                        value: alloy::primitives::U256::from_be_bytes(tx.value),
+                        input: tx.data.into(),
+                    }
+                    .into_signed(alloy::signers::Signature::new(
+                        alloy::primitives::U256::from_be_bytes(tx.r),
+                        alloy::primitives::U256::from_be_bytes(tx.s),
+                        y_parity,
+                    )),
                 )
             }
             Transaction::EIP2718 { envelope, .. } => match envelope {
@@ -855,24 +881,25 @@ impl From<Transaction>
                         chain_id: u64::from_be_bytes(chain_id[24..].try_into().unwrap()),
                         nonce: u64::from_be_bytes(nonce),
                         gas_limit: u64::from_be_bytes(gas_limit),
-                        max_fee_per_gas: u128::from_be_bytes(max_fee_per_gas[16..].try_into().unwrap()),
-                        max_priority_fee_per_gas: u128::from_be_bytes(max_priority_fee_per_gas[16..].try_into().unwrap()),
+                        max_fee_per_gas: u128::from_be_bytes(
+                            max_fee_per_gas[16..].try_into().unwrap(),
+                        ),
+                        max_priority_fee_per_gas: u128::from_be_bytes(
+                            max_priority_fee_per_gas[16..].try_into().unwrap(),
+                        ),
                         to: if destination == [0; 20] {
                             alloy::primitives::TxKind::Create
                         } else {
                             alloy::primitives::TxKind::Call(destination.into())
                         },
                         value: alloy::primitives::U256::from_be_bytes(amount),
-                        access_list: alloy::eips::eip2930::AccessList(access_list.into_iter().map(|item| alloy::eips::eip2930::AccessListItem {
-                            address: item.address.into(),
-                            storage_keys: item.storage_keys.into_iter().map(|item| item.into()).collect(),
-                        }).collect()),
+                        access_list: access_list.into(),
                         input: data.into(),
                     }
                     .into_signed(alloy::signers::Signature::new(
                         alloy::primitives::U256::from_be_bytes(r),
                         alloy::primitives::U256::from_be_bytes(s),
-                        false,
+                        v == V_PARITY,
                     )),
                 ),
                 TransactionEnvelope::AccessList(TransactionAccessList {
@@ -899,16 +926,13 @@ impl From<Transaction>
                             alloy::primitives::TxKind::Call(to.into())
                         },
                         value: alloy::primitives::U256::from_be_bytes(value),
-                        access_list: alloy::eips::eip2930::AccessList(access_list.into_iter().map(|item| alloy::eips::eip2930::AccessListItem {
-                            address: item.address.into(),
-                            storage_keys: item.storage_keys.into_iter().map(|item| item.into()).collect(),
-                        }).collect()),
+                        access_list: access_list.into(),
                         input: data.into(),
                     }
                     .into_signed(alloy::signers::Signature::new(
                         alloy::primitives::U256::from_be_bytes(r),
                         alloy::primitives::U256::from_be_bytes(s),
-                        false,
+                        v == V_PARITY,
                     )),
                 ),
                 TransactionEnvelope::Blob(TransactionBlob {
@@ -931,22 +955,25 @@ impl From<Transaction>
                         chain_id: u64::from_be_bytes(chain_id[24..].try_into().unwrap()),
                         nonce: u64::from_be_bytes(nonce),
                         gas_limit: u64::from_be_bytes(gas_limit),
-                        max_fee_per_gas: u128::from_be_bytes(max_fee_per_gas[16..].try_into().unwrap()),
-                        max_priority_fee_per_gas: u128::from_be_bytes(max_priority_fee_per_gas[16..].try_into().unwrap()),
+                        max_fee_per_gas: u128::from_be_bytes(
+                            max_fee_per_gas[16..].try_into().unwrap(),
+                        ),
+                        max_priority_fee_per_gas: u128::from_be_bytes(
+                            max_priority_fee_per_gas[16..].try_into().unwrap(),
+                        ),
                         to: to.into(),
                         value: alloy::primitives::U256::from_be_bytes(value),
-                        access_list: alloy::eips::eip2930::AccessList(access_list.into_iter().map(|item| alloy::eips::eip2930::AccessListItem {
-                            address: item.address.into(),
-                            storage_keys: item.storage_keys.into_iter().map(|item| item.into()).collect(),
-                        }).collect()),
+                        access_list: access_list.into(),
                         blob_versioned_hashes: blob_hashes.into_iter().map(|h| h.into()).collect(),
-                        max_fee_per_blob_gas: u128::from_be_bytes(max_fee_per_blob_gas[16..].try_into().unwrap()),
+                        max_fee_per_blob_gas: u128::from_be_bytes(
+                            max_fee_per_blob_gas[16..].try_into().unwrap(),
+                        ),
                         input: data.into(),
                     })
                     .into_signed(alloy::signers::Signature::new(
                         alloy::primitives::U256::from_be_bytes(r),
                         alloy::primitives::U256::from_be_bytes(s),
-                        false,
+                        v == V_PARITY,
                     )),
                 ),
             },
@@ -988,7 +1015,7 @@ pub struct TransactionDynamicFee {
     pub destination: Address,
     pub amount: U256,
     pub data: Vec<u8>,
-    pub access_list: Vec<AccessList>,
+    pub access_list: AccessList,
     pub v: U256,
     pub r: U256,
     pub s: U256,
@@ -1003,7 +1030,7 @@ pub struct TransactionAccessList {
     pub to: Address,
     pub value: U256,
     pub data: Vec<u8>,
-    pub access_list: Vec<AccessList>,
+    pub access_list: AccessList,
     pub v: U256,
     pub r: U256,
     pub s: U256,
@@ -1019,7 +1046,7 @@ pub struct TransactionBlob {
     pub to: Address,
     pub value: U256,
     pub data: Vec<u8>,
-    pub access_list: Vec<AccessList>,
+    pub access_list: AccessList,
     pub max_fee_per_blob_gas: U256,
     pub blob_hashes: Vec<U256>,
     pub v: U256,
@@ -1028,16 +1055,19 @@ pub struct TransactionBlob {
 }
 
 #[derive(Debug)]
-pub struct AccessList {
+pub struct AccessList(Vec<AccessListItem>);
+
+#[derive(Debug)]
+pub struct AccessListItem {
     pub address: Address,
     pub storage_keys: Vec<U256>,
 }
 
 impl AccessList {
-    pub fn decode(bytes: &[u8]) -> Result<Vec<AccessList>, RlpError> {
+    pub fn decode(bytes: &[u8]) -> Result<AccessList, RlpError> {
         let mut cursor = 0;
         if bytes.is_empty() {
-            Ok(vec![])
+            Ok(AccessList(vec![]))
         } else {
             let length = Rlp::decode_list(bytes, &mut cursor)?;
             let start_cursor = cursor;
@@ -1055,7 +1085,7 @@ impl AccessList {
                 if cursor != start_cursor + length as usize {
                     return Err(RlpError::InvalidFormat);
                 }
-                access_list.push(AccessList {
+                access_list.push(AccessListItem {
                     address,
                     storage_keys,
                 });
@@ -1063,7 +1093,7 @@ impl AccessList {
             if cursor != start_cursor + length as usize {
                 return Err(RlpError::InvalidFormat);
             }
-            Ok(access_list)
+            Ok(AccessList(access_list))
         }
     }
 }

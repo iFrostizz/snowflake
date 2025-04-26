@@ -176,6 +176,7 @@ pub trait DhtContent<K, V>: ConcreteDht<K> {
     /// If the content is ill-formed, it should not be stored.
     fn verify(&self, value: &V) -> bool;
     /// Typed to encoded value
+    #[allow(unused)]
     fn encode(value: V) -> Result<Vec<u8>, LightError>;
     /// Encoded to typed value
     fn decode(bytes: &[u8]) -> Result<V, LightError>;

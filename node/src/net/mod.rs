@@ -126,7 +126,9 @@ impl HandshakeInfos {
 #[derive(Debug)]
 pub struct PeerConnection {
     tls: Option<TlsStream<TcpStream>>,
+    #[allow(unused)]
     sock_addr: SocketAddr,
+    #[allow(unused)]
     timestamp: u64,
 }
 

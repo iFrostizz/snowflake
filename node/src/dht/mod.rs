@@ -22,7 +22,6 @@ pub trait ConcreteDht<K> {
 
 #[derive(Debug)]
 struct BucketDht {
-    k: Bucket,
     bucket_lo: Bucket,
     bucket_hi: Bucket,
 }
@@ -32,7 +31,6 @@ impl BucketDht {
         let bucket = Bucket::from_be_bytes(node_id.into());
         let (bucket_lo, bucket_hi) = (bucket.wrapping_sub(k), bucket.wrapping_add(k));
         Self {
-            k,
             bucket_lo,
             bucket_hi,
         }
@@ -67,10 +65,6 @@ impl<DB: LockedMapDb<Bucket, Vec<u8>>> Dht<DB> {
 
     pub fn is_desired_bucket(&self, bucket: &Bucket) -> bool {
         self.bucket_dht.is_desired_bucket(bucket)
-    }
-
-    pub fn k(&self) -> Bucket {
-        self.bucket_dht.k
     }
 }
 

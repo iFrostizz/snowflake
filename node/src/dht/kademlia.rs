@@ -9,7 +9,6 @@ use crate::server::peers::{PeerInfo, PeerSender};
 use crate::utils::constants::SNOWFLAKE_HANDLER_ID;
 use flume::Sender;
 use indexmap::IndexMap;
-use prost::Message;
 use proto_lib::{p2p, sdk};
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
@@ -49,23 +48,6 @@ pub struct KademliaDht {
 pub enum ValueOrNodes<V> {
     Value(V),
     Nodes(Vec<NodeId>),
-}
-
-impl ValueOrNodes<Vec<u8>> {
-    pub fn encode(self, buf: &mut Vec<u8>) -> Result<(), prost::EncodeError> {
-        match self {
-            ValueOrNodes::Value(value) => sdk::Value::encode(&sdk::Value { value }, buf),
-            ValueOrNodes::Nodes(nodes) => sdk::Nodes::encode(
-                &sdk::Nodes {
-                    node_ids: nodes
-                        .into_iter()
-                        .map(|node_id| node_id.as_ref().to_vec())
-                        .collect(),
-                },
-                buf,
-            ),
-        }
-    }
 }
 
 impl KademliaDht {
