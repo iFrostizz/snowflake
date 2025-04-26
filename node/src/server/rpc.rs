@@ -37,7 +37,7 @@ mod rpc_impl {
     use crate::utils::constants;
     use crate::utils::rlp::{Block, Transaction};
     use crate::Arc;
-    use alloy::consensus::{EthereumTxEnvelope, TxEip4844Variant};
+    use alloy::consensus::{EthereumTxEnvelope, TxEip4844};
     use alloy::primitives::{keccak256, Address, Bytes, FixedBytes, U256, U64};
     use flume::Sender;
     use jsonrpc_errors::*;
@@ -255,7 +255,7 @@ mod rpc_impl {
         fn get_block_transaction_count_by_hash(&self, hash: Bytes32) -> RpcResult<u64>;
 
         #[method(name = "getBlockTransactionCountByNumber")]
-        fn get_block_transaction_count_by_number(
+        async fn get_block_transaction_count_by_number(
             &self,
             block_parameter: BlockParameter,
         ) -> RpcResult<u64>;
@@ -300,54 +300,51 @@ mod rpc_impl {
             &self,
             hash: Bytes32,
             full: bool,
-        ) -> RpcResult<Option<alloy::rpc::types::Block>>;
+        ) -> RpcResult<alloy::rpc::types::Block>;
 
         #[method(name = "getBlockByNumber")]
         async fn get_block_by_number(
             &self,
             block_parameter: BlockParameter,
             full: bool,
-        ) -> RpcResult<Option<alloy::rpc::types::Block>>;
+        ) -> RpcResult<alloy::rpc::types::Block>;
 
         #[method(name = "getTransaction_by_hash")]
         fn get_transaction_by_hash(
             &self,
             hash: Bytes32,
-        ) -> RpcResult<Option<alloy::rpc::types::Transaction<EthereumTxEnvelope<TxEip4844Variant>>>>;
+        ) -> RpcResult<alloy::rpc::types::Transaction<EthereumTxEnvelope<TxEip4844>>>;
 
         #[method(name = "getTransactionByBlockHashAndIndex")]
         fn get_transaction_by_block_hash_and_index(
             &self,
             hash: Bytes32,
             position: u64,
-        ) -> RpcResult<Option<alloy::rpc::types::Transaction<EthereumTxEnvelope<TxEip4844Variant>>>>;
+        ) -> RpcResult<alloy::rpc::types::Transaction<EthereumTxEnvelope<TxEip4844>>>;
 
         #[method(name = "getTransactionByBlockNumberAndIndex")]
         fn get_transaction_by_block_number_and_index(
             &self,
             block_parameter: BlockParameter,
             position: u64,
-        ) -> RpcResult<Option<alloy::rpc::types::Transaction<EthereumTxEnvelope<TxEip4844Variant>>>>;
+        ) -> RpcResult<alloy::rpc::types::Transaction<EthereumTxEnvelope<TxEip4844>>>;
 
         #[method(name = "getTransactionReceipt")]
-        fn get_transaction_receipt(
-            &self,
-            hash: Bytes32,
-        ) -> RpcResult<Option<TransactionReceiptObject>>;
+        fn get_transaction_receipt(&self, hash: Bytes32) -> RpcResult<TransactionReceiptObject>;
 
         #[method(name = "getUncleByBlockHashAndIndex")]
         fn get_uncle_by_block_hash_and_index(
             &self,
             hash: Bytes32,
             index: u64,
-        ) -> RpcResult<Option<alloy::rpc::types::Block>>;
+        ) -> RpcResult<alloy::rpc::types::Block>;
 
         #[method(name = "getUncleByBlockNumberAndIndex")]
         fn get_uncle_by_block_number_and_index(
             &self,
             block_parameter: BlockParameter,
             index: u64,
-        ) -> RpcResult<Option<alloy::rpc::types::Block>>;
+        ) -> RpcResult<alloy::rpc::types::Block>;
 
         #[method(name = "newFilter")]
         fn new_filter(&self, block_parameter: BlockParameter) -> RpcResult<FilterObject>;
@@ -442,11 +439,16 @@ mod rpc_impl {
             not_implemented!()
         }
 
-        fn get_block_transaction_count_by_number(
+        async fn get_block_transaction_count_by_number(
             &self,
-            _block_parameter: BlockParameter,
+            block_parameter: BlockParameter,
         ) -> RpcResult<u64> {
-            not_implemented!()
+            let number = match block_parameter {
+                BlockParameter::Number(number) => number,
+                _ => not_implemented!(), // resolve block
+            };
+            let block = self.node.light_network.find_block(number).await?;
+            Ok(block.transactions.len() as u64)
         }
 
         fn get_uncle_count_by_block_hash(
@@ -517,7 +519,7 @@ mod rpc_impl {
             &self,
             _hash: Bytes32,
             _full: bool,
-        ) -> RpcResult<Option<alloy::rpc::types::Block>> {
+        ) -> RpcResult<alloy::rpc::types::Block> {
             not_implemented!()
         }
 
@@ -525,7 +527,7 @@ mod rpc_impl {
             &self,
             block_parameter: BlockParameter,
             full: bool,
-        ) -> RpcResult<Option<alloy::rpc::types::Block>> {
+        ) -> RpcResult<alloy::rpc::types::Block> {
             let number = match block_parameter {
                 BlockParameter::Number(number) => number,
                 _ => not_implemented!(), // resolve block
@@ -534,15 +536,14 @@ mod rpc_impl {
                 .light_network
                 .find_block(number)
                 .await
-                .map(|block| Some(block_to_rpc(block, full)))
+                .map(|block| block_to_rpc(block, full))
                 .map_err(Into::into)
         }
 
         fn get_transaction_by_hash(
             &self,
             _hash: Bytes32,
-        ) -> RpcResult<Option<alloy::rpc::types::Transaction<EthereumTxEnvelope<TxEip4844Variant>>>>
-        {
+        ) -> RpcResult<alloy::rpc::types::Transaction<EthereumTxEnvelope<TxEip4844>>> {
             not_implemented!()
         }
 
@@ -550,8 +551,7 @@ mod rpc_impl {
             &self,
             _hash: Bytes32,
             _position: u64,
-        ) -> RpcResult<Option<alloy::rpc::types::Transaction<EthereumTxEnvelope<TxEip4844Variant>>>>
-        {
+        ) -> RpcResult<alloy::rpc::types::Transaction<EthereumTxEnvelope<TxEip4844>>> {
             not_implemented!()
         }
 
@@ -559,15 +559,11 @@ mod rpc_impl {
             &self,
             _block_parameter: BlockParameter,
             _position: u64,
-        ) -> RpcResult<Option<alloy::rpc::types::Transaction<EthereumTxEnvelope<TxEip4844Variant>>>>
-        {
+        ) -> RpcResult<alloy::rpc::types::Transaction<EthereumTxEnvelope<TxEip4844>>> {
             not_implemented!()
         }
 
-        fn get_transaction_receipt(
-            &self,
-            _hash: Bytes32,
-        ) -> RpcResult<Option<TransactionReceiptObject>> {
+        fn get_transaction_receipt(&self, _hash: Bytes32) -> RpcResult<TransactionReceiptObject> {
             not_implemented!()
         }
 
@@ -575,7 +571,7 @@ mod rpc_impl {
             &self,
             _hash: Bytes32,
             _index: u64,
-        ) -> RpcResult<Option<alloy::rpc::types::Block>> {
+        ) -> RpcResult<alloy::rpc::types::Block> {
             not_implemented!()
         }
 
@@ -583,7 +579,7 @@ mod rpc_impl {
             &self,
             _block_parameter: BlockParameter,
             _index: u64,
-        ) -> RpcResult<Option<alloy::rpc::types::Block>> {
+        ) -> RpcResult<alloy::rpc::types::Block> {
             not_implemented!()
         }
 
