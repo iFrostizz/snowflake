@@ -1,3 +1,5 @@
+use crate::client::bootstrap::Bootstrappers;
+use crate::dht::{Bucket, DhtBuckets};
 use crate::id::ChainId;
 use crate::net::node::{NetworkConfig, NodeError};
 use crate::net::{BackoffParams, Intervals};
@@ -39,11 +41,11 @@ pub struct Args {
     pub http_port: u16,
 
     /// Path of the certificate
-    #[arg(short, long, default_value = "./staker.crt")]
+    #[arg(short, long, default_value = "./node.crt")]
     pub cert_path: PathBuf,
 
     /// Path of the private key
-    #[arg(short, long, default_value = "./staker.key")]
+    #[arg(short, long, default_value = "./node.key")]
     pub pem_key_path: PathBuf,
 
     /// Path of the BLS key
@@ -53,6 +55,10 @@ pub struct Args {
     /// Path of the bootstrappers path in the .json format
     #[arg(long, default_value = "./bootstrappers.json")]
     pub bootstrappers_path: PathBuf,
+
+    /// Path of the light bootstrappers path in the .json format
+    #[arg(long, default_value = "./light_bootstrappers.json")]
+    pub light_bootstrappers_path: PathBuf,
 
     /// Network to operate on
     #[arg(short, long, default_value = "mainnet")]
@@ -94,6 +100,13 @@ pub struct Args {
     /// RPC port
     #[arg(long, default_value_t = 9781)]
     pub rpc_port: u16,
+
+    #[arg(long, default_value_t = false)]
+    pub sync_headers: bool,
+
+    // TODO if sync-headers is true, then this should be the max.
+    #[arg(long, default_value_t = 100)]
+    pub block_dht_buckets: usize,
 }
 
 pub async fn read_args() -> Result<Args, NodeError> {
@@ -157,6 +170,14 @@ impl Args {
             bucket_size: 500_000,           // 500 kB
             max_concurrent_handshakes: self.max_handshakes,
             max_peers: self.max_peers,
+            bootstrappers: Bootstrappers::new(
+                &self.bootstrappers_path,
+                &self.light_bootstrappers_path,
+            )
+            .bootstrappers(&self.network_id.to_string()),
+            dht_buckets: DhtBuckets {
+                block: Bucket::try_from(self.block_dht_buckets).unwrap(),
+            },
         }
     }
 }
