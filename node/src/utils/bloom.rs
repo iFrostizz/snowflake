@@ -1,7 +1,7 @@
 // A bloom filter that updates every time a new node is added to the set
 
 use proto_lib::p2p;
-use rand::{random, Rng};
+use rand::Rng;
 use sha2::{Digest, Sha256};
 use std::f64::consts::LN_2;
 use std::time::{Duration, Instant};

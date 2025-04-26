@@ -73,11 +73,11 @@ impl Listener {
                         }
 
                         let tls = TlsStream::Server(tls_stream);
-                        let mut peer = Peer::new(node_id, x509_certificate, sock_addr, 0, tls);
+                        let peer = Peer::new(node_id, x509_certificate, sock_addr, 0, tls);
 
                         let hs_permit = node.hs_permit().await;
 
-                        if let Err(err) = node.loop_peer(hs_permit, &mut peer).await {
+                        if let Err(err) = node.loop_peer(hs_permit, peer).await {
                             log::debug!("{err}");
                         }
                     } else {

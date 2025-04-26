@@ -10,6 +10,7 @@ use crate::net::{
     node::{NetworkConfig, NodeError},
 };
 use crate::server::msg::{AppResponseMessage, InboundMessageExt};
+use crate::server::tcp::read_stream_message;
 use crate::server::{
     msg::InboundMessage,
     peers::{PeerInfo, PeerSender},
@@ -18,26 +19,27 @@ use crate::utils::bls::Bls;
 use crate::utils::constants::SNOWFLAKE_HANDLER_ID;
 use crate::utils::{bloom::Filter, ip::ip_from_octets, packer::Packer};
 use async_recursion::async_recursion;
-use flume::Sender;
+use flume::{Receiver, Sender};
 use indexmap::IndexMap;
-use prost::Message as _;
 use proto_lib::p2p::{
-    self, message::Message, AppError, AppResponse, BloomFilter, Client, GetPeerList, Handshake,
+    self, message::Message, AppError, BloomFilter, Client, GetPeerList, Handshake,
 };
 use proto_lib::sdk;
 use ripemd::Digest;
 use rustls::ClientConfig;
 use rustls_pki_types::ServerName;
 use sha2::Sha256;
-use std::collections::HashMap;
-use std::io::BufReader;
+use std::collections::{HashMap, HashSet};
+use std::io::{BufReader, ErrorKind};
 use std::net::SocketAddr;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tokio::io::{split, ReadHalf, WriteHalf};
 use tokio::net::TcpStream;
+use tokio::sync::broadcast;
 use tokio::sync::oneshot;
 use tokio::sync::Semaphore;
+use tokio::task::JoinHandle;
 use tokio_rustls::{TlsConnector, TlsStream};
 
 pub mod ip;
@@ -98,7 +100,6 @@ pub struct Intervals {
 #[derive(Debug)]
 pub enum PeerMessage {
     NewPeer {
-        sender: PeerSender,
         infos: HandshakeInfos,
     },
     ObserveUptime(p2p::Ping),
@@ -107,11 +108,6 @@ pub enum PeerMessage {
         sender: PeerSender,
         known_peers: Option<BloomFilter>,
     },
-}
-
-#[derive(Debug)]
-pub enum LightPeerMessage {
-    NewPeer(DhtBuckets),
 }
 
 impl HandshakeInfos {
@@ -126,16 +122,38 @@ impl HandshakeInfos {
     }
 }
 
-/// A peer bidirectional connection. It can either be initiated by the node or by a distant peer.
+/// Represents the network connection state of a peer
+#[derive(Debug)]
+pub struct PeerConnection {
+    tls: Option<TlsStream<TcpStream>>,
+    sock_addr: SocketAddr,
+    timestamp: u64,
+}
+
+/// Represents the identity of a peer
+#[derive(Debug, Clone)]
+pub struct PeerIdentity {
+    node_id: NodeId,
+    x509_certificate: Vec<u8>,
+}
+
+/// Represents the messaging channels for a peer
+#[derive(Debug)]
+pub struct PeerChannels {
+    spn: Sender<PeerMessage>,
+    rpn: Receiver<PeerMessage>,
+    sender: PeerSender,
+    rnp: Receiver<Message>,
+    spl: Sender<(LightMessage, Option<oneshot::Sender<LightResult>>)>,
+    rpl: Receiver<(LightMessage, Option<oneshot::Sender<LightResult>>)>,
+}
+
+/// A peer bidirectional connection
 #[derive(Debug)]
 pub struct Peer {
-    pub node_id: NodeId,
-    pub x509_certificate: Vec<u8>,
-    #[allow(unused)]
-    pub sock_addr: SocketAddr,
-    #[allow(unused)]
-    pub timestamp: u64,
-    tls: Option<TlsStream<TcpStream>>,
+    identity: PeerIdentity,
+    connection: PeerConnection,
+    channels: PeerChannels,
 }
 
 impl Peer {
@@ -146,13 +164,50 @@ impl Peer {
         timestamp: u64,
         tls: TlsStream<TcpStream>,
     ) -> Self {
+        let (spn, rpn) = flume::unbounded();
+        let (spl, rpl) = flume::unbounded();
+        let (snp, rnp) = flume::unbounded();
+        let sender: PeerSender = snp.into();
+
         Self {
-            node_id,
-            x509_certificate,
-            sock_addr,
-            timestamp,
-            tls: Some(tls),
+            identity: PeerIdentity {
+                node_id,
+                x509_certificate,
+            },
+            connection: PeerConnection {
+                tls: Some(tls),
+                sock_addr,
+                timestamp,
+            },
+            channels: PeerChannels {
+                spn,
+                rpn,
+                sender,
+                rnp,
+                spl,
+                rpl,
+            },
         }
+    }
+
+    pub fn node_id(&self) -> &NodeId {
+        &self.identity.node_id
+    }
+
+    pub fn sender(&self) -> &PeerSender {
+        &self.channels.sender
+    }
+
+    pub fn x509_certificate(&self) -> &[u8] {
+        &self.identity.x509_certificate
+    }
+
+    pub fn rpn(&self) -> &Receiver<PeerMessage> {
+        &self.channels.rpn
+    }
+
+    pub fn rpl(&self) -> &Receiver<(LightMessage, Option<oneshot::Sender<LightResult>>)> {
+        &self.channels.rpl
     }
 
     pub fn take_tls(
@@ -161,24 +216,7 @@ impl Peer {
         ReadHalf<TlsStream<TcpStream>>,
         WriteHalf<TlsStream<TcpStream>>,
     ) {
-        split(self.tls.take().expect("missing tls field"))
-    }
-
-    async fn connect(
-        sock_addr: &SocketAddr,
-        config: &Arc<ClientConfig>,
-    ) -> Result<TlsStream<TcpStream>, NodeError> {
-        let dns_name = ServerName::try_from(sock_addr.ip().to_string())
-            .map_err(|_| NodeError::Dns)?
-            .to_owned();
-
-        let sock =
-            tokio::time::timeout(Duration::from_secs(5), TcpStream::connect(sock_addr)).await??;
-
-        let config = TlsConnector::from(config.clone());
-        let tls = config.connect(dns_name, sock).await?;
-
-        Ok(TlsStream::Client(tls))
+        split(self.connection.tls.take().expect("missing tls field"))
     }
 
     pub(crate) async fn connect_with_back_off(
@@ -236,17 +274,132 @@ impl Peer {
         Err(NodeError::Failed(errs))
     }
 
+    #[allow(clippy::type_complexity)]
+    pub fn communicate(
+        mut self,
+        out_pipeline: Arc<Pipeline>,
+        mail_box: Arc<MailBox>,
+        c_chain_id: ChainId,
+        disconnection_rx: broadcast::Receiver<()>,
+    ) -> (
+        JoinHandle<Result<(), NodeError>>,
+        JoinHandle<Result<(), NodeError>>,
+    ) {
+        let (read, write) = self.take_tls();
+
+        let disconnection_rx2 = disconnection_rx.resubscribe();
+        let rnp = self.channels.rnp.clone();
+        let write = tokio::spawn(Self::write_peer(
+            out_pipeline,
+            write,
+            rnp,
+            disconnection_rx2,
+        ));
+
+        let peer = Arc::new(self);
+        let sender = peer.channels.sender.clone();
+        let read =
+            tokio::spawn(peer.read_peer(read, mail_box, sender, c_chain_id, disconnection_rx));
+
+        (write, read)
+    }
+
+    async fn connect(
+        sock_addr: &SocketAddr,
+        config: &Arc<ClientConfig>,
+    ) -> Result<TlsStream<TcpStream>, NodeError> {
+        let dns_name = ServerName::try_from(sock_addr.ip().to_string())
+            .map_err(|_| NodeError::Dns)?
+            .to_owned();
+
+        let sock =
+            tokio::time::timeout(Duration::from_secs(5), TcpStream::connect(sock_addr)).await??;
+
+        let config = TlsConnector::from(config.clone());
+        let tls = config.connect(dns_name, sock).await?;
+
+        Ok(TlsStream::Client(tls))
+    }
+
+    async fn write_peer(
+        out_pipeline: Arc<Pipeline>,
+        write: WriteHalf<TlsStream<TcpStream>>,
+        rnp: Receiver<Message>,
+        disconnection_rx: broadcast::Receiver<()>,
+    ) -> Result<(), NodeError> {
+        log::trace!("write");
+        let res =
+            Network::schedule_write_messages(out_pipeline, write, rnp, disconnection_rx).await;
+        if res.is_err() {
+            log::debug!("error on write");
+        }
+        res
+    }
+
+    async fn read_peer(
+        self: Arc<Peer>,
+        read: ReadHalf<TlsStream<TcpStream>>,
+        mail_box: Arc<MailBox>,
+        sender: PeerSender,
+        c_chain_id: ChainId,
+        disconnection_rx: broadcast::Receiver<()>,
+    ) -> Result<(), NodeError> {
+        log::trace!("read");
+        let res = Self::read_messages(
+            &self,
+            read,
+            &c_chain_id,
+            sender,
+            &mail_box,
+            disconnection_rx,
+        )
+        .await;
+
+        if res.is_err() {
+            log::debug!("error on read");
+        }
+
+        match res {
+            Err(NodeError::TcpConnection(tcp_err))
+                if tcp_err.kind() == ErrorKind::UnexpectedEof =>
+            {
+                Err(NodeError::TcpConnection(tcp_err))
+            }
+            rest => rest,
+        }
+    }
+
+    /// Continuously read messages and return an error on an EOF
+    async fn read_messages(
+        &self,
+        mut read: ReadHalf<TlsStream<TcpStream>>,
+        c_chain_id: &ChainId,
+        sender: PeerSender,
+        mail_box: &MailBox,
+        mut rx: broadcast::Receiver<()>,
+    ) -> Result<(), NodeError> {
+        loop {
+            log::trace!("read");
+            tokio::select! {
+                maybe_buf = read_stream_message(&mut read) => {
+                    let buf = maybe_buf?;
+                    self.manage_message(c_chain_id, &buf, &sender, mail_box, false).await?;
+                }
+                _ = rx.recv() => {
+                    return Ok(())
+                }
+            }
+        }
+    }
+
     /// What should we do when receiving a message from another peer?
     #[async_recursion]
-    pub async fn manage_message<'a>(
-        node_id: &NodeId,
+    async fn manage_message<'a>(
+        &self,
         c_chain_id: &ChainId,
         buf: &[u8],
         sender: &PeerSender,
         mail_box: &MailBox,
-        spn: &Sender<PeerMessage>,
-        spln: &Sender<LightPeerMessage>,
-        spl: &Sender<(LightMessage, oneshot::Sender<LightResult>)>,
         recursed: bool,
     ) -> Result<(), NodeError> {
         let decoded = InboundMessage::decode(buf).map_err(NodeError::Decoding)?;
@@ -257,11 +410,12 @@ impl Peer {
             mini.inc_recv(buf.len() as u64);
         }
 
-        if let Some(request_id) = SubscribableMessage::response_request_id(&decoded) {
-            mail_box.mark_mail_received(node_id, request_id, decoded.clone())
-        } else {
-            None
-        };
+        let sent_message =
+            if let Some(request_id) = SubscribableMessage::response_request_id(&decoded) {
+                mail_box.mark_mail_received(&self.identity.node_id, request_id, decoded.clone())
+            } else {
+                None
+            };
 
         // TODO if this node holds a stake, here is the minimum amount of messages to handle since
         //   they are registered and will get the node benched:
@@ -278,23 +432,15 @@ impl Peer {
                 let buf_read = BufReader::new(&comp[..]);
                 let decoded_buf = zstd::stream::decode_all(buf_read)?;
 
-                Self::manage_message(
-                    node_id,
-                    c_chain_id,
-                    &decoded_buf,
-                    sender,
-                    mail_box,
-                    spn,
-                    spln,
-                    spl,
-                    true,
-                )
-                .await?;
+                self.manage_message(c_chain_id, &decoded_buf, sender, mail_box, true)
+                    .await?;
 
                 return Ok(());
             }
             Message::Ping(ping) => {
-                spn.send(PeerMessage::ObserveUptime(ping))
+                self.channels
+                    .spn
+                    .send(PeerMessage::ObserveUptime(ping))
                     .map_err(|_| NodeError::SendError)?;
 
                 // TODO track uptime
@@ -322,11 +468,13 @@ impl Peer {
                 } = handshake;
 
                 // send a PeerList message according to their filter
-                spn.send(PeerMessage::GetPeerList {
-                    sender: sender.clone(),
-                    known_peers,
-                })
-                .map_err(|_| NodeError::SendError)?;
+                self.channels
+                    .spn
+                    .send(PeerMessage::GetPeerList {
+                        sender: sender.clone(),
+                        known_peers,
+                    })
+                    .map_err(|_| NodeError::SendError)?;
 
                 let ip = ip_from_octets(ip_addr)
                     .map_err(|_| NodeError::Message("failed to serialize IP".to_string()))?;
@@ -338,31 +486,36 @@ impl Peer {
                 // TODO check if the peer is already known because this will lead to message
                 //  amplification if connecting to snowflake clients.
                 //  Also, the PeerList should only be sent in that case.
-                spn.send(PeerMessage::NewPeer {
-                    sender: sender.clone(),
-                    infos: HandshakeInfos {
-                        ip_signing_time,
-                        network_id,
-                        sock_addr,
-                        ip_node_id_sig,
-                        client,
-                        tracked_subnets,
-                        supported_acps,
-                        objected_acps,
-                    },
-                })
-                .map_err(|_| NodeError::SendError)?;
+                self.channels
+                    .spn
+                    .send(PeerMessage::NewPeer {
+                        infos: HandshakeInfos {
+                            ip_signing_time,
+                            network_id,
+                            sock_addr,
+                            ip_node_id_sig,
+                            client,
+                            tracked_subnets,
+                            supported_acps,
+                            objected_acps,
+                        },
+                    })
+                    .map_err(|_| NodeError::SendError)?;
             }
             Message::PeerList(peer_list) => {
-                spn.send(PeerMessage::PeerList(peer_list))
+                self.channels
+                    .spn
+                    .send(PeerMessage::PeerList(peer_list))
                     .map_err(|_| NodeError::SendError)?;
             }
             Message::GetPeerList(GetPeerList { known_peers }) => {
-                spn.send(PeerMessage::GetPeerList {
-                    sender: sender.clone(),
-                    known_peers,
-                })
-                .map_err(|_| NodeError::SendError)?;
+                self.channels
+                    .spn
+                    .send(PeerMessage::GetPeerList {
+                        sender: sender.clone(),
+                        known_peers,
+                    })
+                    .map_err(|_| NodeError::SendError)?;
             }
             Message::AppRequest(app_request) => {
                 if app_request.chain_id != c_chain_id.as_ref() {
@@ -375,11 +528,10 @@ impl Peer {
                     return Ok(());
                 }
                 let light_message = InboundMessage::decode(bytes).map_err(NodeError::Decoding)?;
-                Self::manage_light_message(
+                Self::manage_light_request(
                     c_chain_id,
                     app_request.request_id,
-                    spln,
-                    spl,
+                    &self.channels.spl,
                     sender,
                     light_message,
                 )
@@ -390,34 +542,41 @@ impl Peer {
                     return Ok(());
                 }
                 let bytes = app_response.app_bytes;
-                let (app_id, bytes) = unsigned_varint::decode::u64(&bytes)
+                let (app_id, response_bytes) = unsigned_varint::decode::u64(&bytes)
                     .map_err(|_| NodeError::Message("failed to decode app ID".to_string()))?;
                 if app_id != SNOWFLAKE_HANDLER_ID {
                     return Ok(());
                 }
-                let light_message = InboundMessage::decode(bytes).map_err(NodeError::Decoding)?;
-                Self::manage_light_message2(
-                    c_chain_id,
-                    app_response.request_id,
-                    spln,
-                    spl,
-                    sender,
-                    light_message,
-                )
-                .await?;
+                if let Some(Message::AppRequest(app_request)) = sent_message {
+                    if app_request.chain_id != c_chain_id.as_ref() {
+                        return Ok(());
+                    }
+                    let bytes = app_request.app_bytes;
+                    let (app_id, request_bytes) = unsigned_varint::decode::u64(&bytes)
+                        .map_err(|_| NodeError::Message("failed to decode app ID".to_string()))?;
+                    if app_id != SNOWFLAKE_HANDLER_ID {
+                        return Ok(());
+                    }
+                    let light_request =
+                        InboundMessage::decode(request_bytes).map_err(NodeError::Decoding)?;
+
+                    let light_response =
+                        InboundMessage::decode(response_bytes).map_err(NodeError::Decoding)?;
+                    Self::manage_light_response(&self.channels.spl, light_request, light_response)
+                        .await?;
+                }
             }
             Message::Pong(_pong) => {}
-            _ => log::debug!("unsupported message {} {node_id}", mini),
+            _ => log::debug!("unsupported message {} {}", mini, self.identity.node_id),
         };
 
         Ok(())
     }
 
-    pub async fn manage_light_message(
+    async fn manage_light_request(
         c_chain_id: &ChainId,
         request_id: u32,
-        spln: &Sender<LightPeerMessage>,
-        spl: &Sender<(LightMessage, oneshot::Sender<LightResult>)>,
+        spl: &Sender<(LightMessage, Option<oneshot::Sender<LightResult>>)>,
         sender: &PeerSender,
         light_message: sdk::light_request::Message,
     ) -> Result<(), NodeError> {
@@ -431,14 +590,14 @@ impl Peer {
                         .try_into()
                         .map_err(|_| NodeError::Message("invalid bucket".to_string()))?;
                     let bucket = Bucket::from_be_bytes(bucket_arr);
-                    let _ = spln.send(LightPeerMessage::NewPeer(DhtBuckets { block: bucket }));
+                    let _ = spl.send((LightMessage::NewPeer(DhtBuckets { block: bucket }), None));
                     None
                 } else {
                     return Err(NodeError::Message("no buckets in handshake".to_string()));
                 }
             }
-            sdk::light_request::Message::FindValue(FindValue { dht, bucket }) => {
-                let dht_id = match dht {
+            sdk::light_request::Message::FindValue(FindValue { dht_id, bucket }) => {
+                let dht_id = match dht_id {
                     0 => DhtId::Block,
                     _ => return Err(NodeError::Message("unsupported DHT".to_string())),
                 };
@@ -447,7 +606,7 @@ impl Peer {
                     .map_err(|_| NodeError::Message("invalid bucket".to_string()))?;
                 let bucket = Bucket::from_be_bytes(bucket_arr);
                 let (tx, rx) = oneshot::channel();
-                spl.send((LightMessage::FindValue(dht_id, bucket), tx))
+                spl.send((LightMessage::FindValue(dht_id, bucket), Some(tx)))
                     .map_err(|_| NodeError::SendError)?;
                 Some(rx.await?)
             }
@@ -457,7 +616,7 @@ impl Peer {
                     .map_err(|_| NodeError::Message("invalid bucket".to_string()))?;
                 let bucket = Bucket::from_be_bytes(bucket_arr);
                 let (tx, rx) = oneshot::channel();
-                spl.send((LightMessage::FindNode(bucket), tx))
+                spl.send((LightMessage::FindNode(bucket), Some(tx)))
                     .map_err(|_| NodeError::SendError)?;
                 Some(rx.await?)
             }
@@ -501,16 +660,54 @@ impl Peer {
         Ok(())
     }
 
-    pub async fn manage_light_message2(
-        c_chain_id: &ChainId,
-        request_id: u32,
-        spln: &Sender<LightPeerMessage>,
-        spl: &Sender<(LightMessage, oneshot::Sender<LightResult>)>,
-        sender: &PeerSender,
-        light_message: sdk::light_response::Message,
+    /// Responses handled at a lower level which updates the state if interesting for us.
+    async fn manage_light_response(
+        spl: &Sender<(LightMessage, Option<oneshot::Sender<LightResult>>)>,
+        light_request: sdk::light_request::Message,
+        light_response: sdk::light_response::Message,
     ) -> Result<(), NodeError> {
-        let chain_id = c_chain_id.as_ref().to_vec();
-        log::debug!("received light message 2 {light_message:?}");
+        log::debug!("received light message 2 {light_response:?}");
+
+        match light_response {
+            sdk::light_response::Message::Ack(_) => {}
+            sdk::light_response::Message::Nodes(sdk::Nodes { node_ids }) => {
+                if !matches!(
+                    light_request,
+                    sdk::light_request::Message::FindValue(_)
+                        | sdk::light_request::Message::FindNode(_)
+                ) {
+                    return Err(NodeError::Message("invalid request".to_string()));
+                }
+                if node_ids.len() > 10 {
+                    // disconnect and decrease reputation
+                    return Err(NodeError::Message("too many nodes".to_string()));
+                }
+                let node_ids: HashSet<_> = node_ids
+                    .into_iter()
+                    .filter_map(|node_id| {
+                        let arr: Option<[u8; 20]> = node_id.try_into().ok();
+                        arr.map(NodeId::from)
+                    })
+                    .collect();
+                let node_ids: Vec<_> = node_ids.into_iter().collect();
+                let message = LightMessage::Nodes(node_ids);
+                spl.send((message, None))
+                    .map_err(|_| NodeError::SendError)?;
+            }
+            sdk::light_response::Message::Value(sdk::Value { value }) => {
+                let sdk::light_request::Message::FindValue(FindValue { dht_id, .. }) =
+                    light_request
+                else {
+                    return Err(NodeError::Message("invalid request".to_string()));
+                };
+                let dht_id = dht_id
+                    .try_into()
+                    .map_err(|_| NodeError::Message("invalid DHT".to_string()))?;
+                let message = LightMessage::Store(dht_id, value);
+                spl.send((message, None))
+                    .map_err(|_| NodeError::SendError)?;
+            }
+        }
 
         Ok(())
     }

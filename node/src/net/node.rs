@@ -1,16 +1,13 @@
 use crate::client::config;
-use crate::dht::{DhtBuckets, LightMessage, LightResult};
+use crate::dht::DhtBuckets;
 use crate::id::{ChainId, NodeId};
-use crate::message::{mail_box::MailBox, pipeline::Pipeline, MiniMessage};
-use crate::net::{
-    ip::UnsignedIp, BackoffParams, Intervals, LightPeerMessage, Network, Peer, PeerInfo,
-    PeerMessage,
-};
+use crate::message::{pipeline::Pipeline, MiniMessage};
+use crate::net::{ip::UnsignedIp, BackoffParams, Intervals, Network, PeerInfo};
 use crate::server::msg::AppRequestMessage;
 use crate::server::{
     msg::{DecodingError, OutboundMessage},
     peers::PeerSender,
-    tcp::{read_stream_message, write_stream_message},
+    tcp::write_stream_message,
 };
 use crate::stats;
 use crate::utils::{
@@ -31,7 +28,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
-use tokio::io::{ReadHalf, WriteHalf};
+use tokio::io::WriteHalf;
 use tokio::net::TcpStream;
 use tokio::sync::{broadcast, oneshot, Semaphore};
 use tokio::task::JoinHandle;
@@ -266,32 +263,6 @@ impl Network {
         ret
     }
 
-    /// Continuously read messages and return an error on an EOF
-    pub async fn read_messages(
-        node_id: &NodeId,
-        c_chain_id: &ChainId,
-        mut read: ReadHalf<TlsStream<TcpStream>>,
-        sender: &PeerSender,
-        mail_box: &MailBox,
-        spn: &Sender<PeerMessage>,
-        spln: &Sender<LightPeerMessage>,
-        spl: &Sender<(LightMessage, oneshot::Sender<LightResult>)>,
-        mut rx: broadcast::Receiver<()>,
-    ) -> Result<(), NodeError> {
-        loop {
-            log::trace!("read");
-            tokio::select! {
-                maybe_buf = read_stream_message(&mut read) => {
-                    let buf = maybe_buf?;
-                    Peer::manage_message(node_id, c_chain_id, &buf, sender, mail_box, spn, spln, spl, false).await?;
-                }
-                _ = rx.recv() => {
-                    return Ok(())
-                }
-            }
-        }
-    }
-
     pub async fn add_peer(
         self: &Arc<Network>,
         node_id: NodeId,
@@ -397,8 +368,8 @@ impl Network {
             .map_err(|_| NodeError::SendError)
     }
 
-    pub fn remove_peers(self: &Arc<Network>, node_ids_errs: &Vec<(NodeId, Option<&NodeError>)>) {
-        for (node_id, err) in node_ids_errs {
+    pub fn remove_peers(self: &Arc<Network>, node_ids_errs: Vec<(&NodeId, Option<&NodeError>)>) {
+        for (node_id, err) in &node_ids_errs {
             if let Some(err) = err {
                 log::debug!("removing peer {}, reason: {}", node_id, err);
             } else {
@@ -409,8 +380,8 @@ impl Network {
         {
             let mut peers_write = self.peers_infos.write().unwrap();
 
-            for (node_id, _) in node_ids_errs {
-                if let Some(peer) = peers_write.swap_remove(node_id) {
+            for (node_id, _) in &node_ids_errs {
+                if let Some(peer) = peers_write.swap_remove(*node_id) {
                     if peer.handshook() {
                         stats::handshook_peers::dec();
                     }
@@ -422,22 +393,10 @@ impl Network {
         {
             let mut peers_write = self.light_peers.write().unwrap();
 
-            for (node_id, _) in node_ids_errs {
+            for (node_id, _) in &node_ids_errs {
                 peers_write.remove(node_id);
             }
         }
-    }
-
-    pub fn disconnect_peer(
-        self: &Arc<Network>,
-        peer: Peer,
-        err: Option<&NodeError>,
-    ) -> Result<(), NodeError> {
-        let node_id = peer.node_id;
-
-        self.remove_peers(&vec![(node_id, err)]);
-
-        Ok(())
     }
 
     pub fn has_reached_max_peers(&self, peers_infos: &IndexMap<NodeId, PeerInfo>) -> bool {

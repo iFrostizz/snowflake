@@ -49,7 +49,7 @@ pub struct LightHandshake {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct FindValue {
     #[prost(uint32, tag = "1")]
-    pub dht: u32,
+    pub dht_id: u32,
     #[prost(bytes = "vec", tag = "2")]
     pub bucket: ::prost::alloc::vec::Vec<u8>,
 }

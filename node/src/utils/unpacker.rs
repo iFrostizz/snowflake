@@ -114,8 +114,4 @@ impl StatelessBlock {
             sig: sig_bytes.to_vec(),
         })
     }
-
-    pub fn id(&self) -> &BlockID {
-        &self.id
-    }
 }

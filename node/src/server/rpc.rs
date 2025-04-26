@@ -155,7 +155,7 @@ mod rpc_impl {
 
     fn block_to_rpc(block: Block, full: bool) -> alloy::rpc::types::Block {
         let header = alloy::rpc::types::Header {
-            hash: block.hash.into(),
+            hash: block.hash,
             inner: block.header.into(),
             total_difficulty: None,
             size: Some(U256::try_from(block.size).unwrap()),

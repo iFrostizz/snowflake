@@ -38,7 +38,7 @@ message LightHandshake {
 //
 // Works as defined in the Kademlia DHT paper: https://pdos.csail.mit.edu/~petar/papers/maymounkov-kademlia-lncs.pdf
 message FindValue {
-  uint32 dht = 1;
+  uint32 dht_id = 1;
   bytes bucket = 2;
 }
 

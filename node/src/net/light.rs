@@ -69,25 +69,54 @@ impl LightNetwork {
         Ok(())
     }
 
-    pub fn manage_message(&self, message: LightMessage, resp: oneshot::Sender<LightResult>) {
+    pub fn manage_message(
+        &self,
+        node_id: &NodeId,
+        message: LightMessage,
+        resp: Option<oneshot::Sender<LightResult>>,
+    ) {
         let res = match message {
-            LightMessage::Store(dht_id, value) => match dht_id {
-                DhtId::Block => self
-                    .block_dht
-                    .insert_to_store(value)
-                    .map(|_| LightValue::Ok),
-                _ => Err(light_errors::INVALID_DHT),
-            },
-            LightMessage::FindNode(bucket) => Ok(LightValue::ValueOrNodes(ValueOrNodes::Nodes(
-                self.find_node(&bucket),
-            ))),
-            LightMessage::FindValue(dht_id, bucket) => match dht_id {
-                DhtId::Block => self.find_value(&self.block_dht.store, &bucket),
-                _ => Err(light_errors::INVALID_DHT),
-            },
+            LightMessage::NewPeer(buckets) => {
+                self.light_peers.write().unwrap().insert(*node_id, buckets);
+                None
+            }
+            LightMessage::Store(dht_id, value) => {
+                let res = match dht_id {
+                    DhtId::Block => self
+                        .block_dht
+                        .insert_to_store(value)
+                        .map(|_| LightValue::Ok),
+                    _ => Err(light_errors::INVALID_DHT),
+                };
+                Some(res)
+            }
+            LightMessage::FindNode(bucket) => {
+                let res = Ok(LightValue::ValueOrNodes(ValueOrNodes::Nodes(
+                    self.find_node(&bucket),
+                )));
+                Some(res)
+            }
+            LightMessage::FindValue(dht_id, bucket) => {
+                let res = match dht_id {
+                    DhtId::Block => self.find_value(&self.block_dht.store, &bucket),
+                    _ => Err(light_errors::INVALID_DHT),
+                };
+                Some(res)
+            }
+            LightMessage::Nodes(_node_ids) => {
+                todo!(); // TODO: store node_ids which are interesting to us.
+            }
         };
 
-        let _ = resp.send(res);
+        match (res, resp) {
+            (Some(res), Some(resp)) => {
+                let _ = resp.send(res);
+            }
+            (None, None) => (),
+            _ => {
+                log::error!("unexpected state for res and resp values");
+            }
+        }
     }
 
     /// Lookup locally for nodes spanning the bucket.
@@ -179,15 +208,13 @@ impl DhtContent<u64, StatelessBlock> for DhtBlocks {
         }
     }
 
-    fn verify(&self, block: &StatelessBlock) -> bool {
-        let bytes = block.block.header.number();
-        if bytes[0..24] != [0; 24] {
-            return false;
-        }
+    fn verify(&self, _block: &StatelessBlock) -> bool {
+        // TODO implement robust block verification i.e make sure that the hash matches at least.
+        //   Then, send GetAccepted message to bootstrap node if this block doesn't come from a bootstrap node.
         true
     }
 
-    fn encode(value: StatelessBlock) -> Result<Vec<u8>, LightError> {
+    fn encode(_value: StatelessBlock) -> Result<Vec<u8>, LightError> {
         todo!()
     }
 

@@ -1,43 +1,35 @@
 use crate::dht::{LightMessage, LightResult};
-use crate::id::{ChainId, Id, NodeId};
+use crate::id::{Id, NodeId};
 use crate::message::{mail_box::MailBox, SubscribableMessage};
 use crate::net::light::LightNetwork;
-use crate::net::LightPeerMessage;
+use crate::net::node::AddPeerError;
 use crate::net::{
     node::NodeError,
     queue::{ConnectionData, ConnectionQueue},
     HandshakeInfos, Network, Peer, PeerMessage,
 };
-use crate::server::msg::AppRequestMessage;
-use crate::server::peers::{PeerInfo, PeerLessInfo, PeerSender};
+use crate::server::peers::{PeerInfo, PeerLessInfo};
 use crate::stats::{self, Metrics};
 use crate::utils::{
     bloom::{Filter, ReadFilter, ViewFilter},
     constants,
     ip::{ip_from_octets, ip_octets},
 };
-use flume::{Receiver, Sender};
+use flume::Receiver;
 use futures::future;
 use indexmap::IndexMap;
 use prost::Message as _;
 use proto_lib::p2p::{
     message::Message, AppGossip, BloomFilter, ClaimedIpPort, GetPeerList, PeerList,
 };
-use proto_lib::sdk;
-use proto_lib::sdk::LightHandshake;
 use std::collections::HashSet;
-use std::io::ErrorKind;
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::io::{ReadHalf, WriteHalf};
-use tokio::net::TcpStream;
 use tokio::sync::oneshot;
 use tokio::sync::{broadcast, OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinHandle;
 use tokio::time::{self};
-use tokio_rustls::TlsStream;
-use crate::net::node::AddPeerError;
 
 pub struct Node {
     pub(crate) network: Arc<Network>,
@@ -191,7 +183,7 @@ impl Node {
 
         let hs_permit = self.hs_permit().await;
 
-        let mut peer = match Peer::connect_with_back_off(
+        let peer = match Peer::connect_with_back_off(
             semaphore,
             data.node_id,
             data.socket_addr,
@@ -207,28 +199,27 @@ impl Node {
             }
             Err(err) => {
                 log::debug!("error on connecting with back off: {err}");
-                self.network.remove_peers(&vec![(data.node_id, Some(&err))]);
+                self.network.remove_peers(vec![(&data.node_id, Some(&err))]);
                 return Err(err);
             }
         };
 
         let node = self.clone();
         tokio::spawn(async move {
-            let err = match node.loop_peer(hs_permit, &mut peer).await {
+            let node_id = *peer.node_id();
+            let err = match node.loop_peer(hs_permit, peer).await {
                 Err(NodeError::UnwantedPeer(AddPeerError::AlreadyConnected)) => {
-                    // timing issue, should not disconnect in this case.
+                    // timing issue; should not disconnect in this case.
                     return;
                 }
                 Err(err) => {
-                    log::debug!("error when looping peer {:?} {err:?}", peer.node_id);
+                    log::debug!("error when looping peer {:?} {err:?}", node_id);
                     Some(err)
-                },
-                _ => {
-                    None
                 }
+                _ => None,
             };
 
-            let _ = node.network.disconnect_peer(peer, err.as_ref());
+            node.network.remove_peers(vec![(&node_id, err.as_ref())]);
             node.connection_queue.maybe_add_connection(data);
         });
 
@@ -242,11 +233,11 @@ impl Node {
     pub async fn loop_peer(
         self: &Arc<Node>,
         hs_permit: OwnedSemaphorePermit,
-        peer: &mut Peer,
+        peer: Peer,
     ) -> Result<(), NodeError> {
         log::trace!("looping a new peer");
 
-        self.network.check_add_peer(&peer.node_id)?;
+        self.network.check_add_peer(peer.node_id())?;
 
         let (tasks, tx) = self.spawn_peer(peer, hs_permit).await?;
 
@@ -261,7 +252,7 @@ impl Node {
 
     async fn spawn_peer(
         self: &Arc<Node>,
-        peer: &mut Peer,
+        peer: Peer,
         hs_permit: OwnedSemaphorePermit,
     ) -> Result<
         (
@@ -270,32 +261,26 @@ impl Node {
         ),
         NodeError,
     > {
-        let node_id = peer.node_id;
+        let node_id = *peer.node_id();
         let c_chain_id = self.network.config.c_chain_id.clone();
 
-        let (snp, rnp) = flume::unbounded();
-        let sender: PeerSender = snp.into();
-
+        let sender = peer.sender().clone();
         self.network
-            .add_peer(node_id, peer.x509_certificate.clone(), sender.clone())
+            .add_peer(node_id, peer.x509_certificate().to_owned(), sender.clone())
             .await;
 
-        // TODO this is starting to look a bit messy, we should probably refactor.
-        let (spn, rpn) = flume::unbounded();
-        let (spl, rpl) = flume::unbounded();
-        let (spln, rpln) = flume::unbounded();
         let (tx, _) = broadcast::channel(1);
-        let manage_peer = self.manage_peer(rpn, rpln, rpl, node_id, hs_permit, tx.subscribe());
-        let (read, write) = peer.take_tls();
-        let write_peer = self.write_peer(write, rnp, tx.subscribe());
-        let read_peer = self.read_peer(
-            &sender,
+        let manage_peer = self.manage_peer(
+            peer.rpn().clone(),
+            peer.rpl().clone(),
             node_id,
+            hs_permit,
+            tx.subscribe(),
+        );
+        let (write_peer, read_peer) = peer.communicate(
+            self.network.out_pipeline.clone(),
+            self.mail_box.clone(),
             c_chain_id,
-            read,
-            spn,
-            spln,
-            spl,
             tx.subscribe(),
         );
 
@@ -319,7 +304,7 @@ impl Node {
             .get(&node_id)
             .is_some_and(Option::is_some)
         {
-            // is a light bootstrapper, we need to initiate handshake.
+            // is a light bootstrapper, we need to initiate a handshake.
         }
 
         let mut tasks = vec![manage_peer, write_peer, read_peer, hand_peer];
@@ -335,78 +320,16 @@ impl Node {
     fn manage_peer(
         self: &Arc<Node>,
         rpn: Receiver<PeerMessage>,
-        rpln: Receiver<LightPeerMessage>,
-        rpl: Receiver<(LightMessage, oneshot::Sender<LightResult>)>,
+        rpl: Receiver<(LightMessage, Option<oneshot::Sender<LightResult>>)>,
         node_id: NodeId,
         hs_permit: OwnedSemaphorePermit,
         rx: broadcast::Receiver<()>,
     ) -> JoinHandle<Result<(), NodeError>> {
         let node = self.clone();
         tokio::spawn(async move {
-            node.execute_peer_operation(rpn, rpln, rpl, node_id, hs_permit, rx)
+            node.execute_peer_operation(&rpn, rpl, node_id, hs_permit, rx)
                 .await;
             Ok(())
-        })
-    }
-
-    fn write_peer(
-        self: &Arc<Node>,
-        write: WriteHalf<TlsStream<TcpStream>>,
-        rnp: Receiver<Message>,
-        disconnection_rx: broadcast::Receiver<()>,
-    ) -> JoinHandle<Result<(), NodeError>> {
-        log::trace!("write");
-        let out_pipeline = self.network.out_pipeline.clone();
-        tokio::spawn(async move {
-            let res =
-                Network::schedule_write_messages(out_pipeline, write, rnp, disconnection_rx).await;
-            if res.is_err() {
-                log::debug!("error on write");
-            }
-            res
-        })
-    }
-
-    fn read_peer(
-        self: &Arc<Node>,
-        sender: &PeerSender,
-        node_id: NodeId,
-        c_chain_id: ChainId,
-        read: ReadHalf<TlsStream<TcpStream>>,
-        spn: Sender<PeerMessage>,
-        spln: Sender<LightPeerMessage>,
-        spl: Sender<(LightMessage, oneshot::Sender<LightResult>)>,
-        rx: broadcast::Receiver<()>,
-    ) -> JoinHandle<Result<(), NodeError>> {
-        log::trace!("read");
-        let peer_sender = sender.clone();
-        let mail_box = self.mail_box.clone();
-        tokio::spawn(async move {
-            let res = Network::read_messages(
-                &node_id,
-                &c_chain_id,
-                read,
-                &peer_sender,
-                &mail_box,
-                &spn,
-                &spln,
-                &spl,
-                rx,
-            )
-            .await;
-
-            if res.is_err() {
-                log::debug!("error on read");
-            }
-
-            match res {
-                Err(NodeError::TcpConnection(tcp_err))
-                    if tcp_err.kind() == ErrorKind::UnexpectedEof =>
-                {
-                    Err(NodeError::TcpConnection(tcp_err))
-                }
-                rest => rest,
-            }
         })
     }
 
@@ -449,9 +372,8 @@ impl Node {
 
     pub async fn execute_peer_operation(
         self: Arc<Node>,
-        rpn: Receiver<PeerMessage>,
-        rpln: Receiver<LightPeerMessage>,
-        rpl: Receiver<(LightMessage, oneshot::Sender<LightResult>)>,
+        rpn: &Receiver<PeerMessage>,
+        rpl: Receiver<(LightMessage, Option<oneshot::Sender<LightResult>>)>,
         node_id: NodeId,
         hs_permit: OwnedSemaphorePermit,
         mut rx: broadcast::Receiver<()>,
@@ -466,14 +388,9 @@ impl Node {
                         self.manage_inner_message(&node_id, msg, &mut maybe_hs_permit);
                     }
                 }
-                res = rpln.recv_async() => {
-                    if let Ok(msg) = res {
-                        self.manage_inner_light_message(node_id, msg);
-                    }
-                }
                 res = rpl.recv_async() => {
                     if let Ok((msg, resp)) = res {
-                        self.light_network.manage_message(msg, resp);
+                        self.light_network.manage_message(&node_id, msg, resp);
                     }
                 }
                 _ = rx.recv() => {
@@ -511,10 +428,7 @@ impl Node {
 
                 let _ = sender.send(Message::PeerList(PeerList { claimed_ip_ports }));
             }
-            PeerMessage::NewPeer {
-                sender,
-                infos: peer_infos,
-            } => {
+            PeerMessage::NewPeer { infos: peer_infos } => {
                 if let Some(hs_permit) = maybe_hs_permit.take() {
                     let mut peers = self.network.peers_infos.write().unwrap();
                     if let Some(PeerInfo { infos, .. }) = peers.get_mut(node_id) {
@@ -536,19 +450,6 @@ impl Node {
                 } else {
                     log::debug!("received NewPeer twice from permit {}", node_id);
                 }
-            }
-        }
-    }
-
-    fn manage_inner_light_message(self: &Arc<Node>, node_id: NodeId, message: LightPeerMessage) {
-        match message {
-            LightPeerMessage::NewPeer(buckets) => {
-                self
-                    .light_network
-                    .light_peers
-                    .write()
-                    .unwrap()
-                    .insert(node_id, buckets);
             }
         }
     }
@@ -645,7 +546,7 @@ impl Node {
             .is_err()
         {
             self.network
-                .remove_peers(&vec![(*node_id, Some(&NodeError::SendError))]);
+                .remove_peers(vec![(node_id, Some(&NodeError::SendError))]);
         }
     }
 
@@ -824,29 +725,6 @@ impl Node {
         }
     }
 
-    pub async fn send_to_bootstrappers(
-        &self,
-        message: &MessageOrSubscribable,
-        n_bootstrappers: usize,
-    ) -> Vec<Message> {
-        let node_ids: Vec<_> = {
-            let bootstrappers = self.network.bootstrappers.read().unwrap();
-            bootstrappers
-                .iter()
-                .filter_map(|(node_id, buckets)| {
-                    if buckets.is_none() {
-                        Some(node_id)
-                    } else {
-                        None
-                    }
-                })
-                .take(n_bootstrappers)
-                .copied()
-                .collect()
-        };
-        self.send_to_peers(&node_ids, message).await
-    }
-
     pub async fn send_to_peers(
         &self,
         node_ids: &[NodeId],
@@ -887,14 +765,14 @@ impl Node {
                             };
 
                             match res {
-                                Err(_err) => Some((*node_id, Some(&NodeError::SendError))),
+                                Err(_err) => Some((node_id, Some(&NodeError::SendError))),
                                 Ok(_) => None,
                             }
                         } else {
                             None
                         }
                     }
-                    None => Some((*node_id, None)),
+                    None => Some((node_id, None)),
                 })
                 .collect();
             drop(peers);
@@ -907,7 +785,7 @@ impl Node {
         let handles = handles.into_iter().map(|handle| tokio::spawn(handle));
 
         if !to_remove.is_empty() {
-            self.network.remove_peers(&to_remove);
+            self.network.remove_peers(to_remove);
         }
 
         let mut messages = Vec::new();
@@ -982,7 +860,7 @@ impl Node {
             .unwrap()
             .contains_key(node_id);
         if !is_bootstrapper && remove_peer {
-            self.network.remove_peers(&vec![(*node_id, err.as_ref())]);
+            self.network.remove_peers(vec![(node_id, err.as_ref())]);
         }
 
         None

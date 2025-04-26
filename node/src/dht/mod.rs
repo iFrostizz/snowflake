@@ -80,11 +80,13 @@ pub enum DhtId {
     State,
 }
 
-impl From<u32> for DhtId {
-    fn from(val: u32) -> Self {
-        match val {
-            0 => Self::Block,
-            _ => unimplemented!(),
+impl TryFrom<u32> for DhtId {
+    type Error = ();
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::Block),
+            _ => Err(()),
         }
     }
 }
@@ -98,10 +100,13 @@ impl From<&DhtId> for u32 {
     }
 }
 
+#[derive(Debug)]
 pub enum LightMessage {
+    NewPeer(DhtBuckets),
     Store(DhtId, Vec<u8>),
     FindNode(Bucket),
     FindValue(DhtId, Bucket),
+    Nodes(Vec<NodeId>),
 }
 
 #[derive(Debug)]

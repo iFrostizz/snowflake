@@ -236,13 +236,13 @@ impl KademliaDht {
         bucket: &Bucket,
     ) -> Result<ValueOrNodes<Vec<u8>>, LightError> {
         let mut set = JoinSet::new();
-        let dht: u32 = dht_id.into();
+        let dht_id: u32 = dht_id.into();
         let bucket = bucket.to_be_bytes::<20>();
 
         for (node_id, sender) in senders {
             let bucket = bucket.to_vec();
             if let Ok(p2p::message::Message::AppRequest(app_request)) =
-                AppRequestMessage::encode(&self.chain_id, sdk::FindValue { dht, bucket })
+                AppRequestMessage::encode(&self.chain_id, sdk::FindValue { dht_id, bucket })
             {
                 let mail_tx = self.mail_tx.clone();
                 set.spawn(async move {
@@ -259,7 +259,6 @@ impl KademliaDht {
 
         let mut nodes = HashSet::new();
         while let Some(result) = set.join_next().await {
-            // dbg!(&result);
             let Ok(Ok(p2p::message::Message::AppResponse(app_response))) = result else {
                 continue;
             };
@@ -276,7 +275,6 @@ impl KademliaDht {
             let Ok(light_message) = InboundMessage::decode(bytes) else {
                 continue;
             };
-            dbg!(&light_message);
             match light_message {
                 sdk::light_response::Message::Value(sdk::Value { value }) => {
                     // TODO verify data using publicly available data and return if successful.
