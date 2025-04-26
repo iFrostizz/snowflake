@@ -15,8 +15,10 @@ use tokio::sync::{broadcast, oneshot};
 pub struct Mail {
     pub node_id: NodeId,
     pub message: SubscribableMessage,
+    pub callback: oneshot::Sender<Message>,
 }
 
+#[derive(Debug)]
 pub struct MailBox {
     mails: Mails,
     peers_latency: Arc<RwLock<PeersLatency>>,
@@ -25,7 +27,21 @@ pub struct MailBox {
 }
 
 // TODO name doesn't make sense anymore
-type Mails = Arc<Mutex<HashMap<NodeId, HashMap<u32, (oneshot::Sender<()>, SubscribableMessage)>>>>;
+type Mails = Arc<
+    Mutex<
+        HashMap<
+            NodeId,
+            HashMap<
+                u32,
+                (
+                    oneshot::Sender<()>,
+                    oneshot::Sender<Message>,
+                    SubscribableMessage,
+                ),
+            >,
+        >,
+    >,
+>;
 
 impl MailBox {
     pub fn new(max_latency_records: usize) -> MailBox {
@@ -44,12 +60,12 @@ impl MailBox {
         loop {
             tokio::select! {
                 res = self.rx.recv_async() => {
-                    if let Ok(Mail { node_id, message }) = res {
+                    if let Ok(Mail { node_id, message, callback }) = res {
                         let timeout = Duration::from_nanos(message.deadline());
                         let mails = self.mails.clone();
                         let peers_latency = self.peers_latency.clone();
                         tokio::spawn(async move {
-                            Self::store_mail(timeout, mails, node_id, message, peers_latency).await;
+                            Self::store_mail(timeout, mails, node_id, message, peers_latency, callback).await;
                         });
                     }
                 }
@@ -76,6 +92,7 @@ impl MailBox {
         node_id: NodeId,
         message: SubscribableMessage,
         peers_latency: Arc<RwLock<PeersLatency>>,
+        message_callback: oneshot::Sender<Message>,
     ) {
         let (tx, rx) = oneshot::channel();
 
@@ -85,11 +102,12 @@ impl MailBox {
             .unwrap()
             .entry(node_id)
             .or_default()
-            .insert(request_id, (tx, message));
+            .insert(request_id, (tx, message_callback, message));
 
         let start = Instant::now();
 
         let res = tokio::time::timeout(duration, async move {
+            // TODO: handle sending the message over a channel here in order to be able to see response.
             let _ = rx.await;
             let lat = Instant::now().duration_since(start);
             peers_latency.write().unwrap().record(node_id, lat);
@@ -101,7 +119,7 @@ impl MailBox {
 
         // has timed out, we need to force clean
         if res.is_err() {
-            let (_, message) = set.remove(&request_id).unwrap();
+            let (.., message) = set.remove(&request_id).unwrap();
             message.on_timeout();
         }
 
@@ -111,8 +129,13 @@ impl MailBox {
     }
 
     /// Mark a message as received and return the sent messages if it had not timed out
-    pub fn mark_mail_received(&self, node_id: &NodeId, request_id: &u32) -> Option<Message> {
-        if let Some((tx, message)) = self
+    pub fn mark_mail_received(
+        &self,
+        node_id: &NodeId,
+        request_id: &u32,
+        received_message: Message,
+    ) -> Option<Message> {
+        if let Some((tx, callback, message)) = self
             .mails
             .lock()
             .unwrap()
@@ -120,6 +143,7 @@ impl MailBox {
             .and_then(|map| map.remove(request_id))
         {
             let _ = tx.send(());
+            let _ = callback.send(received_message);
             Some(message.into())
         } else {
             None
