@@ -35,8 +35,9 @@ mod rpc_impl {
     use super::*;
     use crate::node::Node;
     use crate::utils::constants;
-    use crate::utils::rlp::{Block, TransactionEnvelope};
+    use crate::utils::rlp::{Block, Transaction};
     use crate::Arc;
+    use alloy::consensus::{EthereumTxEnvelope, TxEip4844Variant};
     use alloy::primitives::{keccak256, Address, Bytes, FixedBytes, U256, U64};
     use flume::Sender;
     use jsonrpc_errors::*;
@@ -114,45 +115,6 @@ mod rpc_impl {
         }
     }
 
-    #[derive(Debug, Serialize, Deserialize, Clone)]
-    pub struct TransactionObject {
-        block_hash: Bytes32,
-        block_number: u64,
-        from: Address,
-        gas: u64,
-        gas_price: u64,
-        hash: Bytes32,
-        input: Vec<u8>,
-        nonce: u64,
-        to: Address,
-        transaction_index: Option<u64>,
-        value: U256,
-        v: u8,
-        r: u64,
-        s: u64,
-    }
-
-    impl From<TransactionEnvelope> for TransactionObject {
-        fn from(value: TransactionEnvelope) -> Self {
-            Self {
-                block_hash: Default::default(),
-                block_number: 0,
-                from: Default::default(),
-                gas: 0,
-                gas_price: 0,
-                hash: Default::default(),
-                input: vec![],
-                nonce: 0,
-                to: Default::default(),
-                transaction_index: None,
-                value: Default::default(),
-                v: 0,
-                r: 0,
-                s: 0,
-            }
-        }
-    }
-
     fn block_to_rpc(block: Block, full: bool) -> alloy::rpc::types::Block {
         let header = alloy::rpc::types::Header {
             hash: block.hash,
@@ -162,9 +124,25 @@ mod rpc_impl {
         };
 
         let transactions = if full {
-            alloy::rpc::types::BlockTransactions::Full(vec![])
+            alloy::rpc::types::BlockTransactions::Full(
+                block
+                    .transactions
+                    .into_iter()
+                    .map(alloy::rpc::types::Transaction::from)
+                    .collect(),
+            )
         } else {
-            alloy::rpc::types::BlockTransactions::Hashes(vec![])
+            alloy::rpc::types::BlockTransactions::Hashes(
+                block
+                    .transactions
+                    .into_iter()
+                    .map(|transaction| match transaction {
+                        Transaction::Legacy { hash, .. } | Transaction::EIP2718 { hash, .. } => {
+                            hash
+                        }
+                    })
+                    .collect(),
+            )
         };
 
         alloy::rpc::types::Block::new(header, transactions)
@@ -332,21 +310,24 @@ mod rpc_impl {
         ) -> RpcResult<Option<alloy::rpc::types::Block>>;
 
         #[method(name = "getTransaction_by_hash")]
-        fn get_transaction_by_hash(&self, hash: Bytes32) -> RpcResult<Option<TransactionObject>>;
+        fn get_transaction_by_hash(
+            &self,
+            hash: Bytes32,
+        ) -> RpcResult<Option<alloy::rpc::types::Transaction<EthereumTxEnvelope<TxEip4844Variant>>>>;
 
         #[method(name = "getTransactionByBlockHashAndIndex")]
         fn get_transaction_by_block_hash_and_index(
             &self,
             hash: Bytes32,
             position: u64,
-        ) -> RpcResult<Option<TransactionObject>>;
+        ) -> RpcResult<Option<alloy::rpc::types::Transaction<EthereumTxEnvelope<TxEip4844Variant>>>>;
 
         #[method(name = "getTransactionByBlockNumberAndIndex")]
         fn get_transaction_by_block_number_and_index(
             &self,
             block_parameter: BlockParameter,
             position: u64,
-        ) -> RpcResult<Option<TransactionObject>>;
+        ) -> RpcResult<Option<alloy::rpc::types::Transaction<EthereumTxEnvelope<TxEip4844Variant>>>>;
 
         #[method(name = "getTransactionReceipt")]
         fn get_transaction_receipt(
@@ -557,7 +538,11 @@ mod rpc_impl {
                 .map_err(Into::into)
         }
 
-        fn get_transaction_by_hash(&self, _hash: Bytes32) -> RpcResult<Option<TransactionObject>> {
+        fn get_transaction_by_hash(
+            &self,
+            _hash: Bytes32,
+        ) -> RpcResult<Option<alloy::rpc::types::Transaction<EthereumTxEnvelope<TxEip4844Variant>>>>
+        {
             not_implemented!()
         }
 
@@ -565,7 +550,8 @@ mod rpc_impl {
             &self,
             _hash: Bytes32,
             _position: u64,
-        ) -> RpcResult<Option<TransactionObject>> {
+        ) -> RpcResult<Option<alloy::rpc::types::Transaction<EthereumTxEnvelope<TxEip4844Variant>>>>
+        {
             not_implemented!()
         }
 
@@ -573,7 +559,8 @@ mod rpc_impl {
             &self,
             _block_parameter: BlockParameter,
             _position: u64,
-        ) -> RpcResult<Option<TransactionObject>> {
+        ) -> RpcResult<Option<alloy::rpc::types::Transaction<EthereumTxEnvelope<TxEip4844Variant>>>>
+        {
             not_implemented!()
         }
 

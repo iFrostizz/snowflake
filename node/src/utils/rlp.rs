@@ -1,3 +1,4 @@
+use alloy::consensus::{SignableTransaction};
 use alloy::primitives::{keccak256, B256};
 use thiserror::Error;
 
@@ -29,8 +30,8 @@ pub struct Block {
 impl Block {
     pub fn decode(bytes: &[u8]) -> Result<Self, RlpError> {
         let mut cursor = 0;
-        let start_list = cursor;
-        let length = Rlp::decode_list(bytes, &mut cursor)?;
+        // let start_list = cursor;
+        let _length = Rlp::decode_list(bytes, &mut cursor)?;
         let (header, hash) = {
             let start_list = cursor;
             let length = Rlp::decode_list(bytes, &mut cursor)?;
@@ -42,7 +43,7 @@ impl Block {
         let transactions = {
             let length = Rlp::decode_list(bytes, &mut cursor)?;
             let transactions = Self::decode_transactions(&bytes[cursor..cursor + length as usize])?;
-            cursor += length as usize;
+            // cursor += length as usize;
             transactions
         };
         // TODO decode uncles
@@ -286,36 +287,12 @@ impl Block {
 struct Rlp;
 
 impl Rlp {
-    pub fn is_string(bytes: &[u8], cursor: &usize) -> Result<bool, RlpError> {
-        let prefix = bytes.get(*cursor).ok_or(RlpError::InputTooShort)?;
-        match prefix {
-            0x00..=0x7f => Ok(true),
-            0x80..=0xb7 => Ok(true),
-            0xb8..=0xbf => Ok(true),
-            _ => Ok(false),
-        }
-    }
-
     pub fn is_list(bytes: &[u8], cursor: &usize) -> Result<bool, RlpError> {
         let prefix = bytes.get(*cursor).ok_or(RlpError::InputTooShort)?;
         match prefix {
             0xc0..=0xf7 => Ok(true),
             0xf8..=0xff => Ok(true),
             _ => Ok(false),
-        }
-    }
-
-    pub fn list_length(bytes: &[u8], cursor: &usize) -> Result<u64, RlpError> {
-        let mut cursor = *cursor;
-        Self::decode_list(bytes, &mut cursor)
-    }
-
-    pub fn length(bytes: &[u8], cursor: &usize) -> Result<u64, RlpError> {
-        let mut cursor = *cursor;
-        if Self::is_string(bytes, &cursor)? {
-            Self::decode_string(bytes, &mut cursor).map(|bytes| bytes.len() as u64)
-        } else {
-            Self::decode_list(bytes, &mut cursor)
         }
     }
 
@@ -742,33 +719,198 @@ impl TransactionEnvelope {
             }
             0x03 => {
                 // TODO need to find blocks with this transaction type
-                cursor += 1;
-                let length = Rlp::decode_list(bytes, &mut cursor)?;
-                let start_cursor = cursor;
-                let chain_id = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
-                let nonce = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
-                let max_priority_fee_per_gas = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
-                let max_fee_per_gas = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
-                let gas_limit = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
-                let to = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
-                let value = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
-                let data = Rlp::decode_string(bytes, &mut cursor)?.to_vec();
-                let access_list = {
-                    let length = Rlp::decode_list(bytes, &mut cursor)?;
-                    let access_list = AccessList::decode(&bytes[cursor..cursor + length as usize])?;
-                    cursor += length as usize;
-                    access_list
+                todo!();
+                // cursor += 1;
+                // let length = Rlp::decode_list(bytes, &mut cursor)?;
+                // let start_cursor = cursor;
+                // let chain_id = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
+                // let nonce = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
+                // let max_priority_fee_per_gas = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
+                // let max_fee_per_gas = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
+                // let gas_limit = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
+                // let to = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
+                // let value = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
+                // let data = Rlp::decode_string(bytes, &mut cursor)?.to_vec();
+                // let access_list = {
+                //     let length = Rlp::decode_list(bytes, &mut cursor)?;
+                //     let access_list = AccessList::decode(&bytes[cursor..cursor + length as usize])?;
+                //     cursor += length as usize;
+                //     access_list
+                // };
+                // let max_fee_per_blob_gas = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
+                // let blob_hashes = todo!();
+                // let v = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
+                // let r = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
+                // let s = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
+                //
+                // if cursor != bytes.len() || cursor != start_cursor + length as usize {
+                //     return Err(RlpError::InvalidFormat);
+                // }
+                //
+                // TransactionEnvelope::Blob(TransactionBlob {
+                //     chain_id,
+                //     nonce,
+                //     max_priority_fee_per_gas,
+                //     max_fee_per_gas,
+                //     gas_limit,
+                //     to,
+                //     value,
+                //     data,
+                //     access_list,
+                //     max_fee_per_blob_gas,
+                //     blob_hashes,
+                //     v,
+                //     r,
+                //     s,
+                // })
+            }
+            _ => return Err(RlpError::InvalidFormat),
+        };
+
+        Ok(envelope)
+    }
+}
+
+impl From<Transaction>
+    for alloy::rpc::types::Transaction
+{
+    fn from(value: Transaction) -> Self {
+        let transaction = match value {
+            Transaction::Legacy { tx, .. } => {
+                let (chain_id, y_parity) = {
+                    const NO_PARITY: [u8; 32] = [
+                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                        0, 0, 0, 0, 0, 0, 27,
+                    ];
+                    const PARITY: [u8; 32] = [
+                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                        0, 0, 0, 0, 0, 0, 28,
+                    ];
+                    if tx.v == NO_PARITY {
+                        (None, false)
+                    } else if tx.v == PARITY {
+                        (None, true)
+                    } else {
+                        // v = yParity + 35 + 2 * chainId
+                        // yParity = {0; 1}
+                        // chainId = (v - yParity - 35) / 2
+                        let v = alloy::primitives::U256::from_be_bytes(tx.v);
+                        if v >= 37.try_into().unwrap() {
+                            if tx.v[31] % 2 == 0 {
+                                let sub: alloy::primitives::U256 = v - alloy::primitives::U256::from(35);
+                                let chain_id: alloy::primitives::U256 = sub / alloy::primitives::U256::from(2);
+                                (Some(chain_id.try_into().unwrap()), false)
+                            } else {
+                                let chain_id: alloy::primitives::U256 = v - alloy::primitives::U256::from(36);
+                                (Some(chain_id.try_into().unwrap()), true)
+                            }
+                        } else if v == 1.try_into().unwrap() {
+                            (None, true)
+                        } else if v == 0.try_into().unwrap() {
+                            (None, false)
+                        } else {
+                            // TODO: ?
+                            (None, false)
+                        }
+                    }
                 };
-                let max_fee_per_blob_gas = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
-                let blob_hashes = todo!();
-                let v = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
-                let r = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
-                let s = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
 
-                if cursor != bytes.len() || cursor != start_cursor + length as usize {
-                    return Err(RlpError::InvalidFormat);
-                }
-
+                alloy::consensus::TxEnvelope::Legacy(
+                        alloy::consensus::TxLegacy {
+                            chain_id,
+                            nonce: u64::from_be_bytes(tx.nonce),
+                            gas_price: u128::from_be_bytes(tx.gas_price[16..].try_into().unwrap()),
+                            gas_limit: u64::from_be_bytes(tx.gas_limit),
+                            to: if tx.to == [0; 20] {
+                                alloy::primitives::TxKind::Create
+                            } else {
+                                alloy::primitives::TxKind::Call(tx.to.into())
+                            },
+                            value: alloy::primitives::U256::from_be_bytes(tx.value),
+                            input: tx.data.into(),
+                        }
+                            .into_signed(alloy::signers::Signature::new(
+                                alloy::primitives::U256::from_be_bytes(tx.r),
+                                alloy::primitives::U256::from_be_bytes(tx.s),
+                                y_parity,
+                            )),
+                )
+            }
+            Transaction::EIP2718 { envelope, .. } => match envelope {
+                TransactionEnvelope::DynamicFee(TransactionDynamicFee {
+                    chain_id,
+                    nonce,
+                    max_priority_fee_per_gas,
+                    max_fee_per_gas,
+                    gas_limit,
+                    destination,
+                    amount,
+                    data,
+                    access_list,
+                    v,
+                    r,
+                    s,
+                }) => alloy::consensus::TxEnvelope::Eip1559(
+                    alloy::consensus::TxEip1559 {
+                        chain_id: u64::from_be_bytes(chain_id[24..].try_into().unwrap()),
+                        nonce: u64::from_be_bytes(nonce),
+                        gas_limit: u64::from_be_bytes(gas_limit),
+                        max_fee_per_gas: u128::from_be_bytes(max_fee_per_gas[16..].try_into().unwrap()),
+                        max_priority_fee_per_gas: u128::from_be_bytes(max_priority_fee_per_gas[16..].try_into().unwrap()),
+                        to: if destination == [0; 20] {
+                            alloy::primitives::TxKind::Create
+                        } else {
+                            alloy::primitives::TxKind::Call(destination.into())
+                        },
+                        value: alloy::primitives::U256::from_be_bytes(amount),
+                        access_list: alloy::eips::eip2930::AccessList(access_list.into_iter().map(|item| alloy::eips::eip2930::AccessListItem {
+                            address: item.address.into(),
+                            storage_keys: item.storage_keys.into_iter().map(|item| item.into()).collect(),
+                        }).collect()),
+                        input: data.into(),
+                    }
+                    .into_signed(alloy::signers::Signature::new(
+                        alloy::primitives::U256::from_be_bytes(r),
+                        alloy::primitives::U256::from_be_bytes(s),
+                        false,
+                    )),
+                ),
+                TransactionEnvelope::AccessList(TransactionAccessList {
+                    chain_id,
+                    nonce,
+                    gas_price,
+                    gas_limit,
+                    to,
+                    value,
+                    data,
+                    access_list,
+                    v,
+                    r,
+                    s,
+                }) => alloy::consensus::TxEnvelope::Eip2930(
+                    alloy::consensus::TxEip2930 {
+                        chain_id: u64::from_be_bytes(chain_id[24..].try_into().unwrap()),
+                        nonce: u64::from_be_bytes(nonce),
+                        gas_price: u128::from_be_bytes(gas_price[16..].try_into().unwrap()),
+                        gas_limit: u64::from_be_bytes(gas_limit),
+                        to: if to == [0; 20] {
+                            alloy::primitives::TxKind::Create
+                        } else {
+                            alloy::primitives::TxKind::Call(to.into())
+                        },
+                        value: alloy::primitives::U256::from_be_bytes(value),
+                        access_list: alloy::eips::eip2930::AccessList(access_list.into_iter().map(|item| alloy::eips::eip2930::AccessListItem {
+                            address: item.address.into(),
+                            storage_keys: item.storage_keys.into_iter().map(|item| item.into()).collect(),
+                        }).collect()),
+                        input: data.into(),
+                    }
+                    .into_signed(alloy::signers::Signature::new(
+                        alloy::primitives::U256::from_be_bytes(r),
+                        alloy::primitives::U256::from_be_bytes(s),
+                        false,
+                    )),
+                ),
                 TransactionEnvelope::Blob(TransactionBlob {
                     chain_id,
                     nonce,
@@ -784,12 +926,42 @@ impl TransactionEnvelope {
                     v,
                     r,
                     s,
-                })
-            }
-            _ => return Err(RlpError::InvalidFormat),
+                }) => alloy::consensus::TxEnvelope::Eip4844(
+                    alloy::consensus::TxEip4844Variant::TxEip4844(alloy::consensus::TxEip4844 {
+                        chain_id: u64::from_be_bytes(chain_id[24..].try_into().unwrap()),
+                        nonce: u64::from_be_bytes(nonce),
+                        gas_limit: u64::from_be_bytes(gas_limit),
+                        max_fee_per_gas: u128::from_be_bytes(max_fee_per_gas[16..].try_into().unwrap()),
+                        max_priority_fee_per_gas: u128::from_be_bytes(max_priority_fee_per_gas[16..].try_into().unwrap()),
+                        to: to.into(),
+                        value: alloy::primitives::U256::from_be_bytes(value),
+                        access_list: alloy::eips::eip2930::AccessList(access_list.into_iter().map(|item| alloy::eips::eip2930::AccessListItem {
+                            address: item.address.into(),
+                            storage_keys: item.storage_keys.into_iter().map(|item| item.into()).collect(),
+                        }).collect()),
+                        blob_versioned_hashes: blob_hashes.into_iter().map(|h| h.into()).collect(),
+                        max_fee_per_blob_gas: u128::from_be_bytes(max_fee_per_blob_gas[16..].try_into().unwrap()),
+                        input: data.into(),
+                    })
+                    .into_signed(alloy::signers::Signature::new(
+                        alloy::primitives::U256::from_be_bytes(r),
+                        alloy::primitives::U256::from_be_bytes(s),
+                        false,
+                    )),
+                ),
+            },
         };
 
-        Ok(envelope)
+        Self {
+            inner: alloy::consensus::transaction::Recovered::new_unchecked(
+                transaction,
+                Default::default(),
+            ),
+            block_hash: None,
+            block_number: None,
+            transaction_index: None,
+            effective_gas_price: None,
+        }
     }
 }
 
