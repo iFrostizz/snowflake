@@ -19,14 +19,6 @@ pub struct Bootstrapper {
     pub ip: SocketAddr,
 }
 
-#[derive(Deserialize, Debug)]
-pub struct LightBootstrapper {
-    #[serde(deserialize_with = "string_to_node_id")]
-    pub id: NodeId,
-    pub ip: SocketAddr,
-    pub buckets: DhtBuckets,
-}
-
 fn string_to_node_id<'de, D>(de: D) -> Result<NodeId, D::Error>
 where
     D: Deserializer<'de>,
@@ -112,7 +104,6 @@ impl<'a> Bootstrappers<'a> {
                 })
                 .collect::<HashMap<_, _>>(),
         );
-        println!("{:?}", ret.keys());
         ret
     }
 
