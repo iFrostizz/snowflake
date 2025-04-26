@@ -1,13 +1,13 @@
 #!/bin/bash
-set -ex
+set -e
 
 source docker/common.sh
 
 # Create keypair
 make keys
 
-# Derive NodeID from staker.crt
-NODE_ID=$(bash ./docker/get_node_id.sh staker.crt)
+# Derive NodeID from node.crt
+NODE_ID=$(bash ./docker/get_node_id.sh node.crt)
 
 # Use hostname to get a unique ID
 PEER_ID=$(hostname | grep -oE '[0-9]+')
@@ -26,6 +26,9 @@ while [ ! -f "$PEER_FILE" ]; do
     sleep 1
 done
 
-# Start the app
-RUST_LOG=$LOG_LEVEL cargo run -- --http-port $HTTP_PORT --rpc-port $RPC_PORT \
+# Enable backtrace and set more verbose logging
+export RUST_BACKTRACE=1
+export RUST_LOG=info,snowflake=${LOG_LEVEL:-debug}
+
+/app/snowflake --public-ip 127.0.0.1 --http-port $HTTP_PORT --rpc-port $RPC_PORT \
   --max-peers 0 --bootstrappers-path "$BOOTSTRAPPERS_FILE" --light-bootstrappers-path "$PEER_FILE"

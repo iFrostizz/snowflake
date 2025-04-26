@@ -111,10 +111,7 @@ pub enum PeerMessage {
 
 #[derive(Debug)]
 pub enum LightPeerMessage {
-    NewPeer {
-        sender: PeerSender,
-        buckets: DhtBuckets,
-    },
+    NewPeer(DhtBuckets),
 }
 
 impl HandshakeInfos {
@@ -424,8 +421,8 @@ impl Peer {
         sender: &PeerSender,
         light_message: sdk::light_request::Message,
     ) -> Result<(), NodeError> {
-        let chain_id = c_chain_id.as_ref().to_vec();
         log::debug!("received light message {light_message:?}");
+        let chain_id = c_chain_id.as_ref().to_vec();
         let res = match light_message {
             sdk::light_request::Message::LightHandshake(LightHandshake { buckets }) => {
                 if let Some(buckets) = buckets {
@@ -434,10 +431,7 @@ impl Peer {
                         .try_into()
                         .map_err(|_| NodeError::Message("invalid bucket".to_string()))?;
                     let bucket = Bucket::from_be_bytes(bucket_arr);
-                    let _ = spln.send(LightPeerMessage::NewPeer {
-                        sender: sender.clone(),
-                        buckets: DhtBuckets { block: bucket },
-                    });
+                    let _ = spln.send(LightPeerMessage::NewPeer(DhtBuckets { block: bucket }));
                     None
                 } else {
                     return Err(NodeError::Message("no buckets in handshake".to_string()));

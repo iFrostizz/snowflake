@@ -16,7 +16,6 @@ use crate::stats;
 use crate::utils::{
     bloom::{BloomError, Filter},
     bls::Bls,
-    constants,
     ip::ip_octets,
 };
 use flume::{Receiver, Sender};
@@ -39,7 +38,7 @@ use tokio::task::JoinHandle;
 use tokio::time::{self};
 use tokio_rustls::TlsStream;
 
-#[derive(Error, Debug)]
+#[derive(Debug, Error)]
 pub enum NodeError {
     #[error("dns conversion failed")]
     Dns,
@@ -63,6 +62,8 @@ pub enum NodeError {
     Failed(Vec<NodeError>),
     #[error("bloom filter generation: {0}")]
     Bloom(#[from] BloomError),
+    #[error("unwanted peer: reason: {0}")]
+    UnwantedPeer(#[from] AddPeerError),
     #[error("unexpected message: {0}")]
     Message(String),
 }
@@ -114,6 +115,16 @@ impl WriteHandler {
         mini.inc_sent(bytes.len() as u64);
         let _ = tx.send(bytes);
     }
+}
+
+#[derive(Debug, Error)]
+pub enum AddPeerError {
+    #[error("cannot add self")]
+    AddSelf,
+    #[error("already connected")]
+    AlreadyConnected,
+    #[error("max peers reached")]
+    MaxPeersReached,
 }
 
 impl Network {
@@ -311,7 +322,7 @@ impl Network {
     ) -> Result<JoinHandle<Result<(), NodeError>>, NodeError> {
         // TODO mistake because it's in nanos
         // let handshake_deadline = Duration::from_millis(constants::DEFAULT_DEADLINE); // s // TODO configure
-        let handshake_deadline = Duration::from_millis(1000);
+        let handshake_deadline = Duration::from_millis(2000);
         self.handshake(sender)?;
         let sleep = tokio::time::sleep(handshake_deadline);
         let network = self.clone();
@@ -394,6 +405,7 @@ impl Network {
                 log::debug!("removing peer {} for an unknown reason", node_id);
             }
         }
+
         {
             let mut peers_write = self.peers_infos.write().unwrap();
 
@@ -406,6 +418,7 @@ impl Network {
                 }
             }
         }
+
         {
             let mut peers_write = self.light_peers.write().unwrap();
 
@@ -434,11 +447,23 @@ impl Network {
         }
     }
 
-    pub fn can_add_peer(&self, node_id: &NodeId) -> bool {
-        if self.bootstrappers.read().unwrap().contains_key(node_id) {
-            return true;
+    pub fn check_add_peer(&self, node_id: &NodeId) -> Result<(), NodeError> {
+        if &self.node_id == node_id {
+            return Err(AddPeerError::AddSelf.into());
         }
+
         let peers_infos = self.peers_infos.read().unwrap();
-        !peers_infos.contains_key(node_id) && !self.has_reached_max_peers(&peers_infos)
+        if peers_infos.contains_key(node_id) {
+            return Err(AddPeerError::AlreadyConnected.into());
+        }
+
+        if self.bootstrappers.read().unwrap().contains_key(node_id) {
+            return Ok(());
+        }
+
+        if self.has_reached_max_peers(&peers_infos) {
+            return Err(AddPeerError::MaxPeersReached.into());
+        }
+        Ok(())
     }
 }

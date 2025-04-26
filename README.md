@@ -62,6 +62,6 @@
 ## Testing
 ### Docker
 ```sh
-docker compose -f docker/docker-compose.yml build
-docker compose -f docker/docker-compose.yml up
+BUILD_MODE=debug docker compose -f docker/docker-compose.yml up --force-recreate
+BUILD_MODE=release docker compose -f docker/docker-compose.yml up --force-recreate
 ```

@@ -67,8 +67,8 @@ impl Listener {
                         let node_id = NodeId::from_cert(x509_certificate.clone());
 
                         // TODO support peer replacements
-                        if !node.network.can_add_peer(&node_id) {
-                            log::debug!("don't want this peer, ignoring.");
+                        if let Err(err) = node.network.check_add_peer(&node_id) {
+                            log::debug!("{node_id}, {err}");
                             return;
                         }
 

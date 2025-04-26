@@ -3,7 +3,7 @@
 Help() {
   echo "get_node_id.sh ~ Generate an Avalanche node ID from a cert file"
   echo
-  echo "Syntax: get_node_id.sh ./staker.crt"
+  echo "Syntax: get_node_id.sh ./node.crt"
   echo
   exit 1
 }

@@ -7,8 +7,16 @@ services:
     build:
       context: ../
       dockerfile: docker/Dockerfile
+      args:
+        # Default to debug, can be overridden via environment variable
+        BUILD_MODE: ${BUILD_MODE:-debug}
     image: snowflake:latest
     entrypoint: /bin/true
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "200k"
+        max-file: "10"
 
   bootstrap:
     container_name: bootstrap
@@ -30,6 +38,8 @@ services:
     hostname: peer1
     ports:
       - "3001:3001"
+      - "4001:4001"
+    network_mode: host
     volumes:
       - snowflake:/shared
     depends_on:
@@ -44,6 +54,8 @@ services:
     hostname: peer2
     ports:
       - "3002:3002"
+      - "4002:4002"
+    network_mode: host
     volumes:
       - snowflake:/shared
     depends_on:
@@ -58,8 +70,9 @@ services:
     hostname: peer3
     ports:
       - "3003:3003"
+      - "4003:4003"
+    network_mode: host
     volumes:
       - snowflake:/shared
     depends_on:
       - bootstrap
-

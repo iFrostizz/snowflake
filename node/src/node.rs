@@ -27,7 +27,7 @@ use proto_lib::sdk;
 use proto_lib::sdk::LightHandshake;
 use std::collections::HashSet;
 use std::io::ErrorKind;
-use std::net::ToSocketAddrs;
+use std::net::{SocketAddr, ToSocketAddrs};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::io::{ReadHalf, WriteHalf};
@@ -37,6 +37,7 @@ use tokio::sync::{broadcast, OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinHandle;
 use tokio::time::{self};
 use tokio_rustls::TlsStream;
+use crate::net::node::AddPeerError;
 
 pub struct Node {
     pub(crate) network: Arc<Network>,
@@ -158,13 +159,18 @@ impl Node {
     }
 
     /// A created connection that may create a new peer.
-    /// This connection has been started from the initiative of the network either from the bootstrap or from PeerList recommendations of other nodes.
+    /// This connection has been started from the initiative of the network
+    /// either from the bootstrap or from recommendations of other nodes.
     pub async fn create_connection(
         self: &Arc<Node>,
         semaphore: Arc<Semaphore>,
         data: ConnectionData,
     ) -> Result<(), NodeError> {
         let socket_addr = data.socket_addr;
+        if self.is_my_socket(&socket_addr) {
+            log::debug!("cannot add self as peer");
+            return Err(NodeError::Message("Cannot add self as peer".to_owned()));
+        }
         log::debug!("adding a new peer at {socket_addr:?}");
 
         self.connect_new_peer(semaphore, data).await?;
@@ -181,6 +187,8 @@ impl Node {
         semaphore: Arc<Semaphore>,
         data: ConnectionData,
     ) -> Result<(), NodeError> {
+        self.network.check_add_peer(&data.node_id)?;
+
         let hs_permit = self.hs_permit().await;
 
         let mut peer = match Peer::connect_with_back_off(
@@ -206,11 +214,18 @@ impl Node {
 
         let node = self.clone();
         tokio::spawn(async move {
-            let err = if let Err(err) = node.loop_peer(hs_permit, &mut peer).await {
-                log::debug!("error when looping peer {err:?}");
-                Some(err)
-            } else {
-                None
+            let err = match node.loop_peer(hs_permit, &mut peer).await {
+                Err(NodeError::UnwantedPeer(AddPeerError::AlreadyConnected)) => {
+                    // timing issue, should not disconnect in this case.
+                    return;
+                }
+                Err(err) => {
+                    log::debug!("error when looping peer {:?} {err:?}", peer.node_id);
+                    Some(err)
+                },
+                _ => {
+                    None
+                }
             };
 
             let _ = node.network.disconnect_peer(peer, err.as_ref());
@@ -231,9 +246,7 @@ impl Node {
     ) -> Result<(), NodeError> {
         log::trace!("looping a new peer");
 
-        if !self.network.can_add_peer(&peer.node_id) {
-            return Err(NodeError::Message("Unwanted peer".to_owned()));
-        }
+        self.network.check_add_peer(&peer.node_id)?;
 
         let (tasks, tx) = self.spawn_peer(peer, hs_permit).await?;
 
@@ -267,7 +280,7 @@ impl Node {
             .add_peer(node_id, peer.x509_certificate.clone(), sender.clone())
             .await;
 
-        // TODO this is starting to look a bit messy, we should probably refactor this.
+        // TODO this is starting to look a bit messy, we should probably refactor.
         let (spn, rpn) = flume::unbounded();
         let (spl, rpl) = flume::unbounded();
         let (spln, rpln) = flume::unbounded();
@@ -529,28 +542,13 @@ impl Node {
 
     fn manage_inner_light_message(self: &Arc<Node>, node_id: NodeId, message: LightPeerMessage) {
         match message {
-            LightPeerMessage::NewPeer { sender, buckets } => {
-                let is_new = self
+            LightPeerMessage::NewPeer(buckets) => {
+                self
                     .light_network
                     .light_peers
                     .write()
                     .unwrap()
-                    .insert(node_id, buckets)
-                    .is_none();
-
-                let block_k = self.light_network.block_dht.k();
-                let message = sdk::light_request::Message::LightHandshake(LightHandshake {
-                    buckets: Some(sdk::DhtBuckets {
-                        block: block_k.to_be_bytes_vec(),
-                    }),
-                });
-                if is_new {
-                    if let Ok(app_request) =
-                        AppRequestMessage::encode(&self.network.config.c_chain_id, message)
-                    {
-                        let _ = sender.send(app_request);
-                    }
-                }
+                    .insert(node_id, buckets);
             }
         }
     }
@@ -704,10 +702,8 @@ impl Node {
     fn try_connect_from_claimed(self: &Arc<Node>, claimed: ClaimedIpPort) {
         let x509_certificate = claimed.x509_certificate;
         let node_id = NodeId::from_cert(x509_certificate.clone());
-        if !self.network.can_add_peer(&node_id) {
-            log::debug!("peer not desired {node_id}");
-        } else {
-            match claimed.ip_port.try_into() {
+        match self.network.check_add_peer(&node_id) {
+            Ok(()) => match claimed.ip_port.try_into() {
                 Ok(port) => match ip_from_octets(claimed.ip_addr) {
                     Ok(ip_addr) => {
                         log::debug!("got peer list ip {ip_addr}");
@@ -736,6 +732,9 @@ impl Node {
                 Err(err) => {
                     log::error!("err when converting port {err}");
                 }
+            },
+            Err(err) => {
+                log::debug!("{err} {node_id}");
             }
         }
     }
@@ -996,5 +995,11 @@ impl Node {
             .acquire_owned()
             .await
             .unwrap()
+    }
+
+    fn is_my_socket(self: &Arc<Node>, socket_addr: &SocketAddr) -> bool {
+        let my_socket = &self.network.config.socket_addr;
+        (my_socket == socket_addr)
+            || (socket_addr.ip().is_loopback() && my_socket.port() == socket_addr.port())
     }
 }

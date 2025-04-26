@@ -57,8 +57,6 @@ impl<'a> Bootstrappers<'a> {
     }
 
     fn read_light_bootsrappers(&self) -> HashMap<String, Vec<Bootstrapper>> {
-        // TODO here, handle a new type of bootstrapper with the dht buckets.
-        //   actually, no, these are announced on the handshake.
         let mut content = String::new();
         let mut file = File::open(self.light_bootstrapper_path).unwrap();
         File::read_to_string(&mut file, &mut content).unwrap();
@@ -114,6 +112,7 @@ impl<'a> Bootstrappers<'a> {
                 })
                 .collect::<HashMap<_, _>>(),
         );
+        println!("{:?}", ret.keys());
         ret
     }
 
@@ -126,7 +125,7 @@ impl<'a> Bootstrappers<'a> {
         log::debug!("bootstrapping nodes");
 
         // TODO error handling
-        let bootstrappers = dbg!(self.read_all_bootsrappers(network_name));
+        let bootstrappers = self.read_all_bootsrappers(network_name);
 
         // TODO should not create a new semaphore but use the common one
         let semaphore = Arc::new(Semaphore::new(max_connections));

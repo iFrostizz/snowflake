@@ -143,8 +143,8 @@ mod tests {
         );
 
         let credentials_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/credentials/");
-        let private_key_path = credentials_path.join("staker.key");
-        let cert_path = credentials_path.join("staker.crt");
+        let private_key_path = credentials_path.join("node.key");
+        let cert_path = credentials_path.join("node.crt");
 
         let private_key = fs::read(private_key_path).unwrap();
         let private_key_pem = openssl::rsa::Rsa::private_key_from_pem(&private_key).unwrap();

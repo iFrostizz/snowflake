@@ -4,6 +4,6 @@ data
 media
 .github
 bls.key
-staker.crt
-staker.key
+node.crt
+node.key
 prometheus.yml

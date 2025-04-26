@@ -704,8 +704,8 @@ mod tests {
         // tracing_subscriber::fmt::init();
 
         let credentials_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/credentials/");
-        let pem_key_path = credentials_path.join("staker.key");
-        let cert_path = credentials_path.join("staker.crt");
+        let pem_key_path = credentials_path.join("node.key");
+        let cert_path = credentials_path.join("node.crt");
         let bls_key_path = credentials_path.join("bls.key");
 
         let (tx, rx) = flume::unbounded();

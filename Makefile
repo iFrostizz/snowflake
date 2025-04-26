@@ -17,7 +17,7 @@ test:
 	cargo test --quiet
 
 keys:
-	openssl req -x509 -newkey rsa:4096 -keyout staker.key -out staker.crt -days 36500 -nodes -subj '/CN=localhost' -set_serial 0
+	openssl req -x509 -newkey rsa:4096 -keyout node.key -out node.crt -days 36500 -nodes -subj '/CN=localhost' -set_serial 0
 	openssl rand 32 > bls.key
 
 proto:

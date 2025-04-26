@@ -41,11 +41,11 @@ pub struct Args {
     pub http_port: u16,
 
     /// Path of the certificate
-    #[arg(short, long, default_value = "./staker.crt")]
+    #[arg(short, long, default_value = "./node.crt")]
     pub cert_path: PathBuf,
 
     /// Path of the private key
-    #[arg(short, long, default_value = "./staker.key")]
+    #[arg(short, long, default_value = "./node.key")]
     pub pem_key_path: PathBuf,
 
     /// Path of the BLS key
