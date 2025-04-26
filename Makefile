@@ -5,10 +5,10 @@ ci-check: fmt-check	clippy test proto-check
 ci-fix: fmt	clippy test proto
 
 fmt:
-	cargo fmt
+	cargo fmt --all
 
 fmt-check:
-	cargo fmt --check
+	cargo fmt --all --check
 
 clippy:
 	cargo clippy --all-targets -- -D warnings
