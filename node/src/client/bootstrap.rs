@@ -59,7 +59,8 @@ impl<'a> Bootstrappers<'a> {
         let mut content = String::new();
         let mut file = File::open(self.bootstrapper_path).unwrap();
         File::read_to_string(&mut file, &mut content).unwrap();
-        let mut bootstrappers: HashMap<String, Vec<Bootstrapper>> = serde_json::from_str(&content).unwrap();
+        let mut bootstrappers: HashMap<String, Vec<Bootstrapper>> =
+            serde_json::from_str(&content).unwrap();
         let mut bootstrappers = bootstrappers
             .remove(network_name)
             .expect("this network is not listed in the bootstrappers file");

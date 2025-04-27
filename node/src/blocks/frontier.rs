@@ -28,17 +28,19 @@ impl Frontier {
             // NOTE this is needed because otherwise the iterator is exhausted
             let bids = self.blocks.last_elements(usize::MAX);
             Some(
-                bids.flat_map(|block_id| block_store.get(block_id).map(|height| (block_id, height)))
-                    .fold(
-                        (BlockID::default(), 0),
-                        |(block_id, height), (new_block_id, new_height)| {
-                            if new_height >= &height {
-                                (new_block_id.clone(), *new_height)
-                            } else {
-                                (block_id, height)
-                            }
-                        },
-                    ),
+                bids.flat_map(|block_id| {
+                    block_store.get(block_id).map(|height| (block_id, height))
+                })
+                .fold(
+                    (BlockID::default(), 0),
+                    |(block_id, height), (new_block_id, new_height)| {
+                        if new_height >= &height {
+                            (new_block_id.clone(), *new_height)
+                        } else {
+                            (block_id, height)
+                        }
+                    },
+                ),
             )
         }
     }

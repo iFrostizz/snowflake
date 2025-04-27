@@ -24,7 +24,9 @@ impl From<NodeId> for [u8; 20] {
 
 impl From<[u8; 20]> for NodeId {
     fn from(value: [u8; 20]) -> Self {
-        Self { id: Id::from(value) }
+        Self {
+            id: Id::from(value),
+        }
     }
 }
 
@@ -102,7 +104,9 @@ impl NodeId {
         fixed_node_id.copy_from_slice(&node_id);
 
         Self {
-            id: Id { inner: fixed_node_id },
+            id: Id {
+                inner: fixed_node_id,
+            },
         }
     }
 }

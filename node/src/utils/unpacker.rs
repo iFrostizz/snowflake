@@ -25,7 +25,11 @@ impl Unpacker {
         cursor: &mut usize,
         name: String,
     ) -> Result<&'a [u8], PackerError> {
-        let len = u32::from_be_bytes(Unpacker::unpack_fixed_bytes(bytes, cursor, name.clone() + "len")?);
+        let len = u32::from_be_bytes(Unpacker::unpack_fixed_bytes(
+            bytes,
+            cursor,
+            name.clone() + "len",
+        )?);
         let len = len as usize;
         let res = bytes
             .get(*cursor..*cursor + len)

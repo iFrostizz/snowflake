@@ -125,20 +125,33 @@ pub enum AddPeerError {
 }
 
 impl Network {
-    pub fn todo_remove_attach_light_peers(&mut self, light_peers: Arc<RwLock<HashMap<NodeId, DhtBuckets>>>) {
+    pub fn todo_remove_attach_light_peers(
+        &mut self,
+        light_peers: Arc<RwLock<HashMap<NodeId, DhtBuckets>>>,
+    ) {
         self.light_peers = light_peers;
     }
 
     /// Initiate the network by specifying this node's IP
     pub fn new(config: NetworkConfig) -> Result<Self, ()> {
-        let client_config = Arc::new(config::client_config(&config.cert_path, &config.pem_key_path));
+        let client_config = Arc::new(config::client_config(
+            &config.cert_path,
+            &config.pem_key_path,
+        ));
 
         let bls = Bls::new(&config.bls_key_path);
         let public_key = bls.public_key();
         let node_pop = bls.sign_pop(&public_key);
 
-        let sig_timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
-        let unsigned_ip = UnsignedIp::new(config.socket_addr.ip(), config.socket_addr.port(), sig_timestamp);
+        let sig_timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let unsigned_ip = UnsignedIp::new(
+            config.socket_addr.ip(),
+            config.socket_addr.port(),
+            sig_timestamp,
+        );
         let signed_ip = unsigned_ip.sign_with_key(&bls, &config.pem_key_path);
 
         // TODO https://github.com/iFrostizz/snowflake/issues/13
@@ -250,7 +263,12 @@ impl Network {
         ret
     }
 
-    pub async fn add_peer(self: &Arc<Network>, node_id: NodeId, x509_certificate: Vec<u8>, snp: PeerSender) {
+    pub async fn add_peer(
+        self: &Arc<Network>,
+        node_id: NodeId,
+        x509_certificate: Vec<u8>,
+        snp: PeerSender,
+    ) {
         let mut peers = self.peers_infos.write().unwrap();
         if peers.get(&node_id).is_none() {
             peers.insert(
@@ -313,7 +331,10 @@ impl Network {
         let bloom_filter = network.bloom_filter.read().unwrap().as_proto();
         let handshake = p2p::Handshake {
             network_id: network.config.network_id,
-            my_time: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
+            my_time: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
             ip_addr: ip_octets(network.config.socket_addr.ip()),
             ip_port: network.config.socket_addr.port().into(),
             ip_signing_time: network.signed_ip.unsigned_ip.timestamp,

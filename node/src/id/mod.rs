@@ -68,7 +68,11 @@ impl<const LEN: usize> From<Id<LEN>> for [u8; LEN] {
 
 impl<const LEN: usize> std::fmt::Display for Id<LEN> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", bs58::encode(self.inner).as_cb58(None).into_string())
+        write!(
+            f,
+            "{}",
+            bs58::encode(self.inner).as_cb58(None).into_string()
+        )
     }
 }
 

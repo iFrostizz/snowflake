@@ -21,7 +21,9 @@ use crate::utils::{bloom::Filter, ip::ip_from_octets, packer::Packer};
 use async_recursion::async_recursion;
 use flume::{Receiver, Sender};
 use indexmap::IndexMap;
-use proto_lib::p2p::{self, message::Message, AppError, BloomFilter, Client, GetPeerList, Handshake};
+use proto_lib::p2p::{
+    self, message::Message, AppError, BloomFilter, Client, GetPeerList, Handshake,
+};
 use proto_lib::sdk;
 use ripemd::Digest;
 use rustls::ClientConfig;
@@ -210,7 +212,12 @@ impl Peer {
         &self.channels.rpl
     }
 
-    pub fn take_tls(&mut self) -> (ReadHalf<TlsStream<TcpStream>>, WriteHalf<TlsStream<TcpStream>>) {
+    pub fn take_tls(
+        &mut self,
+    ) -> (
+        ReadHalf<TlsStream<TcpStream>>,
+        WriteHalf<TlsStream<TcpStream>>,
+    ) {
         split(self.connection.tls.take().expect("missing tls field"))
     }
 
@@ -229,8 +236,11 @@ impl Peer {
         while retries < back_off.max_retries {
             let permit = semaphore.acquire().await.unwrap();
 
-            let err = match tokio::time::timeout(Duration::from_secs(5), Self::connect(&socket_addr, config))
-                .await
+            let err = match tokio::time::timeout(
+                Duration::from_secs(5),
+                Self::connect(&socket_addr, config),
+            )
+            .await
             {
                 Ok(Ok(tls)) => {
                     let server_connection = tls.get_ref().1;
@@ -238,11 +248,13 @@ impl Peer {
                         .peer_certificates()
                         .ok_or(NodeError::Message("missing TLS certificates".to_owned()))?;
                     let mut certs = certs.iter();
-                    let cert = certs
-                        .next()
-                        .ok_or(NodeError::Message("need at least 1 TLS certificate".to_owned()))?;
+                    let cert = certs.next().ok_or(NodeError::Message(
+                        "need at least 1 TLS certificate".to_owned(),
+                    ))?;
                     if certs.next().is_some() {
-                        return Err(NodeError::Message("need at most 1 TLS certificate".to_owned()));
+                        return Err(NodeError::Message(
+                            "need at most 1 TLS certificate".to_owned(),
+                        ));
                     }
 
                     return Ok(Self::new(node_id, cert.to_vec(), socket_addr, 0, tls));
@@ -279,11 +291,17 @@ impl Peer {
 
         let disconnection_rx2 = disconnection_rx.resubscribe();
         let rnp = self.channels.rnp.clone();
-        let write = tokio::spawn(Self::write_peer(out_pipeline, write, rnp, disconnection_rx2));
+        let write = tokio::spawn(Self::write_peer(
+            out_pipeline,
+            write,
+            rnp,
+            disconnection_rx2,
+        ));
 
         let peer = Arc::new(self);
         let sender = peer.channels.sender.clone();
-        let read = tokio::spawn(peer.read_peer(read, mail_box, sender, c_chain_id, disconnection_rx));
+        let read =
+            tokio::spawn(peer.read_peer(read, mail_box, sender, c_chain_id, disconnection_rx));
 
         (write, read)
     }
@@ -296,7 +314,8 @@ impl Peer {
             .map_err(|_| NodeError::Dns)?
             .to_owned();
 
-        let sock = tokio::time::timeout(Duration::from_secs(5), TcpStream::connect(sock_addr)).await??;
+        let sock =
+            tokio::time::timeout(Duration::from_secs(5), TcpStream::connect(sock_addr)).await??;
 
         let config = TlsConnector::from(config.clone());
         let tls = config.connect(dns_name, sock).await?;
@@ -311,7 +330,8 @@ impl Peer {
         disconnection_rx: broadcast::Receiver<()>,
     ) -> Result<(), NodeError> {
         log::trace!("write");
-        let res = Network::schedule_write_messages(out_pipeline, write, rnp, disconnection_rx).await;
+        let res =
+            Network::schedule_write_messages(out_pipeline, write, rnp, disconnection_rx).await;
         if res.is_err() {
             log::debug!("error on write");
         }
@@ -327,14 +347,24 @@ impl Peer {
         disconnection_rx: broadcast::Receiver<()>,
     ) -> Result<(), NodeError> {
         log::trace!("read");
-        let res = Self::read_messages(&self, read, &c_chain_id, sender, &mail_box, disconnection_rx).await;
+        let res = Self::read_messages(
+            &self,
+            read,
+            &c_chain_id,
+            sender,
+            &mail_box,
+            disconnection_rx,
+        )
+        .await;
 
         if res.is_err() {
             log::debug!("error on read");
         }
 
         match res {
-            Err(NodeError::TcpConnection(tcp_err)) if tcp_err.kind() == ErrorKind::UnexpectedEof => {
+            Err(NodeError::TcpConnection(tcp_err))
+                if tcp_err.kind() == ErrorKind::UnexpectedEof =>
+            {
                 Err(NodeError::TcpConnection(tcp_err))
             }
             rest => rest,
@@ -382,11 +412,12 @@ impl Peer {
             mini.inc_recv(buf.len() as u64);
         }
 
-        let sent_message = if let Some(request_id) = SubscribableMessage::response_request_id(&decoded) {
-            mail_box.mark_mail_received(&self.identity.node_id, request_id, decoded.clone())
-        } else {
-            None
-        };
+        let sent_message =
+            if let Some(request_id) = SubscribableMessage::response_request_id(&decoded) {
+                mail_box.mark_mail_received(&self.identity.node_id, request_id, decoded.clone())
+            } else {
+                None
+            };
 
         // TODO if this node holds a stake, here is the minimum amount of messages to handle since
         //   they are registered and will get the node benched:
@@ -528,11 +559,13 @@ impl Peer {
                     if app_id != SNOWFLAKE_HANDLER_ID {
                         return Ok(());
                     }
-                    let light_request = InboundMessage::decode(request_bytes).map_err(NodeError::Decoding)?;
+                    let light_request =
+                        InboundMessage::decode(request_bytes).map_err(NodeError::Decoding)?;
 
                     let light_response =
                         InboundMessage::decode(response_bytes).map_err(NodeError::Decoding)?;
-                    Self::manage_light_response(&self.channels.spl, light_request, light_response).await?;
+                    Self::manage_light_response(&self.channels.spl, light_request, light_response)
+                        .await?;
                 }
             }
             Message::Pong(_pong) => {}
@@ -642,7 +675,8 @@ impl Peer {
             sdk::light_response::Message::Nodes(sdk::Nodes { node_ids }) => {
                 if !matches!(
                     light_request,
-                    sdk::light_request::Message::FindValue(_) | sdk::light_request::Message::FindNode(_)
+                    sdk::light_request::Message::FindValue(_)
+                        | sdk::light_request::Message::FindNode(_)
                 ) {
                     return Err(NodeError::Message("invalid request".to_string()));
                 }
@@ -659,17 +693,21 @@ impl Peer {
                     .collect();
                 let node_ids: Vec<_> = node_ids.into_iter().collect();
                 let message = LightMessage::Nodes(node_ids);
-                spl.send((message, None)).map_err(|_| NodeError::SendError)?;
+                spl.send((message, None))
+                    .map_err(|_| NodeError::SendError)?;
             }
             sdk::light_response::Message::Value(sdk::Value { value }) => {
-                let sdk::light_request::Message::FindValue(FindValue { dht_id, .. }) = light_request else {
+                let sdk::light_request::Message::FindValue(FindValue { dht_id, .. }) =
+                    light_request
+                else {
                     return Err(NodeError::Message("invalid request".to_string()));
                 };
                 let dht_id = dht_id
                     .try_into()
                     .map_err(|_| NodeError::Message("invalid DHT".to_string()))?;
                 let message = LightMessage::Store(dht_id, value);
-                spl.send((message, None)).map_err(|_| NodeError::SendError)?;
+                spl.send((message, None))
+                    .map_err(|_| NodeError::SendError)?;
             }
         }
 

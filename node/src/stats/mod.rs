@@ -65,7 +65,10 @@ pub mod messages {
         describe_counter!(RECV_MESSAGES_BYTES, "amount of bytes of received messages");
         describe_counter!(SENT_MESSAGES_BYTES, "amount of bytes of sent messages");
 
-        describe_counter!(SUCCEEDED_APP_REQUEST, "number of succeeded AppRequest messages");
+        describe_counter!(
+            SUCCEEDED_APP_REQUEST,
+            "number of succeeded AppRequest messages"
+        );
         describe_counter!(FAILED_APP_REQUEST, "number of failed AppRequest messages");
         describe_counter!(EXPIRED_APP_REQUEST, "number of expired AppRequest messages");
     }

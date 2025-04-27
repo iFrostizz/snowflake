@@ -320,7 +320,10 @@ mod tests {
         Arc<RwLock<IndexMap<NodeId, PeerInfo>>>,
         Arc<RwLock<HashMap<NodeId, DhtBuckets>>>,
     ) {
-        let node_ids = buckets.into_iter().map(extend_to_node_id).collect::<Vec<_>>();
+        let node_ids = buckets
+            .into_iter()
+            .map(extend_to_node_id)
+            .collect::<Vec<_>>();
         let peer_infos: IndexMap<_, _> = node_ids
             .iter()
             .map(|node_id| {
@@ -369,7 +372,8 @@ mod tests {
         ];
         let (peer_infos, light_peers) = node_ids_to_infos(buckets.to_vec());
         let (mail_tx, _) = flume::unbounded();
-        let dht: KademliaDht = KademliaDht::new(peer_infos, light_peers, mail_tx, ChainId::from([0; 32]), 3);
+        let dht: KademliaDht =
+            KademliaDht::new(peer_infos, light_peers, mail_tx, ChainId::from([0; 32]), 3);
         let closest = dht.find_node(&extend_to_bucket(buckets[4]));
         assert_eq!(closest.len(), 3);
         assert_eq!(

@@ -52,7 +52,11 @@ impl LightNetwork {
         }
     }
 
-    pub async fn start(&self, node: Arc<Node>, mut rx: broadcast::Receiver<()>) -> Result<(), NodeError> {
+    pub async fn start(
+        &self,
+        node: Arc<Node>,
+        mut rx: broadcast::Receiver<()>,
+    ) -> Result<(), NodeError> {
         if self.sync_headers {
             let block_dht = self.block_dht.clone();
             let rx = rx.resubscribe();
@@ -78,7 +82,10 @@ impl LightNetwork {
             }
             LightMessage::Store(dht_id, value) => {
                 let res = match dht_id {
-                    DhtId::Block => self.block_dht.insert_to_store(value).map(|_| LightValue::Ok),
+                    DhtId::Block => self
+                        .block_dht
+                        .insert_to_store(value)
+                        .map(|_| LightValue::Ok),
                     _ => Err(light_errors::INVALID_DHT),
                 };
                 Some(res)

@@ -30,7 +30,10 @@ impl BucketDht {
     pub(crate) fn new(node_id: NodeId, k: Bucket) -> Self {
         let bucket = Bucket::from_be_bytes(node_id.into());
         let (bucket_lo, bucket_hi) = (bucket.wrapping_sub(k), bucket.wrapping_add(k));
-        Self { bucket_lo, bucket_hi }
+        Self {
+            bucket_lo,
+            bucket_hi,
+        }
     }
 
     /// Range of buckets for this node. The left hand is included and the right hand is excluded.

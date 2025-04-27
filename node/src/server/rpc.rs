@@ -137,7 +137,9 @@ mod rpc_impl {
                     .transactions
                     .into_iter()
                     .map(|transaction| match transaction {
-                        Transaction::Legacy { hash, .. } | Transaction::EIP2718 { hash, .. } => hash,
+                        Transaction::Legacy { hash, .. } | Transaction::EIP2718 { hash, .. } => {
+                            hash
+                        }
                     })
                     .collect(),
             )
@@ -262,10 +264,14 @@ mod rpc_impl {
         fn get_uncle_count_by_block_hash(&self, block_parameter: BlockParameter) -> RpcResult<u64>;
 
         #[method(name = "getUncleCountByBlockNumber")]
-        fn get_uncle_count_by_block_number(&self, block_parameter: BlockParameter) -> RpcResult<u64>;
+        fn get_uncle_count_by_block_number(
+            &self,
+            block_parameter: BlockParameter,
+        ) -> RpcResult<u64>;
 
         #[method(name = "getCode")]
-        fn get_code(&self, address: Address, block_parameter: BlockParameter) -> RpcResult<Vec<u8>>;
+        fn get_code(&self, address: Address, block_parameter: BlockParameter)
+            -> RpcResult<Vec<u8>>;
 
         #[method(name = "sign")]
         fn sign(&self, address: Address, message: Vec<u8>) -> RpcResult<Bytes32>;
@@ -283,10 +289,18 @@ mod rpc_impl {
         fn call(&self, object: CallObject, block_parameter: BlockParameter) -> RpcResult<Vec<u8>>;
 
         #[method(name = "estimateGas")]
-        fn estimate_gas(&self, object: CallObject, block_parameter: BlockParameter) -> RpcResult<Vec<u8>>;
+        fn estimate_gas(
+            &self,
+            object: CallObject,
+            block_parameter: BlockParameter,
+        ) -> RpcResult<Vec<u8>>;
 
         #[method(name = "getBlockByHash")]
-        fn get_block_by_hash(&self, hash: Bytes32, full: bool) -> RpcResult<alloy::rpc::types::Block>;
+        fn get_block_by_hash(
+            &self,
+            hash: Bytes32,
+            full: bool,
+        ) -> RpcResult<alloy::rpc::types::Block>;
 
         #[method(name = "getBlockByNumber")]
         async fn get_block_by_number(
@@ -437,15 +451,25 @@ mod rpc_impl {
             Ok(block.transactions.len() as u64)
         }
 
-        fn get_uncle_count_by_block_hash(&self, _block_parameter: BlockParameter) -> RpcResult<u64> {
+        fn get_uncle_count_by_block_hash(
+            &self,
+            _block_parameter: BlockParameter,
+        ) -> RpcResult<u64> {
             not_implemented!()
         }
 
-        fn get_uncle_count_by_block_number(&self, _block_parameter: BlockParameter) -> RpcResult<u64> {
+        fn get_uncle_count_by_block_number(
+            &self,
+            _block_parameter: BlockParameter,
+        ) -> RpcResult<u64> {
             not_implemented!()
         }
 
-        fn get_code(&self, _address: Address, _block_parameter: BlockParameter) -> RpcResult<Vec<u8>> {
+        fn get_code(
+            &self,
+            _address: Address,
+            _block_parameter: BlockParameter,
+        ) -> RpcResult<Vec<u8>> {
             not_implemented!()
         }
 
@@ -465,21 +489,37 @@ mod rpc_impl {
             let data_hex = data
                 .strip_prefix("0x")
                 .and_then(|stripped| hex::decode(stripped).ok())
-                .ok_or(ErrorObject::borrowed(PARSE_ERROR, "invalid hex string", None))?;
+                .ok_or(ErrorObject::borrowed(
+                    PARSE_ERROR,
+                    "invalid hex string",
+                    None,
+                ))?;
             let hash = keccak256(&data_hex);
             self.tx.send((data_hex, Instant::now())).unwrap();
             Ok(hash)
         }
 
-        fn call(&self, _object: CallObject, _block_parameter: BlockParameter) -> RpcResult<Vec<u8>> {
+        fn call(
+            &self,
+            _object: CallObject,
+            _block_parameter: BlockParameter,
+        ) -> RpcResult<Vec<u8>> {
             not_implemented!()
         }
 
-        fn estimate_gas(&self, _object: CallObject, _block_parameter: BlockParameter) -> RpcResult<Vec<u8>> {
+        fn estimate_gas(
+            &self,
+            _object: CallObject,
+            _block_parameter: BlockParameter,
+        ) -> RpcResult<Vec<u8>> {
             not_implemented!()
         }
 
-        fn get_block_by_hash(&self, _hash: Bytes32, _full: bool) -> RpcResult<alloy::rpc::types::Block> {
+        fn get_block_by_hash(
+            &self,
+            _hash: Bytes32,
+            _full: bool,
+        ) -> RpcResult<alloy::rpc::types::Block> {
             not_implemented!()
         }
 
@@ -609,7 +649,8 @@ impl Rpc {
         let mut rpc = Web3Server::into_rpc(rpc_impl.clone());
         rpc.merge(NetServer::into_rpc(rpc_impl.clone()))
             .expect("should not fail");
-        rpc.merge(EthServer::into_rpc(rpc_impl)).expect("should not fail");
+        rpc.merge(EthServer::into_rpc(rpc_impl))
+            .expect("should not fail");
 
         let server_handle = self.server.start(rpc);
         tokio::select! {
