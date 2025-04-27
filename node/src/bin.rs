@@ -10,6 +10,7 @@ use tokio::task::JoinHandle;
 mod blocks;
 mod cli;
 mod client;
+mod dht;
 mod id;
 mod message;
 mod net;
@@ -51,12 +52,13 @@ async fn main() -> Result<(), NodeError> {
     log::debug!("args: {:?}", args);
 
     let network_config = args.network_config();
-    let network = Arc::new(Network::new(network_config).unwrap());
+    let network = Network::new(network_config).unwrap();
 
     let node = Arc::new(Node::new(
         network,
         args.max_out_connections,
         args.max_latency_records,
+        args.sync_headers,
     ));
 
     let (node_tx, node_ops, server) = server(&node, &args).await;
@@ -65,6 +67,7 @@ async fn main() -> Result<(), NodeError> {
         client::start(
             &node,
             &args.bootstrappers_path,
+            &args.light_bootstrappers_path,
             args.max_out_connections,
             &args.network_id.to_string(),
         )

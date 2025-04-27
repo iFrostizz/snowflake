@@ -54,10 +54,9 @@ impl ConnectionQueue {
                     if let Ok(data) = res {
                         let node = node.clone();
                         let semaphore = self.semaphore.clone();
-                        if !node.network.can_add_peer(&data.node_id) {
-                            log::debug!("cannot add peer {}", &data.node_id);
-                        } else {
-                            tokio::spawn(async move {
+                        match node.network.check_add_peer(&data.node_id) {
+                            Ok(()) => {
+                                tokio::spawn(async move {
                                 if let Err(err) = node
                                     .create_connection(semaphore, data)
                                     .await
@@ -65,6 +64,10 @@ impl ConnectionQueue {
                                     log::debug!("err when creating connection {err}");
                                 }
                             });
+                            },
+                            Err(err) => {
+                                log::debug!("{}, {err}", &data.node_id);
+                            }
                         }
                     } else {
                         return;

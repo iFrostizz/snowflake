@@ -1,7 +1,7 @@
 // A bloom filter that updates every time a new node is added to the set
 
 use proto_lib::p2p;
-use rand::{random, Rng};
+use rand::Rng;
 use sha2::{Digest, Sha256};
 use std::f64::consts::LN_2;
 use std::time::{Duration, Instant};
@@ -55,7 +55,7 @@ impl Filter {
         let seeds = (0..num_hashes).map(|_| rng.gen()).collect();
 
         let read = ReadFilter {
-            salt: random(),
+            salt: rand::random(),
             num_bits: num_entries * 8,
             seeds,
             entries: vec![0; num_entries as usize],
@@ -264,7 +264,7 @@ impl TryFrom<&[u8]> for ReadFilter {
         let entries: Vec<u8> = value.get((entries_offset as usize)..).unwrap().to_owned();
 
         Ok(Self {
-            salt: random(),
+            salt: rand::random(),
             num_bits: entries.len() as u64 * 8,
             seeds,
             entries,
