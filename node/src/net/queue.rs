@@ -114,10 +114,7 @@ impl ConnectionQueue {
     }
 
     fn _add_connection(&self, data: ConnectionData, retries: usize) {
-        self.connections
-            .write()
-            .unwrap()
-            .insert(data.node_id, retries);
+        self.connections.write().unwrap().insert(data.node_id, retries);
         self.scd.send(data).expect("receivers dropped");
     }
 }

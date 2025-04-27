@@ -1,7 +1,7 @@
 use blst::{
-    blst_fp, blst_fp2, blst_hash_to_g2, blst_p1_affine, blst_p1_affine_compress,
-    blst_p1_uncompress, blst_p2, blst_p2_affine, blst_p2_affine_compress, blst_p2_uncompress,
-    blst_scalar, blst_sign_pk2_in_g1, blst_sk_to_pk2_in_g1, BLST_ERROR,
+    blst_fp, blst_fp2, blst_hash_to_g2, blst_p1_affine, blst_p1_affine_compress, blst_p1_uncompress, blst_p2,
+    blst_p2_affine, blst_p2_affine_compress, blst_p2_uncompress, blst_scalar, blst_sign_pk2_in_g1,
+    blst_sk_to_pk2_in_g1, BLST_ERROR,
 };
 use std::{fs, path::Path};
 
@@ -55,15 +55,7 @@ impl Bls {
 
         unsafe {
             let aug = std::ptr::null();
-            blst_hash_to_g2(
-                &mut out,
-                msg.as_ptr(),
-                msg.len(),
-                dst.as_ptr(),
-                dst.len(),
-                aug,
-                0,
-            );
+            blst_hash_to_g2(&mut out, msg.as_ptr(), msg.len(), dst.as_ptr(), dst.len(), aug, 0);
         }
 
         let mut sig = blst_p2_affine {

@@ -193,8 +193,7 @@ impl Block {
                                 excess_blob_gas,
                             }
                         } else {
-                            let parent_beacon_block_root =
-                                Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
+                            let parent_beacon_block_root = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
                             if cursor == bytes.len() {
                                 Header::EIP4788 {
                                     parent_hash,
@@ -220,8 +219,7 @@ impl Block {
                                 }
                             } else {
                                 let ext_data_hash = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
-                                let ext_data_gas_used =
-                                    Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
+                                let ext_data_gas_used = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
                                 if cursor != bytes.len() {
                                     return Err(RlpError::InvalidFormat);
                                 }
@@ -359,10 +357,7 @@ impl Rlp {
         }
     }
 
-    pub fn decode_fixed_bytes<const N: usize>(
-        bytes: &[u8],
-        cursor: &mut usize,
-    ) -> Result<[u8; N], RlpError> {
+    pub fn decode_fixed_bytes<const N: usize>(bytes: &[u8], cursor: &mut usize) -> Result<[u8; N], RlpError> {
         let bytes = Self::decode_string(bytes, cursor)?;
         if bytes.len() > N {
             return Err(RlpError::StringTooLong);
@@ -780,11 +775,7 @@ impl From<AccessList> for alloy::eips::eip2930::AccessList {
                 .into_iter()
                 .map(|item| alloy::eips::eip2930::AccessListItem {
                     address: item.address.into(),
-                    storage_keys: item
-                        .storage_keys
-                        .into_iter()
-                        .map(|item| item.into())
-                        .collect(),
+                    storage_keys: item.storage_keys.into_iter().map(|item| item.into()).collect(),
                 })
                 .collect(),
         )
@@ -794,16 +785,13 @@ impl From<AccessList> for alloy::eips::eip2930::AccessList {
 impl From<Transaction> for alloy::rpc::types::Transaction {
     fn from(value: Transaction) -> Self {
         const NO_PARITY: [u8; 32] = [
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 27,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 27,
         ];
         const PARITY: [u8; 32] = [
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 28,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 28,
         ];
         const V_PARITY: [u8; 32] = [
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 1,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
         ];
 
         let transaction = match value {
@@ -820,14 +808,12 @@ impl From<Transaction> for alloy::rpc::types::Transaction {
                         let v = alloy::primitives::U256::from_be_bytes(tx.v);
                         if v >= 37.try_into().unwrap() {
                             if tx.v[31] % 2 == 0 {
-                                let sub: alloy::primitives::U256 =
-                                    v - alloy::primitives::U256::from(35);
+                                let sub: alloy::primitives::U256 = v - alloy::primitives::U256::from(35);
                                 let chain_id: alloy::primitives::U256 =
                                     sub / alloy::primitives::U256::from(2);
                                 (Some(chain_id.try_into().unwrap()), false)
                             } else {
-                                let chain_id: alloy::primitives::U256 =
-                                    v - alloy::primitives::U256::from(36);
+                                let chain_id: alloy::primitives::U256 = v - alloy::primitives::U256::from(36);
                                 (Some(chain_id.try_into().unwrap()), true)
                             }
                         } else if v == 1.try_into().unwrap() {
@@ -881,9 +867,7 @@ impl From<Transaction> for alloy::rpc::types::Transaction {
                         chain_id: u64::from_be_bytes(chain_id[24..].try_into().unwrap()),
                         nonce: u64::from_be_bytes(nonce),
                         gas_limit: u64::from_be_bytes(gas_limit),
-                        max_fee_per_gas: u128::from_be_bytes(
-                            max_fee_per_gas[16..].try_into().unwrap(),
-                        ),
+                        max_fee_per_gas: u128::from_be_bytes(max_fee_per_gas[16..].try_into().unwrap()),
                         max_priority_fee_per_gas: u128::from_be_bytes(
                             max_priority_fee_per_gas[16..].try_into().unwrap(),
                         ),
@@ -955,9 +939,7 @@ impl From<Transaction> for alloy::rpc::types::Transaction {
                         chain_id: u64::from_be_bytes(chain_id[24..].try_into().unwrap()),
                         nonce: u64::from_be_bytes(nonce),
                         gas_limit: u64::from_be_bytes(gas_limit),
-                        max_fee_per_gas: u128::from_be_bytes(
-                            max_fee_per_gas[16..].try_into().unwrap(),
-                        ),
+                        max_fee_per_gas: u128::from_be_bytes(max_fee_per_gas[16..].try_into().unwrap()),
                         max_priority_fee_per_gas: u128::from_be_bytes(
                             max_priority_fee_per_gas[16..].try_into().unwrap(),
                         ),
@@ -980,10 +962,7 @@ impl From<Transaction> for alloy::rpc::types::Transaction {
         };
 
         Self {
-            inner: alloy::consensus::transaction::Recovered::new_unchecked(
-                transaction,
-                Default::default(),
-            ),
+            inner: alloy::consensus::transaction::Recovered::new_unchecked(transaction, Default::default()),
             block_hash: None,
             block_number: None,
             transaction_index: None,

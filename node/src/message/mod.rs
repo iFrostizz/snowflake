@@ -1,7 +1,7 @@
 use proto_lib::p2p::{
-    message::Message, Accepted, AcceptedFrontier, AcceptedStateSummary, Ancestors, AppError,
-    AppRequest, AppResponse, Chits, Get, GetAccepted, GetAcceptedFrontier, GetAcceptedStateSummary,
-    GetAncestors, GetStateSummaryFrontier, PullQuery, PushQuery, Put, StateSummaryFrontier,
+    message::Message, Accepted, AcceptedFrontier, AcceptedStateSummary, Ancestors, AppError, AppRequest,
+    AppResponse, Chits, Get, GetAccepted, GetAcceptedFrontier, GetAcceptedStateSummary, GetAncestors,
+    GetStateSummaryFrontier, PullQuery, PushQuery, Put, StateSummaryFrontier,
 };
 
 use crate::stats;
@@ -47,18 +47,10 @@ impl SubscribableMessage {
         match self {
             SubscribableMessage::Get(Get { request_id, .. })
             | SubscribableMessage::GetAccepted(GetAccepted { request_id, .. })
-            | SubscribableMessage::GetAcceptedFrontier(GetAcceptedFrontier {
-                request_id, ..
-            })
-            | SubscribableMessage::GetAcceptedStateSummary(GetAcceptedStateSummary {
-                request_id,
-                ..
-            })
+            | SubscribableMessage::GetAcceptedFrontier(GetAcceptedFrontier { request_id, .. })
+            | SubscribableMessage::GetAcceptedStateSummary(GetAcceptedStateSummary { request_id, .. })
             | SubscribableMessage::GetAncestors(GetAncestors { request_id, .. })
-            | SubscribableMessage::GetStateSummaryFrontier(GetStateSummaryFrontier {
-                request_id,
-                ..
-            })
+            | SubscribableMessage::GetStateSummaryFrontier(GetStateSummaryFrontier { request_id, .. })
             | SubscribableMessage::PushQuery(PushQuery { request_id, .. })
             | SubscribableMessage::PullQuery(PullQuery { request_id, .. })
             | SubscribableMessage::AppRequest(AppRequest { request_id, .. }) => request_id,
@@ -71,15 +63,9 @@ impl SubscribableMessage {
             SubscribableMessage::Get(Get { deadline, .. })
             | SubscribableMessage::GetAccepted(GetAccepted { deadline, .. })
             | SubscribableMessage::GetAcceptedFrontier(GetAcceptedFrontier { deadline, .. })
-            | SubscribableMessage::GetAcceptedStateSummary(GetAcceptedStateSummary {
-                deadline,
-                ..
-            })
+            | SubscribableMessage::GetAcceptedStateSummary(GetAcceptedStateSummary { deadline, .. })
             | SubscribableMessage::GetAncestors(GetAncestors { deadline, .. })
-            | SubscribableMessage::GetStateSummaryFrontier(GetStateSummaryFrontier {
-                deadline,
-                ..
-            })
+            | SubscribableMessage::GetStateSummaryFrontier(GetStateSummaryFrontier { deadline, .. })
             | SubscribableMessage::PushQuery(PushQuery { deadline, .. })
             | SubscribableMessage::PullQuery(PullQuery { deadline, .. })
             | SubscribableMessage::AppRequest(AppRequest { deadline, .. }) => *deadline,
@@ -121,9 +107,7 @@ impl From<SubscribableMessage> for Message {
             SubscribableMessage::GetAcceptedStateSummary(get_accepted_state_summary) => {
                 Message::GetAcceptedStateSummary(get_accepted_state_summary)
             }
-            SubscribableMessage::GetAncestors(get_ancestors) => {
-                Message::GetAncestors(get_ancestors)
-            }
+            SubscribableMessage::GetAncestors(get_ancestors) => Message::GetAncestors(get_ancestors),
             SubscribableMessage::GetStateSummaryFrontier(get_state_summary_frontier) => {
                 Message::GetStateSummaryFrontier(get_state_summary_frontier)
             }

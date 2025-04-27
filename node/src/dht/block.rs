@@ -24,9 +24,7 @@ impl ConcreteDht<u64> for DhtBlocks {
     }
 
     fn key_to_bucket(block_number: u64) -> Bucket {
-        let arr: [u8; 20] = keccak256(block_number.to_be_bytes())[0..20]
-            .try_into()
-            .unwrap();
+        let arr: [u8; 20] = keccak256(block_number.to_be_bytes())[0..20].try_into().unwrap();
         <Bucket>::from_be_bytes(arr)
     }
 }

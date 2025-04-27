@@ -19,9 +19,7 @@ pub async fn start(
     log::debug!("starting client");
 
     let boot = Bootstrappers::new(bootstrappers_path, light_bootstrappers_path);
-    let res = boot
-        .bootstrap_all(node, max_connections, network_name)
-        .await;
+    let res = boot.bootstrap_all(node, max_connections, network_name).await;
     let bootstrapped = res.len();
     let errs: Vec<_> = res.into_iter().filter_map(Result::err).collect();
     if !errs.is_empty() && errs.len() == bootstrapped {

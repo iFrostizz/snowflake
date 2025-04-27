@@ -130,14 +130,7 @@ async fn server(
     let rpc_port = args.rpc_port;
     let max_in_connections = args.max_in_connections;
     let server = tokio::task::spawn(async move {
-        Server::start(
-            node2,
-            server_config,
-            transaction_tx,
-            rpc_port,
-            max_in_connections,
-        )
-        .await
+        Server::start(node2, server_config, transaction_tx, rpc_port, max_in_connections).await
     });
 
     (node_tx, node_ops, server)

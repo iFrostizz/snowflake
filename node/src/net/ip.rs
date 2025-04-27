@@ -31,11 +31,7 @@ impl UnsignedIp {
     pub fn new(ip_addr: IpAddr, port: u16, timestamp: u64) -> Self {
         let ip = ip_octets(ip_addr);
 
-        Self {
-            ip,
-            port,
-            timestamp,
-        }
+        Self { ip, port, timestamp }
     }
 
     fn capacity(&self) -> usize {
@@ -115,8 +111,7 @@ mod tests {
 
     #[test]
     fn correct_ip_bytes_repr() {
-        let ip_addr =
-            std::net::IpAddr::from_str("4187:e8e5:6129:f9a8:7e88:5b66:4255:e34b").unwrap();
+        let ip_addr = std::net::IpAddr::from_str("4187:e8e5:6129:f9a8:7e88:5b66:4255:e34b").unwrap();
         let port = 6969;
         let timestamp = 69420;
         let unsigned_ip = UnsignedIp::new(ip_addr, port, timestamp);
@@ -125,8 +120,8 @@ mod tests {
         assert_eq!(
             as_bytes,
             [
-                65, 135, 232, 229, 97, 41, 249, 168, 126, 136, 91, 102, 66, 85, 227, 75, 27, 57, 0,
-                0, 0, 0, 0, 1, 15, 44
+                65, 135, 232, 229, 97, 41, 249, 168, 126, 136, 91, 102, 66, 85, 227, 75, 27, 57, 0, 0, 0, 0,
+                0, 1, 15, 44
             ]
         );
 
@@ -137,8 +132,8 @@ mod tests {
         assert_eq!(
             ip_hash.to_vec(),
             [
-                78, 206, 134, 62, 131, 68, 102, 55, 164, 146, 192, 6, 169, 154, 156, 225, 229, 25,
-                149, 104, 39, 205, 233, 5, 98, 143, 22, 125, 170, 120, 31, 22
+                78, 206, 134, 62, 131, 68, 102, 55, 164, 146, 192, 6, 169, 154, 156, 225, 229, 25, 149, 104,
+                39, 205, 233, 5, 98, 143, 22, 125, 170, 120, 31, 22
             ]
         );
 

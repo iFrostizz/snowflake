@@ -11,9 +11,7 @@ impl BlockID {
 
 impl From<[u8; Self::LEN]> for BlockID {
     fn from(value: [u8; Self::LEN]) -> Self {
-        Self {
-            id: Id::from(value),
-        }
+        Self { id: Id::from(value) }
     }
 }
 

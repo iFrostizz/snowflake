@@ -170,11 +170,8 @@ impl Args {
             bucket_size: 500_000,           // 500 kB
             max_concurrent_handshakes: self.max_handshakes,
             max_peers: self.max_peers,
-            bootstrappers: Bootstrappers::new(
-                &self.bootstrappers_path,
-                &self.light_bootstrappers_path,
-            )
-            .bootstrappers(&self.network_id.to_string()),
+            bootstrappers: Bootstrappers::new(&self.bootstrappers_path, &self.light_bootstrappers_path)
+                .bootstrappers(&self.network_id.to_string()),
             dht_buckets: DhtBuckets {
                 block: Bucket::try_from(self.block_dht_buckets).unwrap(),
             },

@@ -29,17 +29,7 @@ pub struct MailBox {
 // TODO name doesn't make sense anymore
 type Mails = Arc<
     Mutex<
-        HashMap<
-            NodeId,
-            HashMap<
-                u32,
-                (
-                    oneshot::Sender<()>,
-                    oneshot::Sender<Message>,
-                    SubscribableMessage,
-                ),
-            >,
-        >,
+        HashMap<NodeId, HashMap<u32, (oneshot::Sender<()>, oneshot::Sender<Message>, SubscribableMessage)>>,
     >,
 >;
 

@@ -19,9 +19,7 @@ use flume::Receiver;
 use futures::future;
 use indexmap::IndexMap;
 use prost::Message as _;
-use proto_lib::p2p::{
-    message::Message, AppGossip, BloomFilter, ClaimedIpPort, GetPeerList, PeerList,
-};
+use proto_lib::p2p::{message::Message, AppGossip, BloomFilter, ClaimedIpPort, GetPeerList, PeerList};
 use std::collections::HashSet;
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::sync::Arc;
@@ -128,8 +126,7 @@ impl Node {
 
         let node = self.clone();
         let rx2 = rx.resubscribe();
-        let watch =
-            tokio::spawn(async move { node.watch_sent_transactions(transaction_rx, rx2).await });
+        let watch = tokio::spawn(async move { node.watch_sent_transactions(transaction_rx, rx2).await });
 
         let node = self.clone();
         let rx2 = rx.resubscribe();
@@ -256,13 +253,7 @@ impl Node {
         self: &Arc<Node>,
         peer: Peer,
         hs_permit: OwnedSemaphorePermit,
-    ) -> Result<
-        (
-            Vec<JoinHandle<Result<(), NodeError>>>,
-            broadcast::Sender<()>,
-        ),
-        NodeError,
-    > {
+    ) -> Result<(Vec<JoinHandle<Result<(), NodeError>>>, broadcast::Sender<()>), NodeError> {
         let node_id = *peer.node_id();
         let c_chain_id = self.network.config.c_chain_id.clone();
 
@@ -286,10 +277,7 @@ impl Node {
             tx.subscribe(),
         );
 
-        let hand_peer = match self
-            .network
-            .handshake_peer(&sender, node_id, tx.subscribe())
-        {
+        let hand_peer = match self.network.handshake_peer(&sender, node_id, tx.subscribe()) {
             Ok(ok) => ok,
             Err(err) => {
                 // early return
@@ -416,10 +404,7 @@ impl Node {
             PeerMessage::PeerList(peer_list) => {
                 self.handle_peer_list(peer_list);
             }
-            PeerMessage::GetPeerList {
-                sender,
-                known_peers,
-            } => {
+            PeerMessage::GetPeerList { sender, known_peers } => {
                 let amount_ip_n = 15;
 
                 let claimed_ip_ports = if let Some(known_peers) = known_peers {
@@ -495,10 +480,7 @@ impl Node {
         push_gossip
             .encode(&mut app_bytes)
             .expect("the buffer capacity should be dynamically updated");
-        let message = Message::AppGossip(AppGossip {
-            chain_id,
-            app_bytes,
-        });
+        let message = Message::AppGossip(AppGossip { chain_id, app_bytes });
         let message = MessageOrSubscribable::Message(message);
 
         let peers = self.pick_peers(PickerConfig {
@@ -510,14 +492,10 @@ impl Node {
         Ok(())
     }
 
-    async fn loop_node_messages(
-        self: &Arc<Node>,
-        mut rx: broadcast::Receiver<()>,
-    ) -> Result<(), NodeError> {
+    async fn loop_node_messages(self: &Arc<Node>, mut rx: broadcast::Receiver<()>) -> Result<(), NodeError> {
         let intervals = &self.network.config.intervals;
 
-        let mut get_peer_list_interval =
-            time::interval(Duration::from_millis(intervals.get_peer_list));
+        let mut get_peer_list_interval = time::interval(Duration::from_millis(intervals.get_peer_list));
 
         loop {
             tokio::select! {
@@ -536,9 +514,7 @@ impl Node {
         if peers.is_empty() || self.network.has_reached_max_peers(&peers) {
             return;
         }
-        let (node_id, random_peer) = peers
-            .get_index(rand::random::<usize>() % peers.len())
-            .unwrap();
+        let (node_id, random_peer) = peers.get_index(rand::random::<usize>() % peers.len()).unwrap();
         let bloom_filter = self.network.bloom_filter.read().unwrap().as_proto();
         if random_peer
             .sender
@@ -565,9 +541,7 @@ impl Node {
 
         (0..n)
             .fold(HashSet::new(), |mut set, _| {
-                let (node_id, _) = peers
-                    .get_index(rand::random::<usize>() % peers.len())
-                    .unwrap();
+                let (node_id, _) = peers.get_index(rand::random::<usize>() % peers.len()).unwrap();
                 set.insert(*node_id);
                 set
             })
@@ -577,9 +551,9 @@ impl Node {
 
     fn regen_bloom_if_necessary(peers: &IndexMap<NodeId, PeerInfo>, bloom_filter: &mut Filter) {
         if bloom_filter.is_sub_optimal() {
-            let connected_peers = peers.iter().filter_map(|(node_id, peer_infos)| {
-                peer_infos.infos.as_ref().map(|infos| (node_id, infos))
-            });
+            let connected_peers = peers
+                .iter()
+                .filter_map(|(node_id, peer_infos)| peer_infos.infos.as_ref().map(|infos| (node_id, infos)));
             let tracked = connected_peers.clone().count() as u64;
             log::debug!("regenerating bloom filter, tracking {tracked}");
             // multiply by 2 to allow peers to have a new IP in a filter reset
@@ -642,11 +616,7 @@ impl Node {
         }
     }
 
-    fn propose_peers(
-        self: &Arc<Node>,
-        known_peers: BloomFilter,
-        amount_ip_n: usize,
-    ) -> Vec<ClaimedIpPort> {
+    fn propose_peers(self: &Arc<Node>, known_peers: BloomFilter, amount_ip_n: usize) -> Vec<ClaimedIpPort> {
         match ReadFilter::try_from(known_peers.filter.as_slice()) {
             Ok(filter) => {
                 let mut ips = Vec::with_capacity(amount_ip_n);
@@ -707,13 +677,15 @@ impl Node {
                 let bootstrappers = self.network.bootstrappers.read().unwrap();
                 let bootstrappers: HashSet<_> = bootstrappers
                     .iter()
-                    .filter_map(|(node_id, buckets)| {
-                        if buckets.is_none() {
-                            Some(node_id)
-                        } else {
-                            None
-                        }
-                    })
+                    .filter_map(
+                        |(node_id, buckets)| {
+                            if buckets.is_none() {
+                                Some(node_id)
+                            } else {
+                                None
+                            }
+                        },
+                    )
                     .collect();
                 let inter: Vec<_> = bootstrappers.intersection(&available_peers).collect();
                 if inter.is_empty() {
@@ -727,11 +699,7 @@ impl Node {
         }
     }
 
-    pub async fn send_to_peers(
-        &self,
-        node_ids: &[NodeId],
-        message: &MessageOrSubscribable,
-    ) -> Vec<Message> {
+    pub async fn send_to_peers(&self, node_ids: &[NodeId], message: &MessageOrSubscribable) -> Vec<Message> {
         let (to_remove, handles) = {
             let peers = self.network.peers_infos.read().unwrap();
             if peers.is_empty() {
@@ -761,9 +729,7 @@ impl Node {
                                         Err(err) => Err(err),
                                     }
                                 }
-                                MessageOrSubscribable::Message(message) => {
-                                    sender.send(message.clone())
-                                }
+                                MessageOrSubscribable::Message(message) => sender.send(message.clone()),
                             };
 
                             match res {
@@ -799,11 +765,7 @@ impl Node {
         messages
     }
 
-    pub async fn send_to_peer(
-        &self,
-        message: &MessageOrSubscribable,
-        node_id: &NodeId,
-    ) -> Option<Message> {
+    pub async fn send_to_peer(&self, message: &MessageOrSubscribable, node_id: &NodeId) -> Option<Message> {
         let (mut remove_peer, mut err) = (false, None);
 
         let peer_opt = {
@@ -821,11 +783,7 @@ impl Node {
 
                 match message {
                     MessageOrSubscribable::Subscribable(message) => {
-                        match sender.send_and_response(
-                            self.mail_box.tx(),
-                            *node_id,
-                            message.clone(),
-                        ) {
+                        match sender.send_and_response(self.mail_box.tx(), *node_id, message.clone()) {
                             Ok(handle) => match handle.await.map_err(|_| NodeError::SendError) {
                                 Ok(message) => return Some(message),
                                 Err(_err) => {
@@ -855,12 +813,7 @@ impl Node {
             err = None;
         }
 
-        let is_bootstrapper = self
-            .network
-            .bootstrappers
-            .read()
-            .unwrap()
-            .contains_key(node_id);
+        let is_bootstrapper = self.network.bootstrappers.read().unwrap().contains_key(node_id);
         if !is_bootstrapper && remove_peer {
             self.network.remove_peers(vec![(node_id, err.as_ref())]);
         }
