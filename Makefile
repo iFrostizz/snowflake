@@ -5,13 +5,13 @@ ci-check: fmt-check	clippy test proto-check
 ci-fix: fmt	clippy test proto
 
 fmt:
-	cargo fmt --all
+	cargo fmt -p node
 
 fmt-check:
-	cargo fmt --all --check
+	cargo fmt -p node --check
 
 clippy:
-	cargo clippy --all-targets -- -D warnings
+	cargo clippy -p node -- -D warnings
 
 test:
 	cargo test --quiet
@@ -28,9 +28,3 @@ proto-check: proto
 
 metrics:
 	sudo prometheus --config.file ./prometheus.yml --web.listen-address=:9898
-
-pg_reset:
-	psql -U admin -c "$(DATABASE_KICK)"
-	psql -U admin -c "DROP database snowflake;"
-	psql -U admin -c "CREATE database snowflake;"
-	sqlx database reset
