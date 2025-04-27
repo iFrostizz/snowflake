@@ -1,3 +1,6 @@
+use crate::utils::rlp::RlpError;
+use thiserror::Error;
+
 pub struct Packer {
     bytes: Vec<u8>,
 }
@@ -24,4 +27,14 @@ impl Packer {
     pub fn finish(self) -> Vec<u8> {
         self.bytes
     }
+}
+
+#[derive(Debug, Error)]
+pub enum PackerError {
+    #[error("Rlp error: {0:?}")]
+    Rlp(#[from] RlpError),
+    #[error("Not enough bytes when unpacking {0} (need {1})")]
+    UnpackLen(String, usize),
+    #[error("Conversion error with {0}")]
+    Conversion(String),
 }

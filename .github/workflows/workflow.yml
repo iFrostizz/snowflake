@@ -24,11 +24,14 @@ jobs:
           toolchain: stable
           override: true
 
+      - name: Check proto
+        run: make proto-check
+
       - name: Run Clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: make clippy
 
       - name: Check formatting
-        run: cargo fmt --all --check
+        run: make fmt-check
 
       - name: Run Tests
-        run: cargo test
+        run: make test

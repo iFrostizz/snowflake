@@ -17,11 +17,11 @@ rustls-pemfile = "2.1.1"
 log = "0.4.21"
 webpki-roots = "0.26.1"
 rustls-pki-types = "1.3.1"
-openssl = "0.10.64"
+openssl = "0.10.72"
 sha2 = "0.10.8"
 futures = "0.3.30"
 bs58 = { version = "0.5.0", features = ["cb58"] }
-clap = { version = "4.5.34", features = ["derive"] }
+clap = { version = "4.5.37", features = ["derive"] }
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.114"
 phf = { version = "0.11.3", features = ["macros"] }
@@ -32,10 +32,10 @@ ripemd = "0.1.3"
 rand = "0.9.0"
 console-subscriber = "0.4.1"
 tracing-subscriber = "0.3.18"
-tokio = { version = "1.37.0", features = ["full", "net"] }
+tokio = { version = "1.44.2", features = ["full", "net"] }
 thiserror = "2.0.12"
 blst = "0.3.12"
-indexmap = "2.2.6"
+indexmap = "2.9.0"
 tokio-rustls = "0.26.0"
 hex = "0.4.3"
 rand_mt = "5.0.0"
@@ -47,6 +47,9 @@ public-ip = "0.2.2"
 jsonrpsee = { version = "0.24.9", features = ["macros", "server"] }
 alloy = { version = "0.13.0", features = ["full"] }
 current_platform = "0.2.0"
+ruint = "1.14.0"
+sha256 = "1.6.0"
+unsigned-varint = "0.8.0"
 
 [dev-dependencies]
 #criterion = "0.3"
