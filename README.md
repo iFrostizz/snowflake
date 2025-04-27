@@ -57,3 +57,11 @@
 | eth_getFilterChanges                    | ❌         |
 | eth_getFilterLogs                       | ❌         |
 | eth_getLogs                             | ❌         |
+
+# Development
+## Testing
+### Docker
+```sh
+BUILD_MODE=debug docker compose -f docker/docker-compose.yml up --force-recreate
+BUILD_MODE=release docker compose -f docker/docker-compose.yml up --force-recreate
+```

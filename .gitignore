@@ -1,6 +1,6 @@
 /target
 /bls.key
-/staker.crt
-/staker.key
+/node.crt
+/node.key
 data/
 .idea/
