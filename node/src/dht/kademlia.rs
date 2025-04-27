@@ -67,7 +67,7 @@ impl KademliaDht {
         }
     }
 
-    fn distance(a: &Bucket, b: Bucket) -> Bucket {
+    pub fn distance(a: &Bucket, b: Bucket) -> Bucket {
         a ^ b
     }
 
