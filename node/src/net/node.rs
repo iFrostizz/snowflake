@@ -1,17 +1,18 @@
 use crate::client::config;
+use crate::dht::DhtBuckets;
 use crate::id::{ChainId, NodeId};
-use crate::message::{mail_box::MailBox, pipeline::Pipeline, MiniMessage};
-use crate::net::{ip::UnsignedIp, BackoffParams, Intervals, Network, Peer, PeerInfo, PeerMessage};
+use crate::message::{pipeline::Pipeline, MiniMessage};
+use crate::net::{ip::UnsignedIp, BackoffParams, Intervals, Network, PeerInfo};
+use crate::server::msg::AppRequestMessage;
 use crate::server::{
     msg::{DecodingError, OutboundMessage},
     peers::PeerSender,
-    tcp::{read_stream_message, write_stream_message},
+    tcp::write_stream_message,
 };
 use crate::stats;
 use crate::utils::{
     bloom::{BloomError, Filter},
     bls::Bls,
-    constants,
     ip::ip_octets,
 };
 use flume::{Receiver, Sender};
@@ -20,19 +21,21 @@ use indexmap::IndexMap;
 use openssl::x509;
 use prost::EncodeError;
 use proto_lib::p2p::{self};
+use proto_lib::sdk;
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
-use tokio::io::{ReadHalf, WriteHalf};
+use tokio::io::WriteHalf;
 use tokio::net::TcpStream;
 use tokio::sync::{broadcast, oneshot, Semaphore};
 use tokio::task::JoinHandle;
 use tokio::time::{self};
 use tokio_rustls::TlsStream;
 
-#[derive(Error, Debug)]
+#[derive(Debug, Error)]
 pub enum NodeError {
     #[error("dns conversion failed")]
     Dns,
@@ -41,7 +44,11 @@ pub enum NodeError {
     #[error("tcp error: {0}")]
     TcpConnection(#[from] std::io::Error),
     #[error("send error: all receivers have been dropped")]
+    // TODO
+    //   SendError(#[from] flume::SendError<T>),
     SendError,
+    #[error("recv error: all sender have been dropped")]
+    RecvError(#[from] oneshot::error::RecvError),
     #[error("error when decoding inbound message {0}")]
     Decoding(#[from] DecodingError),
     #[error("error when encoding outbound message {0}")]
@@ -52,6 +59,8 @@ pub enum NodeError {
     Failed(Vec<NodeError>),
     #[error("bloom filter generation: {0}")]
     Bloom(#[from] BloomError),
+    #[error("unwanted peer: reason: {0}")]
+    UnwantedPeer(#[from] AddPeerError),
     #[error("unexpected message: {0}")]
     Message(String),
 }
@@ -74,6 +83,8 @@ pub struct NetworkConfig {
     pub bucket_size: usize,
     pub max_concurrent_handshakes: usize,
     pub max_peers: Option<usize>,
+    pub bootstrappers: HashMap<NodeId, Option<DhtBuckets>>,
+    pub dht_buckets: DhtBuckets,
 }
 
 #[derive(Debug)]
@@ -103,7 +114,24 @@ impl WriteHandler {
     }
 }
 
+#[derive(Debug, Error)]
+pub enum AddPeerError {
+    #[error("cannot add self")]
+    AddSelf,
+    #[error("already connected")]
+    AlreadyConnected,
+    #[error("max peers reached")]
+    MaxPeersReached,
+}
+
 impl Network {
+    pub fn todo_remove_attach_light_peers(
+        &mut self,
+        light_peers: Arc<RwLock<HashMap<NodeId, DhtBuckets>>>,
+    ) {
+        self.light_peers = light_peers;
+    }
+
     /// Initiate the network by specifying this node's IP
     pub fn new(config: NetworkConfig) -> Result<Self, ()> {
         let client_config = Arc::new(config::client_config(
@@ -149,6 +177,10 @@ impl Network {
         ));
 
         let handshake_semaphore = Arc::new(Semaphore::new(config.max_concurrent_handshakes));
+        let bootstrappers = RwLock::new(config.bootstrappers.clone());
+
+        let peers_infos = Arc::new(RwLock::new(IndexMap::new()));
+        let buckets = config.dht_buckets.clone();
 
         Ok(Self {
             node_id,
@@ -156,12 +188,15 @@ impl Network {
             config,
             client,
             client_config,
-            peers_infos: RwLock::new(IndexMap::new()),
+            peers_infos,
+            light_peers: Default::default(),
+            bootstrappers,
             signed_ip,
             bloom_filter,
             public_key,
             node_pop,
             handshake_semaphore,
+            buckets,
         })
     }
 
@@ -201,8 +236,7 @@ impl Network {
                         if let Ok(message) = maybe_message {
                             log::trace!("sending message {message:?}");
                             let mini = MiniMessage::from(&message);
-                            if let Ok(outbound_message) = OutboundMessage::create(message) {
-                                let bytes = outbound_message.bytes;
+                            if let Ok(bytes) = OutboundMessage::encode(message) {
                                 out_pipeline.queue_message(bytes.into(), WriteHandler(ptx.clone(), mini)).await;
                             }
                         }
@@ -227,29 +261,6 @@ impl Network {
         let _ = queue_tx.send(());
 
         ret
-    }
-
-    /// Continuously read messages and return an error on an EOF
-    pub async fn read_messages(
-        node_id: &NodeId,
-        mut read: ReadHalf<TlsStream<TcpStream>>,
-        sender: &PeerSender,
-        mail_box: &MailBox,
-        spn: &Sender<PeerMessage>,
-        mut rx: broadcast::Receiver<()>,
-    ) -> Result<(), NodeError> {
-        loop {
-            log::trace!("read");
-            tokio::select! {
-                maybe_buf = read_stream_message(&mut read) => {
-                    let buf = maybe_buf?;
-                    Peer::manage_message(node_id, &buf, sender, mail_box, spn, false).await?;
-                }
-                _ = rx.recv() => {
-                    return Ok(())
-                }
-            }
-        }
     }
 
     pub async fn add_peer(
@@ -280,16 +291,21 @@ impl Network {
         node_id: NodeId,
         mut rx: broadcast::Receiver<()>,
     ) -> Result<JoinHandle<Result<(), NodeError>>, NodeError> {
-        let handshake_deadline = Duration::from_millis(constants::DEFAULT_DEADLINE); // s // TODO configure
+        // TODO mistake because it's in nanos
+        // let handshake_deadline = Duration::from_millis(constants::DEFAULT_DEADLINE); // s // TODO configure
+        let handshake_deadline = Duration::from_millis(2000);
         self.handshake(sender)?;
         let sleep = tokio::time::sleep(handshake_deadline);
         let network = self.clone();
 
+        // TODO instead of this, have a oneshot channel return back the handshake result.
+        //   This should be sent once the PeerMessage::NewPeer is received.
+        let sender = sender.clone();
         let hand_peer = tokio::spawn(async move {
             tokio::select! {
                 _ = sleep => {
                     // timeout, we might have received the handshake before though
-                    // TODO maybe use a loop to continuously check
+                    // TODO use a loop to continuously check for faster confirmation.
                     let peer_infos = network.peers_infos.read().unwrap();
                     if !peer_infos.get(&node_id).is_some_and(|peer| peer.handshook()) {
                         return Err(NodeError::Message("handshake expired".to_string()));
@@ -299,6 +315,9 @@ impl Network {
                     return Ok(())
                 }
             }
+
+            network.light_handshake(&sender)?;
+
             // the handshake was successful, the channel can still stop this thread remotely
             rx.recv().await.unwrap();
             Ok(())
@@ -334,36 +353,50 @@ impl Network {
             .map_err(|_| NodeError::SendError)
     }
 
-    pub fn remove_peers(self: &Arc<Network>, node_ids_errs: &Vec<(NodeId, Option<&NodeError>)>) {
-        for (node_id, err) in node_ids_errs {
+    fn light_handshake(&self, sender: &PeerSender) -> Result<(), NodeError> {
+        let block_k = self.buckets.block;
+        let buckets = sdk::DhtBuckets {
+            block: block_k.to_be_bytes_vec(),
+        };
+        let message = sdk::light_request::Message::LightHandshake(sdk::LightHandshake {
+            buckets: Some(buckets),
+        });
+        let app_request = AppRequestMessage::encode(&self.config.c_chain_id, message)?;
+        sender
+            .send(app_request)
+            // TODO include this variant in thiserror and watch all the dup lines being deleted!
+            .map_err(|_| NodeError::SendError)
+    }
+
+    pub fn remove_peers(self: &Arc<Network>, node_ids_errs: Vec<(&NodeId, Option<&NodeError>)>) {
+        for (node_id, err) in &node_ids_errs {
             if let Some(err) = err {
                 log::debug!("removing peer {}, reason: {}", node_id, err);
             } else {
                 log::debug!("removing peer {} for an unknown reason", node_id);
             }
         }
-        let mut peers_write = self.peers_infos.write().unwrap();
 
-        for (node_id, _) in node_ids_errs {
-            if let Some(peer) = peers_write.swap_remove(node_id) {
-                if peer.handshook() {
-                    stats::handshook_peers::dec();
+        {
+            let mut peers_write = self.peers_infos.write().unwrap();
+
+            for (node_id, _) in &node_ids_errs {
+                if let Some(peer) = peers_write.swap_remove(*node_id) {
+                    if peer.handshook() {
+                        stats::handshook_peers::dec();
+                    }
+                    stats::connected_peers::dec();
                 }
-                stats::connected_peers::dec();
             }
         }
-    }
 
-    pub fn disconnect_peer(
-        self: &Arc<Network>,
-        peer: Peer,
-        err: Option<&NodeError>,
-    ) -> Result<(), NodeError> {
-        let node_id = peer.node_id;
+        {
+            let mut peers_write = self.light_peers.write().unwrap();
 
-        self.remove_peers(&vec![(node_id, err)]);
-
-        Ok(())
+            for (node_id, _) in &node_ids_errs {
+                peers_write.remove(node_id);
+            }
+        }
     }
 
     pub fn has_reached_max_peers(&self, peers_infos: &IndexMap<NodeId, PeerInfo>) -> bool {
@@ -373,8 +406,23 @@ impl Network {
         }
     }
 
-    pub fn can_add_peer(&self, node_id: &NodeId) -> bool {
+    pub fn check_add_peer(&self, node_id: &NodeId) -> Result<(), NodeError> {
+        if &self.node_id == node_id {
+            return Err(AddPeerError::AddSelf.into());
+        }
+
         let peers_infos = self.peers_infos.read().unwrap();
-        !self.has_reached_max_peers(&peers_infos) && !peers_infos.contains_key(node_id)
+        if peers_infos.contains_key(node_id) {
+            return Err(AddPeerError::AlreadyConnected.into());
+        }
+
+        if self.bootstrappers.read().unwrap().contains_key(node_id) {
+            return Ok(());
+        }
+
+        if self.has_reached_max_peers(&peers_infos) {
+            return Err(AddPeerError::MaxPeersReached.into());
+        }
+        Ok(())
     }
 }

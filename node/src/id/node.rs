@@ -1,11 +1,11 @@
 use super::{Id, IdError};
 use ripemd::Ripemd160;
 use sha2::{Digest, Sha256};
-use std::fmt::Display;
+use std::fmt::{Debug, Display, Formatter};
 
 const NODE_PREFIX: &str = "NodeID-";
 
-#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Default, PartialOrd, Ord)]
+#[derive(Clone, Copy, Hash, PartialEq, Eq, Default, PartialOrd, Ord)]
 pub struct NodeId {
     id: Id<{ Self::LEN }>,
 }
@@ -16,8 +16,28 @@ impl AsRef<[u8]> for NodeId {
     }
 }
 
+impl From<NodeId> for [u8; 20] {
+    fn from(value: NodeId) -> Self {
+        value.id.into()
+    }
+}
+
+impl From<[u8; 20]> for NodeId {
+    fn from(value: [u8; 20]) -> Self {
+        Self {
+            id: Id::from(value),
+        }
+    }
+}
+
 impl Display for NodeId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}{}", NODE_PREFIX, self.id)
+    }
+}
+
+impl Debug for NodeId {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}{}", NODE_PREFIX, self.id)
     }
 }

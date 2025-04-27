@@ -16,3 +16,53 @@ message PullGossipResponse {
 message PushGossip {
   repeated bytes gossip = 1;
 }
+
+message LightRequest {
+  oneof message {
+    LightHandshake light_handshake = 1;
+
+    FindValue find_value = 11;
+    FindNode find_node = 12;
+  }
+}
+
+message DhtBuckets {
+  bytes block = 1;
+}
+
+message LightHandshake {
+  DhtBuckets buckets = 1;
+}
+
+// FindValue is used to find content at a bucket by recursively getting closer
+//
+// Works as defined in the Kademlia DHT paper: https://pdos.csail.mit.edu/~petar/papers/maymounkov-kademlia-lncs.pdf
+message FindValue {
+  uint32 dht_id = 1;
+  bytes bucket = 2;
+}
+
+// FindNode is used to find nodes that are close from a bucket
+//
+// Works as defined in the Kademlia DHT paper: https://pdos.csail.mit.edu/~petar/papers/maymounkov-kademlia-lncs.pdf
+message FindNode {
+  bytes bucket = 1;
+}
+
+message LightResponse {
+  oneof message {
+    Ack ack = 1;
+    Nodes nodes = 2;
+    Value value = 3;
+  }
+}
+
+message Ack {}
+
+message Nodes {
+  repeated bytes node_ids = 1;
+}
+
+message Value {
+  bytes value = 1;
+}

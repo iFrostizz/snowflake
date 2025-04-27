@@ -4,6 +4,7 @@ use std::{
     time::Duration,
 };
 
+#[derive(Debug)]
 struct Latency {
     records: FIFO<Duration>,
 }
@@ -20,6 +21,7 @@ impl Latency {
     }
 }
 
+#[derive(Debug)]
 pub struct PeersLatency {
     max_records: usize,
     lat_to_peers: BTreeMap<u128, Vec<NodeId>>,
