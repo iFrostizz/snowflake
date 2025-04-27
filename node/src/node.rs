@@ -537,7 +537,7 @@ impl Node {
             return;
         }
         let (node_id, random_peer) = peers
-            .get_index(rand::random::<usize>() % peers.len())
+            .get_index((rand::random::<u64>() % peers.len() as u64) as usize)
             .unwrap();
         let bloom_filter = self.network.bloom_filter.read().unwrap().as_proto();
         if random_peer
@@ -566,7 +566,7 @@ impl Node {
         (0..n)
             .fold(HashSet::new(), |mut set, _| {
                 let (node_id, _) = peers
-                    .get_index(rand::random::<usize>() % peers.len())
+                    .get_index((rand::random::<u64>() % peers.len() as u64) as usize)
                     .unwrap();
                 set.insert(*node_id);
                 set
@@ -719,7 +719,7 @@ impl Node {
                 if inter.is_empty() {
                     None
                 } else {
-                    let i = rand::random::<usize>() % inter.len();
+                    let i = (rand::random::<u64>() % inter.len() as u64) as usize;
                     Some(**inter[i])
                 }
             }
