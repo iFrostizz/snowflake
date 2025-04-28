@@ -15,44 +15,43 @@ use crate::utils::unpacker::StatelessBlock;
 use crate::Arc;
 use flume::Sender;
 use indexmap::IndexMap;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::sync::{LockResult, RwLockReadGuard, RwLockWriteGuard};
 use tokio::sync::broadcast;
 use tokio::sync::oneshot;
+
+#[derive(Debug)]
+pub struct LightNetworkConfig {
+    pub sync_headers: bool,
+    pub max_lookups: usize,
+    pub alpha: usize,
+}
 
 #[derive(Debug)]
 pub struct LightNetwork {
     pub kademlia_dht: KademliaDht,
     pub block_dht: Arc<DhtBlocks>,
     pub light_peers: LightPeers,
-    sync_headers: bool,
-    max_lookups: usize,
-    alpha: usize,
+    config: LightNetworkConfig,
 }
 
 impl LightNetwork {
     pub fn new(
         node_id: NodeId,
+        light_peers: LightPeers,
         peer_infos: Arc<RwLock<IndexMap<NodeId, PeerInfo>>>,
         mail_tx: Sender<Mail>,
-        connection_queue: Arc<ConnectionQueue>,
         chain_id: ChainId,
-        sync_headers: bool,
-        max_lookups: usize,
-        alpha: usize,
+        config: LightNetworkConfig,
     ) -> Self {
         let store = RwLock::new(HashMap::new());
         let block_dht = Arc::new(DhtBlocks::new(node_id, Bucket::from(10), store));
-        let light_peers = Arc::new(RwLock::new(Default::default()));
         let kademlia_dht = KademliaDht::new(peer_infos, light_peers.clone(), mail_tx, chain_id, 10);
-        let light_peers = LightPeers::new(node_id, light_peers.clone(), connection_queue);
         Self {
             kademlia_dht,
             block_dht,
             light_peers,
-            sync_headers,
-            max_lookups,
-            alpha,
+            config,
         }
     }
 
@@ -61,7 +60,7 @@ impl LightNetwork {
         node: Arc<Node>,
         mut rx: broadcast::Receiver<()>,
     ) -> Result<(), NodeError> {
-        if self.sync_headers {
+        if self.config.sync_headers {
             let block_dht = self.block_dht.clone();
             let rx = rx.resubscribe();
             tokio::spawn(async move {
@@ -158,7 +157,12 @@ impl LightNetwork {
             None => {
                 let value = self
                     .kademlia_dht
-                    .search_value(&DHT::id(), &bucket, self.max_lookups, self.alpha)
+                    .search_value(
+                        &DHT::id(),
+                        &bucket,
+                        self.config.max_lookups,
+                        self.config.alpha,
+                    )
                     .await?;
                 DHT::decode(&value)
             }
@@ -231,7 +235,7 @@ impl DhtContent<u64, StatelessBlock> for DhtBlocks {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct LightPeers {
     node_id: NodeId,
     pub light_peers: Arc<RwLock<HashMap<NodeId, DhtBuckets>>>,
@@ -239,14 +243,10 @@ pub struct LightPeers {
 }
 
 impl LightPeers {
-    pub fn new(
-        node_id: NodeId,
-        light_peers: Arc<RwLock<HashMap<NodeId, DhtBuckets>>>,
-        connection_queue: Arc<ConnectionQueue>,
-    ) -> Self {
+    pub fn new(node_id: NodeId, connection_queue: Arc<ConnectionQueue>) -> Self {
         Self {
             node_id,
-            light_peers,
+            light_peers: Default::default(),
             connection_queue,
         }
     }
@@ -259,29 +259,7 @@ impl LightPeers {
         self.light_peers.write()
     }
 
-    /// Find a maximum of `n` light peers which are the closest to the `bucket`.
-    pub fn closest(&self, bucket: &Bucket, n: usize) -> Vec<NodeId> {
-        // TODO this function could be cached if bucket is the same and n is <=.
-        let light_peers = self.light_peers.read().unwrap();
-        // TODO provide From / Into impl for NodeId to Bucket and implement distance function over
-        //  Into<Bucket> generics.
-        let distances: BTreeMap<_, _> = light_peers
-            .keys()
-            .map(|node_id| {
-                let distance =
-                    KademliaDht::distance(bucket, Bucket::from_be_bytes((*node_id).into()));
-                (*node_id, distance)
-            })
-            .collect();
-        drop(light_peers);
-        distances
-            .into_iter()
-            .take(n)
-            .map(|(node_id, _)| node_id)
-            .collect()
-    }
-
-    fn check_interesting_node_ids(&self, node_ids: &Vec<NodeId>) -> Vec<NodeId> {
+    fn check_interesting_node_ids(&self, node_ids: Vec<NodeId>) -> Vec<NodeId> {
         let my_bucket = Bucket::from_be_bytes(self.node_id.into());
         let distances_from_us: Vec<_> = node_ids
             .iter()
@@ -339,7 +317,7 @@ impl LightPeers {
     /// If so, add them.
     pub fn potentially_add_nodes(&self, nodes: Vec<ConnectionData>) {
         let node_ids = self.check_interesting_node_ids(
-            &nodes
+            nodes
                 .iter()
                 .map(|ConnectionData { node_id, .. }| *node_id)
                 .collect(),
@@ -367,11 +345,11 @@ mod tests {
         let our_node_id = NodeId::from([0u8; 20]);
 
         // Create some peer nodes that are at varying distances
-        let far_peer = NodeId::from([0xF0; 20]); // Very far peer
-        let medium_peer = NodeId::from([0x80; 20]); // Medium distance peer
+        let far_peer = NodeId::from([0xF0; 20]);
+        let medium_peer = NodeId::from([0x80; 20]);
 
-        // Create the light peers map
-        let light_peers = Arc::new(RwLock::new(HashMap::from([
+        let light_peers = LightPeers::new(our_node_id, Arc::new(ConnectionQueue::new(0)));
+        light_peers.write().unwrap().extend(HashMap::from([
             (
                 far_peer,
                 DhtBuckets {
@@ -384,21 +362,18 @@ mod tests {
                     block: Default::default(),
                 },
             ),
-        ])));
-
-        let light_peers_struct =
-            LightPeers::new(our_node_id, light_peers, Arc::new(ConnectionQueue::new(0)));
+        ]));
 
         // Test case 1: Node closer than all peers
         let close_node = NodeId::from([0x10; 20]); // Very close to our node
-        let result = light_peers_struct.check_interesting_node_ids(&vec![close_node]);
+        let result = light_peers.check_interesting_node_ids(vec![close_node]);
         assert_eq!(result, vec![close_node], "Should return the closer node");
 
         // Test case 2: Multiple nodes, some closer some farther
         let very_close_node = NodeId::from([0x05; 20]);
         let very_far_node = NodeId::from([0xFF; 20]);
         let nodes_to_check = vec![very_far_node, very_close_node];
-        let result = light_peers_struct.check_interesting_node_ids(&nodes_to_check);
+        let result = light_peers.check_interesting_node_ids(nodes_to_check);
         assert_eq!(
             result,
             vec![very_close_node],
@@ -408,90 +383,23 @@ mod tests {
         // Test case 3: All nodes farther than peers
         let far_node_1 = NodeId::from([0xFF; 20]);
         let far_node_2 = NodeId::from([0xFE; 20]);
-        let result = light_peers_struct.check_interesting_node_ids(&vec![far_node_1, far_node_2]);
+        let result = light_peers.check_interesting_node_ids(vec![far_node_1, far_node_2]);
         assert!(
             result.is_empty(),
             "Should return empty vec when no nodes are closer than peers"
         );
 
         // Test case 4: Empty input
-        let result = light_peers_struct.check_interesting_node_ids(&vec![]);
+        let result = light_peers.check_interesting_node_ids(vec![]);
         assert!(result.is_empty(), "Should handle empty input gracefully");
 
         // Test case 5: Multiple interesting nodes
         let close_node_1 = NodeId::from([0x01; 20]);
         let close_node_2 = NodeId::from([0x02; 20]);
         let nodes_to_check = vec![close_node_1, close_node_2];
-        let result = light_peers_struct.check_interesting_node_ids(&nodes_to_check);
+        let result = light_peers.check_interesting_node_ids(nodes_to_check);
         assert_eq!(result.len(), 2, "Should return both close nodes");
         assert!(result.contains(&close_node_1));
         assert!(result.contains(&close_node_2));
-    }
-
-    #[test]
-    fn test_closest() {
-        // Create a base node ID (our node)
-        let our_node_id = NodeId::from([0u8; 20]);
-
-        // Create peers at different distances
-        let very_close_peer = NodeId::from([0x01; 20]);
-        let close_peer = NodeId::from([0x10; 20]);
-        let medium_peer = NodeId::from([0x80; 20]);
-        let far_peer = NodeId::from([0xFF; 20]);
-
-        // Create the light peers map
-        let light_peers = Arc::new(RwLock::new(HashMap::from([
-            (
-                very_close_peer,
-                DhtBuckets {
-                    block: Default::default(),
-                },
-            ),
-            (
-                close_peer,
-                DhtBuckets {
-                    block: Default::default(),
-                },
-            ),
-            (
-                medium_peer,
-                DhtBuckets {
-                    block: Default::default(),
-                },
-            ),
-            (
-                far_peer,
-                DhtBuckets {
-                    block: Default::default(),
-                },
-            ),
-        ])));
-
-        // Create the LightPeers struct
-        let light_peers_struct = LightPeers::new(
-            our_node_id,
-            light_peers.clone(),
-            Arc::new(ConnectionQueue::new(0)),
-        );
-
-        // Create a target bucket
-        let target_bucket = Bucket::from_be_bytes([0u8; 20]);
-
-        // Test case 1: Get single closest peer
-        let result = light_peers_struct.closest(&target_bucket, 1);
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0], very_close_peer);
-
-        // Test case 2: Get two closest peers
-        let result = light_peers_struct.closest(&target_bucket, 2);
-        assert_eq!(result.len(), 2);
-        assert!(result.contains(&very_close_peer));
-        assert!(result.contains(&close_peer));
-        assert!(!result.contains(&medium_peer));
-        assert!(!result.contains(&far_peer));
-
-        // Test case 3: Request more peers than available
-        let result = light_peers_struct.closest(&target_bucket, 10);
-        assert_eq!(result.len(), 4); // Should return all
     }
 }

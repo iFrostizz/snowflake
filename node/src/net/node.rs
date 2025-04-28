@@ -2,6 +2,7 @@ use crate::client::config;
 use crate::dht::DhtBuckets;
 use crate::id::{ChainId, NodeId};
 use crate::message::{pipeline::Pipeline, MiniMessage};
+use crate::net::light::LightPeers;
 use crate::net::{ip::UnsignedIp, BackoffParams, Intervals, Network, PeerInfo};
 use crate::server::msg::AppRequestMessage;
 use crate::server::{
@@ -18,7 +19,6 @@ use crate::utils::{
 use flume::{Receiver, Sender};
 use futures::future;
 use indexmap::IndexMap;
-use openssl::x509;
 use prost::EncodeError;
 use proto_lib::p2p::{self};
 use proto_lib::sdk;
@@ -125,15 +125,12 @@ pub enum AddPeerError {
 }
 
 impl Network {
-    pub fn todo_remove_attach_light_peers(
-        &mut self,
-        light_peers: Arc<RwLock<HashMap<NodeId, DhtBuckets>>>,
-    ) {
-        self.light_peers = light_peers;
-    }
-
     /// Initiate the network by specifying this node's IP
-    pub fn new(config: NetworkConfig) -> Result<Self, ()> {
+    pub fn new(
+        config: NetworkConfig,
+        node_id: NodeId,
+        light_peers: LightPeers,
+    ) -> Result<Self, ()> {
         let client_config = Arc::new(config::client_config(
             &config.cert_path,
             &config.pem_key_path,
@@ -165,11 +162,6 @@ impl Network {
         let bloom_filter = Filter::new(8, 1000).expect("usage of wrong constants");
         let bloom_filter = RwLock::new(bloom_filter);
 
-        let bytes = std::fs::read(&config.cert_path).expect("failed to read cert");
-        let x509 = x509::X509::from_pem(&bytes).unwrap();
-        let cert = x509.to_der().unwrap();
-        let node_id = NodeId::from_cert(cert);
-
         let out_pipeline = Arc::new(Pipeline::new(
             config.max_throughput,
             config.max_out_queue_size,
@@ -189,7 +181,7 @@ impl Network {
             client,
             client_config,
             peers_infos,
-            light_peers: Default::default(),
+            light_peers,
             bootstrappers,
             signed_ip,
             bloom_filter,

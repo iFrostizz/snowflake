@@ -1,8 +1,8 @@
 use crate::dht::{LightMessage, LightResult};
 use crate::id::{Id, NodeId};
 use crate::message::{mail_box::MailBox, SubscribableMessage};
-use crate::net::light::LightNetwork;
-use crate::net::node::AddPeerError;
+use crate::net::light::{LightNetwork, LightNetworkConfig, LightPeers};
+use crate::net::node::{AddPeerError, NetworkConfig};
 use crate::net::{
     node::NodeError,
     queue::{ConnectionData, ConnectionQueue},
@@ -18,6 +18,7 @@ use crate::utils::{
 use flume::Receiver;
 use futures::future;
 use indexmap::IndexMap;
+use openssl::x509;
 use prost::Message as _;
 use proto_lib::p2p::{
     message::Message, AppGossip, BloomFilter, ClaimedIpPort, GetPeerList, PeerList,
@@ -61,26 +62,33 @@ pub enum SinglePickerConfig {
 
 impl Node {
     pub fn new(
-        mut network: Network,
+        network_config: NetworkConfig,
         max_concurrent: usize,
         max_latency_records: usize,
         sync_headers: bool,
     ) -> Self {
-        let mail_box = MailBox::new(max_latency_records);
+        let bytes = std::fs::read(&network_config.cert_path).expect("failed to read cert");
+        let x509 = x509::X509::from_pem(&bytes).unwrap();
+        let cert = x509.to_der().unwrap();
+        let node_id = NodeId::from_cert(cert);
+
         let connection_queue = Arc::new(ConnectionQueue::new(max_concurrent));
+        let light_peers = LightPeers::new(node_id, connection_queue.clone());
+        let network = Network::new(network_config, node_id, light_peers.clone()).unwrap();
+        let mail_box = MailBox::new(max_latency_records);
         let light_network = LightNetwork::new(
             network.node_id,
+            light_peers,
             network.peers_infos.clone(),
             mail_box.tx().clone(),
-            connection_queue.clone(),
             network.config.c_chain_id.clone(),
-            sync_headers,
-            10,
-            3,
+            LightNetworkConfig {
+                sync_headers,
+                max_lookups: 10,
+                alpha: 3,
+            },
         );
 
-        // TODO not clean
-        network.todo_remove_attach_light_peers(light_network.light_peers.light_peers.clone());
         Self {
             network: Arc::new(network),
             light_network,

@@ -51,7 +51,7 @@ impl<'a> From<&'a Vec<NodeId>> for VecNodeIds<'a> {
 }
 
 impl Display for VecNodeIds<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "[")?;
         let mut first = true;
         for node_id in self.0 {

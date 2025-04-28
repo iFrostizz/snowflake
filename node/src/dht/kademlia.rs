@@ -2,6 +2,7 @@ use crate::dht::{light_errors, Bucket, BucketDht, DhtBuckets, DhtId, LightError}
 use crate::id::{ChainId, NodeId};
 use crate::message::mail_box::Mail;
 use crate::message::SubscribableMessage;
+use crate::net::light::LightPeers;
 use crate::net::node::NodeError;
 use crate::net::queue::ConnectionData;
 use crate::server::msg::InboundMessageExt;
@@ -38,7 +39,7 @@ where
 #[derive(Debug)]
 pub struct KademliaDht {
     peers_infos: Arc<RwLock<IndexMap<NodeId, PeerInfo>>>,
-    light_peers: Arc<RwLock<HashMap<NodeId, DhtBuckets>>>,
+    light_peers: LightPeers,
     mail_tx: Sender<Mail>,
     chain_id: ChainId,
     /// Maximum number of nodes to return in a `find_node` request.
@@ -54,7 +55,7 @@ pub enum ValueOrNodes<V> {
 impl KademliaDht {
     pub fn new(
         peers_infos: Arc<RwLock<IndexMap<NodeId, PeerInfo>>>,
-        light_peers: Arc<RwLock<HashMap<NodeId, DhtBuckets>>>,
+        light_peers: LightPeers,
         mail_tx: Sender<Mail>,
         chain_id: ChainId,
         max_nodes: usize,
@@ -316,6 +317,7 @@ impl KademliaDht {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::net::queue::ConnectionQueue;
     use crate::net::HandshakeInfos;
     use std::collections::HashSet;
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -339,7 +341,7 @@ mod tests {
         buckets: Vec<[u8; 2]>,
     ) -> (
         Arc<RwLock<IndexMap<NodeId, PeerInfo>>>,
-        Arc<RwLock<HashMap<NodeId, DhtBuckets>>>,
+        HashMap<NodeId, DhtBuckets>,
     ) {
         let node_ids = buckets
             .into_iter()
@@ -384,10 +386,7 @@ mod tests {
                 )
             })
             .collect();
-        (
-            Arc::new(RwLock::new(peer_infos)),
-            Arc::new(RwLock::new(light_peers)),
-        )
+        (Arc::new(RwLock::new(peer_infos)), light_peers)
     }
 
     #[test]
@@ -403,8 +402,10 @@ mod tests {
             [0, 0b11000000],
             [0, 0b00000010],
         ];
-        let (peer_infos, light_peers) = node_ids_to_infos(buckets.to_vec());
+        let (peer_infos, light_peers_data) = node_ids_to_infos(buckets.to_vec());
         let (mail_tx, _) = flume::unbounded();
+        let light_peers = LightPeers::new(Default::default(), Arc::new(ConnectionQueue::new(0)));
+        light_peers.write().unwrap().extend(light_peers_data);
         let dht: KademliaDht =
             KademliaDht::new(peer_infos, light_peers, mail_tx, ChainId::from([0; 32]), 3);
         let closest = dht.find_node(&extend_to_bucket(buckets[4]));
