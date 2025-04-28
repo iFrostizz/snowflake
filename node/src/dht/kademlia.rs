@@ -3,6 +3,7 @@ use crate::id::{ChainId, NodeId};
 use crate::message::mail_box::Mail;
 use crate::message::SubscribableMessage;
 use crate::net::node::NodeError;
+use crate::net::queue::ConnectionData;
 use crate::server::msg::InboundMessageExt;
 use crate::server::msg::{AppRequestMessage, InboundMessage};
 use crate::server::peers::{PeerInfo, PeerSender};
@@ -47,7 +48,7 @@ pub struct KademliaDht {
 #[derive(Debug, Eq, PartialEq)]
 pub enum ValueOrNodes<V> {
     Value(V),
-    Nodes(Vec<NodeId>),
+    Nodes(Vec<ConnectionData>),
 }
 
 impl KademliaDht {
@@ -152,9 +153,10 @@ impl KademliaDht {
     }
 
     /// Find up to `n` unique nodes that are the closest to the `bucket`.
-    pub fn find_node(&self, bucket: &Bucket) -> Vec<NodeId> {
+    pub fn find_node(&self, bucket: &Bucket) -> Vec<ConnectionData> {
         let nodes = self.light_peers.read().unwrap();
-        self.find_closest_nodes(nodes, bucket, &[], self.max_nodes)
+        let node_ids = self.find_closest_nodes(nodes, bucket, &[], self.max_nodes);
+        self.map_to_connection_data(node_ids)
     }
 
     /// Recursively search for a value. Once found, it is verified against publicly untrusted data.
@@ -201,7 +203,10 @@ impl KademliaDht {
             if let Ok(value_or_nodes) = self.iterative_lookup(dht_id, senders, bucket).await {
                 match value_or_nodes {
                     ValueOrNodes::Value(value) => return Ok(value),
-                    ValueOrNodes::Nodes(nodes) => {
+                    ValueOrNodes::Nodes(connections_data) => {
+                        // TODO should not deal with socket, cert, etc. here.
+                        let nodes: Vec<_> =
+                            connections_data.into_iter().map(|c| c.node_id).collect();
                         worklist.extend(nodes.clone());
                         excluding.extend(nodes);
                     }
@@ -263,18 +268,15 @@ impl KademliaDht {
                     // if not successful, disconnect from node and decrease reputation
                     return Ok(ValueOrNodes::Value(value));
                 }
-                sdk::light_response::Message::Nodes(sdk::Nodes { node_ids }) => {
+                sdk::light_response::Message::Nodes(p2p::PeerList { claimed_ip_ports }) => {
                     // TODO: only pick nodes that are getting us closer to the bucket
-                    if node_ids.len() > 10 {
+                    if claimed_ip_ports.len() > 10 {
                         // disconnect and decrease reputation
                         continue;
                     }
-                    let node_ids: HashSet<_> = node_ids
+                    let node_ids: HashSet<_> = claimed_ip_ports
                         .into_iter()
-                        .filter_map(|node_id| {
-                            let arr: Option<[u8; 20]> = node_id.try_into().ok();
-                            arr.map(NodeId::from)
-                        })
+                        .filter_map(|claimed_ip_port| claimed_ip_port.try_into().ok())
                         .collect();
                     nodes.extend(node_ids);
                 }
@@ -292,12 +294,31 @@ impl KademliaDht {
             Err(light_errors::CONTENT_NOT_FOUND)
         }
     }
+
+    fn map_to_connection_data(&self, node_ids: Vec<NodeId>) -> Vec<ConnectionData> {
+        let peers_infos = self.peers_infos.read().unwrap();
+        node_ids
+            .into_iter()
+            .filter_map(|node_id| {
+                peers_infos.get(&node_id).and_then(|peer_info| {
+                    peer_info.infos.as_ref().map(|infos| ConnectionData {
+                        node_id,
+                        socket_addr: infos.sock_addr,
+                        timestamp: infos.ip_signing_time,
+                        x509_certificate: peer_info.x509_certificate.clone(),
+                    })
+                })
+            })
+            .collect()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::net::HandshakeInfos;
     use std::collections::HashSet;
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
     fn extend_to_bytes<const N: usize>(arr: [u8; N]) -> [u8; 20] {
         let mut out = [0u8; 20];
@@ -335,7 +356,19 @@ mod tests {
                             let (tx, _) = flume::unbounded();
                             tx.into()
                         },
-                        infos: None,
+                        infos: Some(HandshakeInfos {
+                            ip_signing_time: 0,
+                            network_id: 0,
+                            sock_addr: SocketAddr::new(
+                                IpAddr::from(Ipv4Addr::from([0, 0, 0, 0])),
+                                0,
+                            ),
+                            ip_node_id_sig: vec![],
+                            client: None,
+                            tracked_subnets: vec![],
+                            supported_acps: vec![],
+                            objected_acps: vec![],
+                        }),
                     },
                 )
             })
@@ -377,7 +410,10 @@ mod tests {
         let closest = dht.find_node(&extend_to_bucket(buckets[4]));
         assert_eq!(closest.len(), 3);
         assert_eq!(
-            closest.into_iter().collect::<HashSet<_>>(),
+            closest
+                .into_iter()
+                .map(|infos| infos.node_id)
+                .collect::<HashSet<_>>(),
             HashSet::from([
                 extend_to_node_id(buckets[3]),
                 extend_to_node_id(buckets[4]),

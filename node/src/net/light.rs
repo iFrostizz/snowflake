@@ -5,6 +5,7 @@ use crate::dht::{Bucket, ConcreteDht, DhtId, LightMessage, LightResult};
 use crate::id::{ChainId, NodeId};
 use crate::message::mail_box::Mail;
 use crate::net::node::NodeError;
+use crate::net::queue::{ConnectionData, ConnectionQueue};
 use crate::net::LightError;
 use crate::net::RwLock;
 use crate::node::Node;
@@ -15,6 +16,7 @@ use crate::Arc;
 use flume::Sender;
 use indexmap::IndexMap;
 use std::collections::{BTreeMap, HashMap};
+use std::sync::{LockResult, RwLockReadGuard, RwLockWriteGuard};
 use tokio::sync::broadcast;
 use tokio::sync::oneshot;
 
@@ -22,7 +24,7 @@ use tokio::sync::oneshot;
 pub struct LightNetwork {
     pub kademlia_dht: KademliaDht,
     pub block_dht: Arc<DhtBlocks>,
-    pub light_peers: Arc<RwLock<HashMap<NodeId, DhtBuckets>>>,
+    pub light_peers: LightPeers,
     sync_headers: bool,
     max_lookups: usize,
     alpha: usize,
@@ -33,6 +35,7 @@ impl LightNetwork {
         node_id: NodeId,
         peer_infos: Arc<RwLock<IndexMap<NodeId, PeerInfo>>>,
         mail_tx: Sender<Mail>,
+        connection_queue: Arc<ConnectionQueue>,
         chain_id: ChainId,
         sync_headers: bool,
         max_lookups: usize,
@@ -42,6 +45,7 @@ impl LightNetwork {
         let block_dht = Arc::new(DhtBlocks::new(node_id, Bucket::from(10), store));
         let light_peers = Arc::new(RwLock::new(Default::default()));
         let kademlia_dht = KademliaDht::new(peer_infos, light_peers.clone(), mail_tx, chain_id, 10);
+        let light_peers = LightPeers::new(node_id, light_peers.clone(), connection_queue);
         Self {
             kademlia_dht,
             block_dht,
@@ -104,8 +108,7 @@ impl LightNetwork {
                 Some(res)
             }
             LightMessage::Nodes(node_ids) => {
-                todo!(); // TODO: store node_ids which are interesting to us.
-                // TODO: look at potentially_add_nodes function in LightPeers.
+                self.light_peers.potentially_add_nodes(node_ids);
                 None
             }
         };
@@ -124,7 +127,7 @@ impl LightNetwork {
     }
 
     /// Lookup locally for nodes spanning the bucket.
-    fn find_node(&self, bucket: &Bucket) -> Vec<NodeId> {
+    fn find_node(&self, bucket: &Bucket) -> Vec<ConnectionData> {
         self.kademlia_dht.find_node(bucket)
     }
 
@@ -228,17 +231,32 @@ impl DhtContent<u64, StatelessBlock> for DhtBlocks {
     }
 }
 
+#[derive(Debug)]
 pub struct LightPeers {
     node_id: NodeId,
-    light_peers: Arc<RwLock<HashMap<NodeId, DhtBuckets>>>,
+    pub light_peers: Arc<RwLock<HashMap<NodeId, DhtBuckets>>>,
+    connection_queue: Arc<ConnectionQueue>,
 }
 
 impl LightPeers {
-    pub fn new(node_id: NodeId, light_peers: Arc<RwLock<HashMap<NodeId, DhtBuckets>>>) -> Self {
+    pub fn new(
+        node_id: NodeId,
+        light_peers: Arc<RwLock<HashMap<NodeId, DhtBuckets>>>,
+        connection_queue: Arc<ConnectionQueue>,
+    ) -> Self {
         Self {
             node_id,
             light_peers,
+            connection_queue,
         }
+    }
+
+    pub fn read(&self) -> LockResult<RwLockReadGuard<'_, HashMap<NodeId, DhtBuckets>>> {
+        self.light_peers.read()
+    }
+
+    pub fn write(&self) -> LockResult<RwLockWriteGuard<'_, HashMap<NodeId, DhtBuckets>>> {
+        self.light_peers.write()
     }
 
     /// Find a maximum of `n` light peers which are the closest to the `bucket`.
@@ -263,7 +281,7 @@ impl LightPeers {
             .collect()
     }
 
-    pub fn check_interesting_node_ids(&self, node_ids: &[NodeId]) -> Vec<NodeId> {
+    fn check_interesting_node_ids(&self, node_ids: &Vec<NodeId>) -> Vec<NodeId> {
         let my_bucket = Bucket::from_be_bytes(self.node_id.into());
         let distances_from_us: Vec<_> = node_ids
             .iter()
@@ -296,7 +314,8 @@ impl LightPeers {
                         }
                         let (idx, distance) = distances_rev.get(i).unwrap();
                         let light_peer_bucket = Bucket::from_be_bytes((*light_peer).into());
-                        let distance_with_peer = KademliaDht::distance(&my_bucket, light_peer_bucket);
+                        let distance_with_peer =
+                            KademliaDht::distance(&my_bucket, light_peer_bucket);
                         if distance < &distance_with_peer {
                             let idx = *idx;
                             distances_rev.remove(i);
@@ -316,8 +335,24 @@ impl LightPeers {
             .collect()
     }
 
-    pub fn potentially_add_nodes(&self, node_ids: &[NodeId]) {
-        todo!()
+    /// Check if some of these nodes are closer to what we have in our list.
+    /// If so, add them.
+    pub fn potentially_add_nodes(&self, nodes: Vec<ConnectionData>) {
+        let node_ids = self.check_interesting_node_ids(
+            &nodes
+                .iter()
+                .map(|ConnectionData { node_id, .. }| *node_id)
+                .collect(),
+        );
+        for node_id in node_ids {
+            self.connection_queue.maybe_add_connection(
+                nodes
+                    .iter()
+                    .find(|node| node.node_id == node_id)
+                    .unwrap()
+                    .clone(),
+            );
+        }
     }
 }
 
@@ -332,20 +367,31 @@ mod tests {
         let our_node_id = NodeId::from([0u8; 20]);
 
         // Create some peer nodes that are at varying distances
-        let far_peer = NodeId::from([0xF0; 20]);  // Very far peer
+        let far_peer = NodeId::from([0xF0; 20]); // Very far peer
         let medium_peer = NodeId::from([0x80; 20]); // Medium distance peer
-        
+
         // Create the light peers map
         let light_peers = Arc::new(RwLock::new(HashMap::from([
-            (far_peer, DhtBuckets { block: Default::default() }),
-            (medium_peer, DhtBuckets { block: Default::default() }),
+            (
+                far_peer,
+                DhtBuckets {
+                    block: Default::default(),
+                },
+            ),
+            (
+                medium_peer,
+                DhtBuckets {
+                    block: Default::default(),
+                },
+            ),
         ])));
 
-        let light_peers_struct = LightPeers::new(our_node_id, light_peers);
+        let light_peers_struct =
+            LightPeers::new(our_node_id, light_peers, Arc::new(ConnectionQueue::new(0)));
 
         // Test case 1: Node closer than all peers
         let close_node = NodeId::from([0x10; 20]); // Very close to our node
-        let result = light_peers_struct.check_interesting_node_ids(&[close_node]);
+        let result = light_peers_struct.check_interesting_node_ids(&vec![close_node]);
         assert_eq!(result, vec![close_node], "Should return the closer node");
 
         // Test case 2: Multiple nodes, some closer some farther
@@ -353,16 +399,23 @@ mod tests {
         let very_far_node = NodeId::from([0xFF; 20]);
         let nodes_to_check = vec![very_far_node, very_close_node];
         let result = light_peers_struct.check_interesting_node_ids(&nodes_to_check);
-        assert_eq!(result, vec![very_close_node], "Should only return the closer node");
+        assert_eq!(
+            result,
+            vec![very_close_node],
+            "Should only return the closer node"
+        );
 
         // Test case 3: All nodes farther than peers
         let far_node_1 = NodeId::from([0xFF; 20]);
         let far_node_2 = NodeId::from([0xFE; 20]);
-        let result = light_peers_struct.check_interesting_node_ids(&[far_node_1, far_node_2]);
-        assert!(result.is_empty(), "Should return empty vec when no nodes are closer than peers");
+        let result = light_peers_struct.check_interesting_node_ids(&vec![far_node_1, far_node_2]);
+        assert!(
+            result.is_empty(),
+            "Should return empty vec when no nodes are closer than peers"
+        );
 
         // Test case 4: Empty input
-        let result = light_peers_struct.check_interesting_node_ids(&[]);
+        let result = light_peers_struct.check_interesting_node_ids(&vec![]);
         assert!(result.is_empty(), "Should handle empty input gracefully");
 
         // Test case 5: Multiple interesting nodes
@@ -385,17 +438,41 @@ mod tests {
         let close_peer = NodeId::from([0x10; 20]);
         let medium_peer = NodeId::from([0x80; 20]);
         let far_peer = NodeId::from([0xFF; 20]);
-        
+
         // Create the light peers map
         let light_peers = Arc::new(RwLock::new(HashMap::from([
-            (very_close_peer, DhtBuckets { block: Default::default() }),
-            (close_peer, DhtBuckets { block: Default::default() }),
-            (medium_peer, DhtBuckets { block: Default::default() }),
-            (far_peer, DhtBuckets { block: Default::default() }),
+            (
+                very_close_peer,
+                DhtBuckets {
+                    block: Default::default(),
+                },
+            ),
+            (
+                close_peer,
+                DhtBuckets {
+                    block: Default::default(),
+                },
+            ),
+            (
+                medium_peer,
+                DhtBuckets {
+                    block: Default::default(),
+                },
+            ),
+            (
+                far_peer,
+                DhtBuckets {
+                    block: Default::default(),
+                },
+            ),
         ])));
-        
+
         // Create the LightPeers struct
-        let light_peers_struct = LightPeers::new(our_node_id, light_peers.clone());
+        let light_peers_struct = LightPeers::new(
+            our_node_id,
+            light_peers.clone(),
+            Arc::new(ConnectionQueue::new(0)),
+        );
 
         // Create a target bucket
         let target_bucket = Bucket::from_be_bytes([0u8; 20]);

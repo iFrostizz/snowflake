@@ -3,6 +3,7 @@ pub mod kademlia;
 
 use crate::dht::kademlia::{LockedMapDb, ValueOrNodes};
 use crate::id::NodeId;
+use crate::net::queue::ConnectionData;
 use jsonrpsee::types::ErrorObject;
 use ruint::Uint;
 use serde::Deserialize;
@@ -100,7 +101,7 @@ pub enum LightMessage {
     Store(DhtId, Vec<u8>),
     FindNode(Bucket),
     FindValue(DhtId, Bucket),
-    Nodes(Vec<NodeId>),
+    Nodes(Vec<ConnectionData>),
 }
 
 #[derive(Debug)]

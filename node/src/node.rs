@@ -13,7 +13,7 @@ use crate::stats::{self, Metrics};
 use crate::utils::{
     bloom::{Filter, ReadFilter, ViewFilter},
     constants,
-    ip::{ip_from_octets, ip_octets},
+    ip::ip_octets,
 };
 use flume::Receiver;
 use futures::future;
@@ -23,7 +23,7 @@ use proto_lib::p2p::{
     message::Message, AppGossip, BloomFilter, ClaimedIpPort, GetPeerList, PeerList,
 };
 use std::collections::HashSet;
-use std::net::{SocketAddr, ToSocketAddrs};
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
@@ -34,8 +34,7 @@ use tokio::time::{self};
 pub struct Node {
     pub(crate) network: Arc<Network>,
     pub(crate) light_network: LightNetwork,
-    connection_queue: ConnectionQueue,
-    // TODO for now, we only use it for subscribable messages, but they are not currently supported.
+    connection_queue: Arc<ConnectionQueue>,
     // TODO We should maybe handle ping / pong messages in order to build peer the latency ranking.
     mail_box: Arc<MailBox>,
 }
@@ -68,21 +67,24 @@ impl Node {
         sync_headers: bool,
     ) -> Self {
         let mail_box = MailBox::new(max_latency_records);
+        let connection_queue = Arc::new(ConnectionQueue::new(max_concurrent));
         let light_network = LightNetwork::new(
             network.node_id,
             network.peers_infos.clone(),
             mail_box.tx().clone(),
+            connection_queue.clone(),
             network.config.c_chain_id.clone(),
             sync_headers,
             10,
             3,
         );
 
-        network.todo_remove_attach_light_peers(light_network.light_peers.clone());
+        // TODO not clean
+        network.todo_remove_attach_light_peers(light_network.light_peers.light_peers.clone());
         Self {
             network: Arc::new(network),
             light_network,
-            connection_queue: ConnectionQueue::new(max_concurrent),
+            connection_queue,
             mail_box: Arc::new(mail_box),
         }
     }
@@ -603,41 +605,15 @@ impl Node {
     }
 
     fn try_connect_from_claimed(self: &Arc<Node>, claimed: ClaimedIpPort) {
-        let x509_certificate = claimed.x509_certificate;
-        let node_id = NodeId::from_cert(x509_certificate.clone());
-        match self.network.check_add_peer(&node_id) {
-            Ok(()) => match claimed.ip_port.try_into() {
-                Ok(port) => match ip_from_octets(claimed.ip_addr) {
-                    Ok(ip_addr) => {
-                        log::debug!("got peer list ip {ip_addr}");
-
-                        match (ip_addr, port)
-                            .to_socket_addrs()
-                            .map(|mut socks| socks.next().ok_or("empty socket"))
-                        {
-                            Ok(Ok(socket_addr)) => {
-                                self.connection_queue.add_connection(ConnectionData {
-                                    node_id,
-                                    socket_addr,
-                                    timestamp: claimed.timestamp,
-                                    x509_certificate,
-                                });
-                            }
-                            err => {
-                                log::error!("{err:?} {node_id}");
-                            }
-                        }
-                    }
-                    Err(err) => {
-                        log::error!("err when ip {err}");
-                    }
-                },
-                Err(err) => {
-                    log::error!("err when converting port {err}");
+        let connection_data: Result<ConnectionData, _> = claimed.try_into();
+        if let Ok(connection_data) = connection_data {
+            let node_id = &connection_data.node_id;
+            match self.network.check_add_peer(node_id) {
+                Ok(()) => {
+                    self.connection_queue
+                        .add_connection_without_retries(connection_data);
                 }
-            },
-            Err(err) => {
-                log::debug!("{err} {node_id}");
+                Err(err) => log::debug!("{err} {node_id}"),
             }
         }
     }

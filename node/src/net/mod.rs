@@ -629,11 +629,8 @@ impl Peer {
                 LightValue::ValueOrNodes(value_or_nodes) => {
                     let response: sdk::light_response::Message = match value_or_nodes {
                         ValueOrNodes::Value(value) => sdk::Value { value }.into(),
-                        ValueOrNodes::Nodes(nodes) => sdk::Nodes {
-                            node_ids: nodes
-                                .into_iter()
-                                .map(|node_id| node_id.as_ref().to_vec())
-                                .collect(),
+                        ValueOrNodes::Nodes(data) => p2p::PeerList {
+                            claimed_ip_ports: data.into_iter().map(Into::into).collect(),
                         }
                         .into(),
                     };
@@ -668,11 +665,11 @@ impl Peer {
         light_request: sdk::light_request::Message,
         light_response: sdk::light_response::Message,
     ) -> Result<(), NodeError> {
-        log::debug!("received light message 2 {light_response:?}");
+        log::debug!("received light response {light_response:?}");
 
         match light_response {
             sdk::light_response::Message::Ack(_) => {}
-            sdk::light_response::Message::Nodes(sdk::Nodes { node_ids }) => {
+            sdk::light_response::Message::Nodes(p2p::PeerList { claimed_ip_ports }) => {
                 if !matches!(
                     light_request,
                     sdk::light_request::Message::FindValue(_)
@@ -680,19 +677,15 @@ impl Peer {
                 ) {
                     return Err(NodeError::Message("invalid request".to_string()));
                 }
-                if node_ids.len() > 10 {
+                if claimed_ip_ports.len() > 10 {
                     // disconnect and decrease reputation
                     return Err(NodeError::Message("too many nodes".to_string()));
                 }
-                let node_ids: HashSet<_> = node_ids
+                let nodes: HashSet<_> = claimed_ip_ports
                     .into_iter()
-                    .filter_map(|node_id| {
-                        let arr: Option<[u8; 20]> = node_id.try_into().ok();
-                        arr.map(NodeId::from)
-                    })
+                    .filter_map(|claimed_ip_port| claimed_ip_port.try_into().ok())
                     .collect();
-                let node_ids: Vec<_> = node_ids.into_iter().collect();
-                let message = LightMessage::Nodes(node_ids);
+                let message = LightMessage::Nodes(nodes.into_iter().collect());
                 spl.send((message, None))
                     .map_err(|_| NodeError::SendError)?;
             }
