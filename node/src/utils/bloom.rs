@@ -51,8 +51,8 @@ impl Filter {
             return Err(BloomError::TooManyHashes);
         }
 
-        let mut rng = rand::thread_rng();
-        let seeds = (0..num_hashes).map(|_| rng.gen()).collect();
+        let mut rng = rand::rng();
+        let seeds = (0..num_hashes).map(|_| rng.random()).collect();
 
         let read = ReadFilter {
             salt: rand::random(),
