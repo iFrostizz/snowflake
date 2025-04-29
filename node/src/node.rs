@@ -1,7 +1,7 @@
 use crate::dht::{LightMessage, LightResult};
 use crate::id::{Id, NodeId};
 use crate::message::{mail_box::MailBox, SubscribableMessage};
-use crate::net::light::{LightNetwork, LightNetworkConfig, LightPeers};
+use crate::net::light::{LightNetwork, LightNetworkConfig};
 use crate::net::node::{AddPeerError, NetworkConfig};
 use crate::net::{
     node::NodeError,
@@ -25,7 +25,7 @@ use proto_lib::p2p::{
 };
 use std::collections::HashSet;
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
 use tokio::sync::{broadcast, OwnedSemaphorePermit, Semaphore};
@@ -73,13 +73,16 @@ impl Node {
         let node_id = NodeId::from_cert(cert);
 
         let connection_queue = Arc::new(ConnectionQueue::new(max_concurrent));
-        let light_peers = LightPeers::new(node_id, connection_queue.clone());
-        let network = Network::new(network_config, node_id, light_peers.clone()).unwrap();
+        // TODO should refactor. Here light_peers depends on network and network on light_peers.
+        //  We should only use what is needed in the subset of network and light_peers, and those
+        //  two should be independent.
+        let peers_infos = Arc::new(RwLock::new(IndexMap::new()));
+        let network = Network::new(network_config, node_id, peers_infos.clone()).unwrap();
         let mail_box = MailBox::new(max_latency_records);
         let light_network = LightNetwork::new(
             network.node_id,
-            light_peers,
-            network.peers_infos.clone(),
+            peers_infos,
+            connection_queue.clone(),
             mail_box.tx().clone(),
             network.config.c_chain_id.clone(),
             LightNetworkConfig {
@@ -87,6 +90,7 @@ impl Node {
                 max_lookups: 10,
                 alpha: 3,
             },
+            network.config.max_light_peers,
         );
 
         Self {
@@ -211,12 +215,18 @@ impl Node {
             }
             Err(err) => {
                 log::debug!("error on connecting with back off: {err}");
-                self.network.remove_peers(vec![(&data.node_id, Some(&err))]);
+                Network::remove_peers(
+                    self.network.peers_infos.clone(),
+                    &mut self.light_network.light_peers.write().map,
+                    vec![(&data.node_id, Some(&err))],
+                );
                 return Err(err);
             }
         };
 
         let node = self.clone();
+        let peers_infos = self.network.peers_infos.clone();
+        let light_peers = self.light_network.light_peers.clone();
         tokio::spawn(async move {
             let node_id = *peer.node_id();
             let err = match node.loop_peer(hs_permit, peer).await {
@@ -231,7 +241,11 @@ impl Node {
                 _ => None,
             };
 
-            node.network.remove_peers(vec![(&node_id, err.as_ref())]);
+            Network::remove_peers(
+                peers_infos,
+                &mut light_peers.write().map,
+                vec![(&node_id, err.as_ref())],
+            );
             node.connection_queue.maybe_add_connection(data);
         });
 
@@ -277,11 +291,17 @@ impl Node {
         let c_chain_id = self.network.config.c_chain_id.clone();
 
         let sender = peer.sender().clone();
+        let (tx, _) = broadcast::channel(1);
+        // TODO: consider adding the tx here to be able to remotely disconnect a peer.
         self.network
-            .add_peer(node_id, peer.x509_certificate().to_owned(), sender.clone())
+            .add_peer(
+                node_id,
+                peer.x509_certificate().to_owned(),
+                sender.clone(),
+                tx.clone(),
+            )
             .await;
 
-        let (tx, _) = broadcast::channel(1);
         let manage_peer = self.manage_peer(
             peer.rpn().clone(),
             peer.rpl().clone(),
@@ -317,6 +337,7 @@ impl Node {
             .is_some_and(Option::is_some)
         {
             // is a light bootstrapper, we need to initiate a handshake.
+            // TODO: remove?
         }
 
         let mut tasks = vec![manage_peer, write_peer, read_peer, hand_peer];
@@ -557,8 +578,11 @@ impl Node {
             }))
             .is_err()
         {
-            self.network
-                .remove_peers(vec![(node_id, Some(&NodeError::SendError))]);
+            Network::remove_peers(
+                self.network.peers_infos.clone(),
+                &mut self.light_network.light_peers.write().map,
+                vec![(node_id, Some(&NodeError::SendError))],
+            );
         }
     }
 
@@ -771,7 +795,11 @@ impl Node {
         let handles = handles.into_iter().map(|handle| tokio::spawn(handle));
 
         if !to_remove.is_empty() {
-            self.network.remove_peers(to_remove);
+            Network::remove_peers(
+                self.network.peers_infos.clone(),
+                &mut self.light_network.light_peers.write().map,
+                to_remove,
+            );
         }
 
         let mut messages = Vec::new();
@@ -846,7 +874,11 @@ impl Node {
             .unwrap()
             .contains_key(node_id);
         if !is_bootstrapper && remove_peer {
-            self.network.remove_peers(vec![(node_id, err.as_ref())]);
+            Network::remove_peers(
+                self.network.peers_infos.clone(),
+                &mut self.light_network.light_peers.write().map,
+                vec![(node_id, err.as_ref())],
+            );
         }
 
         None

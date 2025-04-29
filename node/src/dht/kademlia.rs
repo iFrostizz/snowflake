@@ -317,6 +317,7 @@ impl KademliaDht {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::broadcast;
     use crate::net::queue::ConnectionQueue;
     use crate::net::HandshakeInfos;
     use std::collections::HashSet;
@@ -371,6 +372,10 @@ mod tests {
                             supported_acps: vec![],
                             objected_acps: vec![],
                         }),
+                        tx: {
+                            let (tx, _) = broadcast::channel(1);
+                            tx
+                        },
                     },
                 )
             })
@@ -404,8 +409,13 @@ mod tests {
         ];
         let (peer_infos, light_peers_data) = node_ids_to_infos(buckets.to_vec());
         let (mail_tx, _) = flume::unbounded();
-        let light_peers = LightPeers::new(Default::default(), Arc::new(ConnectionQueue::new(0)));
-        light_peers.write().unwrap().extend(light_peers_data);
+        let light_peers = LightPeers::new(
+            Default::default(),
+            peer_infos.clone(),
+            Arc::new(ConnectionQueue::new(0)),
+            Some(light_peers_data.len()),
+        );
+        light_peers.write().extend(light_peers_data);
         let dht: KademliaDht =
             KademliaDht::new(peer_infos, light_peers, mail_tx, ChainId::from([0; 32]), 3);
         let closest = dht.find_node(&extend_to_bucket(buckets[4]));

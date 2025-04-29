@@ -718,6 +718,7 @@ mod tests {
             bucket_size: 0,
             max_concurrent_handshakes: 0,
             max_peers: None,
+            max_light_peers: None,
             bootstrappers: HashMap::new(),
             dht_buckets: DhtBuckets {
                 block: Default::default(),

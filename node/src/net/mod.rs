@@ -4,7 +4,6 @@ use crate::dht::{Bucket, DhtId, LightMessage, LightResult};
 use crate::dht::{DhtBuckets, LightValue};
 use crate::id::{ChainId, NodeId};
 use crate::message::{mail_box::MailBox, pipeline::Pipeline, MiniMessage, SubscribableMessage};
-use crate::net::light::LightPeers;
 use crate::net::sdk::{FindNode, FindValue, LightHandshake};
 use crate::net::{
     ip::SignedIp,
@@ -79,7 +78,6 @@ pub struct Network {
     pub client_config: Arc<ClientConfig>,
     /// All peers discovered by the node
     pub peers_infos: Arc<RwLock<IndexMap<NodeId, PeerInfo>>>, // TODO can we find a way to do it lock-less ?
-    pub light_peers: LightPeers,
     pub bootstrappers: RwLock<HashMap<NodeId, Option<DhtBuckets>>>,
     pub out_pipeline: Arc<Pipeline>,
     /// The canonically sorted validators map
@@ -213,7 +211,7 @@ impl Peer {
         &self.channels.rpl
     }
 
-    pub fn take_tls(
+    fn take_tls(
         &mut self,
     ) -> (
         ReadHalf<TlsStream<TcpStream>>,

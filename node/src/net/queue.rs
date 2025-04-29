@@ -92,6 +92,10 @@ impl ConnectionQueue {
     /// It tries to connect to the oldest connections and never exceeds
     /// the max amount of concurrent connections.
     pub async fn watch_connections(&self, node: &Arc<Node>, mut rx: broadcast::Receiver<()>) {
+        // TODO: this is broken because the retries are never written.
+        //  We should fix that.
+        //  The retry logic is good, it will allow us to handle the backoff here and check that
+        //  the peer can still be added on every try. Allows to never overshoot the max peers.
         loop {
             tokio::select! {
                 res = self.rcd.recv_async() => {
@@ -133,7 +137,10 @@ impl ConnectionQueue {
     pub fn maybe_add_connection(&self, data: ConnectionData) -> bool {
         let maybe_retries = self.connections.read().unwrap().get(&data.node_id).cloned();
         match maybe_retries {
-            None => false,
+            None => {
+                self._add_connection(data, 0);
+                true
+            }
             Some(retries) => {
                 if retries >= Self::MAX_RETRIES {
                     self.connections.write().unwrap().remove(&data.node_id);
@@ -146,16 +153,12 @@ impl ConnectionQueue {
         }
     }
 
+    /// Bypasses the connection queue and tries to connect to the node.
+    /// Returns true if it was added.
     pub fn add_connection_without_retries(&self, data: ConnectionData) -> bool {
-        let maybe_retries = self.connections.read().unwrap().get(&data.node_id).cloned();
-        match maybe_retries {
-            None => {
-                self._add_connection(data, 0);
-                true
-            }
-            // TODO: maybe remove the retries in the connection queue and still connect.
-            Some(_) => false,
-        }
+        self.connections.write().unwrap().remove(&data.node_id);
+        self.scd.send(data).expect("receivers dropped");
+        true
     }
 
     fn _add_connection(&self, data: ConnectionData, retries: usize) {

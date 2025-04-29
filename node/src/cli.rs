@@ -97,6 +97,9 @@ pub struct Args {
     #[arg(long, default_value = "50")]
     pub max_peers: Option<usize>,
 
+    #[arg(long, default_value = "50")]
+    pub max_light_peers: Option<usize>,
+
     /// RPC port
     #[arg(long, default_value_t = 9781)]
     pub rpc_port: u16,
@@ -170,6 +173,7 @@ impl Args {
             bucket_size: 500_000,           // 500 kB
             max_concurrent_handshakes: self.max_handshakes,
             max_peers: self.max_peers,
+            max_light_peers: self.max_light_peers,
             bootstrappers: Bootstrappers::new(
                 &self.bootstrappers_path,
                 &self.light_bootstrappers_path,

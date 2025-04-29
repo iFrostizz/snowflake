@@ -2,7 +2,6 @@ use crate::client::config;
 use crate::dht::DhtBuckets;
 use crate::id::{ChainId, NodeId};
 use crate::message::{pipeline::Pipeline, MiniMessage};
-use crate::net::light::LightPeers;
 use crate::net::{ip::UnsignedIp, BackoffParams, Intervals, Network, PeerInfo};
 use crate::server::msg::AppRequestMessage;
 use crate::server::{
@@ -25,6 +24,7 @@ use proto_lib::sdk;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::RwLockWriteGuard;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
@@ -83,6 +83,7 @@ pub struct NetworkConfig {
     pub bucket_size: usize,
     pub max_concurrent_handshakes: usize,
     pub max_peers: Option<usize>,
+    pub max_light_peers: Option<usize>,
     pub bootstrappers: HashMap<NodeId, Option<DhtBuckets>>,
     pub dht_buckets: DhtBuckets,
 }
@@ -129,7 +130,7 @@ impl Network {
     pub fn new(
         config: NetworkConfig,
         node_id: NodeId,
-        light_peers: LightPeers,
+        peers_infos: Arc<RwLock<IndexMap<NodeId, PeerInfo>>>,
     ) -> Result<Self, ()> {
         let client_config = Arc::new(config::client_config(
             &config.cert_path,
@@ -171,7 +172,6 @@ impl Network {
         let handshake_semaphore = Arc::new(Semaphore::new(config.max_concurrent_handshakes));
         let bootstrappers = RwLock::new(config.bootstrappers.clone());
 
-        let peers_infos = Arc::new(RwLock::new(IndexMap::new()));
         let buckets = config.dht_buckets.clone();
 
         Ok(Self {
@@ -181,7 +181,6 @@ impl Network {
             client,
             client_config,
             peers_infos,
-            light_peers,
             bootstrappers,
             signed_ip,
             bloom_filter,
@@ -260,6 +259,7 @@ impl Network {
         node_id: NodeId,
         x509_certificate: Vec<u8>,
         snp: PeerSender,
+        tx: broadcast::Sender<()>,
     ) {
         let mut peers = self.peers_infos.write().unwrap();
         if peers.get(&node_id).is_none() {
@@ -269,6 +269,7 @@ impl Network {
                     x509_certificate,
                     sender: snp, // TODO issue here, the passed snp won't be used if already here
                     infos: None,
+                    tx,
                 },
             );
             stats::connected_peers::inc();
@@ -360,7 +361,11 @@ impl Network {
             .map_err(|_| NodeError::SendError)
     }
 
-    pub fn remove_peers(self: &Arc<Network>, node_ids_errs: Vec<(&NodeId, Option<&NodeError>)>) {
+    pub fn remove_peers(
+        peers_infos: Arc<RwLock<IndexMap<NodeId, PeerInfo>>>,
+        light_peers: &mut RwLockWriteGuard<HashMap<NodeId, DhtBuckets>>,
+        node_ids_errs: Vec<(&NodeId, Option<&NodeError>)>,
+    ) {
         for (node_id, err) in &node_ids_errs {
             if let Some(err) = err {
                 log::debug!("removing peer {}, reason: {}", node_id, err);
@@ -370,10 +375,11 @@ impl Network {
         }
 
         {
-            let mut peers_write = self.peers_infos.write().unwrap();
+            let mut peers_write = peers_infos.write().unwrap();
 
             for (node_id, _) in &node_ids_errs {
                 if let Some(peer) = peers_write.swap_remove(*node_id) {
+                    let _ = peer.tx.send(());
                     if peer.handshook() {
                         stats::handshook_peers::dec();
                     }
@@ -383,12 +389,19 @@ impl Network {
         }
 
         {
-            let mut peers_write = self.light_peers.write().unwrap();
-
             for (node_id, _) in &node_ids_errs {
-                peers_write.remove(node_id);
+                light_peers.remove(node_id);
             }
         }
+    }
+
+    pub fn disconnect_peer(
+        peers_infos: Arc<RwLock<IndexMap<NodeId, PeerInfo>>>,
+        light_peers: &mut RwLockWriteGuard<HashMap<NodeId, DhtBuckets>>,
+        node_id: &NodeId,
+        err: Option<&NodeError>,
+    ) {
+        Self::remove_peers(peers_infos, light_peers, vec![(node_id, err)]);
     }
 
     pub fn has_reached_max_peers(&self, peers_infos: &IndexMap<NodeId, PeerInfo>) -> bool {

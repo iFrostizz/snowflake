@@ -6,8 +6,8 @@ use crate::id::{ChainId, NodeId};
 use crate::message::mail_box::Mail;
 use crate::net::node::NodeError;
 use crate::net::queue::{ConnectionData, ConnectionQueue};
-use crate::net::LightError;
 use crate::net::RwLock;
+use crate::net::{LightError, Network};
 use crate::node::Node;
 use crate::server::peers::PeerInfo;
 use crate::utils::rlp::Block;
@@ -15,7 +15,7 @@ use crate::utils::unpacker::StatelessBlock;
 use crate::Arc;
 use flume::Sender;
 use indexmap::IndexMap;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{LockResult, RwLockReadGuard, RwLockWriteGuard};
 use tokio::sync::broadcast;
 use tokio::sync::oneshot;
@@ -38,15 +38,23 @@ pub struct LightNetwork {
 impl LightNetwork {
     pub fn new(
         node_id: NodeId,
-        light_peers: LightPeers,
-        peer_infos: Arc<RwLock<IndexMap<NodeId, PeerInfo>>>,
+        peers_infos: Arc<RwLock<IndexMap<NodeId, PeerInfo>>>,
+        connection_queue: Arc<ConnectionQueue>,
         mail_tx: Sender<Mail>,
         chain_id: ChainId,
         config: LightNetworkConfig,
+        max_light_peers: Option<usize>,
     ) -> Self {
         let store = RwLock::new(HashMap::new());
         let block_dht = Arc::new(DhtBlocks::new(node_id, Bucket::from(10), store));
-        let kademlia_dht = KademliaDht::new(peer_infos, light_peers.clone(), mail_tx, chain_id, 10);
+        let light_peers = LightPeers::new(
+            node_id,
+            peers_infos.clone(),
+            connection_queue,
+            max_light_peers,
+        );
+        let kademlia_dht =
+            KademliaDht::new(peers_infos, light_peers.clone(), mail_tx, chain_id, 10);
         Self {
             kademlia_dht,
             block_dht,
@@ -80,7 +88,7 @@ impl LightNetwork {
     ) {
         let res = match message {
             LightMessage::NewPeer(buckets) => {
-                self.light_peers.write().unwrap().insert(*node_id, buckets);
+                self.light_peers.write().insert(*node_id, buckets);
                 None
             }
             LightMessage::Store(dht_id, value) => {
@@ -238,16 +246,73 @@ impl DhtContent<u64, StatelessBlock> for DhtBlocks {
 #[derive(Debug, Clone)]
 pub struct LightPeers {
     node_id: NodeId,
-    pub light_peers: Arc<RwLock<HashMap<NodeId, DhtBuckets>>>,
+    light_peers: Arc<RwLock<HashMap<NodeId, DhtBuckets>>>,
+    peers_infos: Arc<RwLock<IndexMap<NodeId, PeerInfo>>>,
     connection_queue: Arc<ConnectionQueue>,
+    max_light_peers: Option<usize>,
+}
+
+// TODO: this structure weirdly looks like the LightPeers one.
+#[derive(Debug)]
+pub struct WriteLockGuardPeers<'a> {
+    node_id: NodeId,
+    pub map: RwLockWriteGuard<'a, HashMap<NodeId, DhtBuckets>>,
+    peers_infos: Arc<RwLock<IndexMap<NodeId, PeerInfo>>>,
+    max_light_peers: Option<usize>,
+}
+
+impl WriteLockGuardPeers<'_> {
+    pub fn insert(&mut self, node_id: NodeId, buckets: DhtBuckets) {
+        self.map.insert(node_id, buckets);
+    }
+
+    #[cfg(test)]
+    pub fn extend(&mut self, peers: HashMap<NodeId, DhtBuckets>) {
+        self.map.extend(peers);
+    }
+}
+
+fn furthest_peer(node_id: NodeId, peers: &HashMap<NodeId, DhtBuckets>) -> Option<NodeId> {
+    let bucket = Bucket::from_be_bytes(node_id.into());
+    let node_ids = peers.keys().cloned().collect::<Vec<_>>();
+    let mut distances_from_us_sort: Vec<_> = node_ids
+        .iter()
+        .map(|node_id| {
+            let bucket_b = Bucket::from_be_bytes((*node_id).into());
+            KademliaDht::distance(&bucket, bucket_b)
+        })
+        .enumerate()
+        .collect();
+    distances_from_us_sort.sort_by_key(|(_, distance)| *distance);
+    distances_from_us_sort.last().map(|(i, _)| node_ids[*i])
+}
+
+impl Drop for WriteLockGuardPeers<'_> {
+    fn drop(&mut self) {
+        if let Some(max_light_peers) = self.max_light_peers {
+            let WriteLockGuardPeers { map, .. } = self;
+            while map.len() > max_light_peers {
+                let furthest = furthest_peer(self.node_id, map).unwrap();
+                Network::disconnect_peer(self.peers_infos.clone(), map, &furthest, None);
+                // TODO add error
+            }
+        }
+    }
 }
 
 impl LightPeers {
-    pub fn new(node_id: NodeId, connection_queue: Arc<ConnectionQueue>) -> Self {
+    pub fn new(
+        node_id: NodeId,
+        peers_infos: Arc<RwLock<IndexMap<NodeId, PeerInfo>>>,
+        connection_queue: Arc<ConnectionQueue>,
+        max_light_peers: Option<usize>,
+    ) -> Self {
         Self {
             node_id,
             light_peers: Default::default(),
+            peers_infos,
             connection_queue,
+            max_light_peers,
         }
     }
 
@@ -255,11 +320,20 @@ impl LightPeers {
         self.light_peers.read()
     }
 
-    pub fn write(&self) -> LockResult<RwLockWriteGuard<'_, HashMap<NodeId, DhtBuckets>>> {
-        self.light_peers.write()
+    pub fn write(&self) -> WriteLockGuardPeers<'_> {
+        WriteLockGuardPeers {
+            node_id: self.node_id,
+            map: self.light_peers.write().unwrap(),
+            peers_infos: self.peers_infos.clone(),
+            max_light_peers: self.max_light_peers,
+        }
     }
 
-    fn check_interesting_node_ids(&self, node_ids: Vec<NodeId>) -> Vec<NodeId> {
+    fn check_interesting_node_ids(&self, mut node_ids: Vec<NodeId>) -> Vec<NodeId> {
+        debug_assert!(node_ids.len() == node_ids.clone().into_iter().collect::<HashSet<_>>().len());
+        let light_peers = self.light_peers.read().unwrap();
+        node_ids.retain(|node_id| !light_peers.contains_key(node_id));
+
         let my_bucket = Bucket::from_be_bytes(self.node_id.into());
         let distances_from_us: Vec<_> = node_ids
             .iter()
@@ -268,18 +342,20 @@ impl LightPeers {
                 KademliaDht::distance(&my_bucket, bucket_b)
             })
             .collect();
+
         let mut distances_rev = {
-            let mut distances_from_us_clone: Vec<_> =
+            let mut distances_from_us_sort: Vec<_> =
                 distances_from_us.clone().into_iter().enumerate().collect();
-            distances_from_us_clone.sort_by_key(|(_, distance)| *distance);
-            distances_from_us_clone
-                .into_iter()
-                .rev()
-                .collect::<Vec<_>>()
+            distances_from_us_sort.sort_by_key(|(_, distance)| *distance);
+            // drop the furthest peers if they would not fit the max_light_peers.
+            if let Some(max_light_peers) = self.max_light_peers {
+                distances_from_us_sort.truncate(max_light_peers);
+            }
+            distances_from_us_sort.into_iter().rev().collect::<Vec<_>>()
         };
+
         let mut closest_indexes = Vec::new();
         {
-            let light_peers = self.light_peers.read().unwrap();
             for light_peer in light_peers.keys() {
                 if closest_indexes.len() >= node_ids.len() {
                     break;
@@ -322,7 +398,12 @@ impl LightPeers {
                 .map(|ConnectionData { node_id, .. }| *node_id)
                 .collect(),
         );
+        if node_ids.len() != node_ids.clone().into_iter().collect::<HashSet<_>>().len() {
+            return; // has duplicates. TODO: decrease reputation.
+        }
         for node_id in node_ids {
+            // Add connections and watch out for reaching the max number of connections.
+            // If it is reached, drop the connection with the furthest peers.
             self.connection_queue.maybe_add_connection(
                 nodes
                     .iter()
@@ -348,21 +429,46 @@ mod tests {
         let far_peer = NodeId::from([0xF0; 20]);
         let medium_peer = NodeId::from([0x80; 20]);
 
-        let light_peers = LightPeers::new(our_node_id, Arc::new(ConnectionQueue::new(0)));
-        light_peers.write().unwrap().extend(HashMap::from([
-            (
-                far_peer,
-                DhtBuckets {
-                    block: Default::default(),
-                },
-            ),
-            (
-                medium_peer,
-                DhtBuckets {
-                    block: Default::default(),
-                },
-            ),
-        ]));
+        let peers = vec![far_peer, medium_peer];
+
+        let peers_light: HashMap<_, _> = peers
+            .iter()
+            .map(|node_id| {
+                (
+                    *node_id,
+                    DhtBuckets {
+                        block: Default::default(),
+                    },
+                )
+            })
+            .collect();
+        let peers_infos: IndexMap<_, _> = peers
+            .iter()
+            .map(|node_id| {
+                (
+                    *node_id,
+                    PeerInfo {
+                        x509_certificate: vec![],
+                        sender: {
+                            let (tx, _) = flume::unbounded();
+                            tx.into()
+                        },
+                        infos: None,
+                        tx: {
+                            let (tx, _) = broadcast::channel(1);
+                            tx
+                        },
+                    },
+                )
+            })
+            .collect();
+        let light_peers = LightPeers::new(
+            our_node_id,
+            Arc::new(RwLock::new(peers_infos)),
+            Arc::new(ConnectionQueue::new(0)),
+            Some(peers.len()),
+        );
+        light_peers.write().extend(peers_light);
 
         // Test case 1: Node closer than all peers
         let close_node = NodeId::from([0x10; 20]); // Very close to our node
@@ -372,8 +478,7 @@ mod tests {
         // Test case 2: Multiple nodes, some closer some farther
         let very_close_node = NodeId::from([0x05; 20]);
         let very_far_node = NodeId::from([0xFF; 20]);
-        let nodes_to_check = vec![very_far_node, very_close_node];
-        let result = light_peers.check_interesting_node_ids(nodes_to_check);
+        let result = light_peers.check_interesting_node_ids(vec![very_far_node, very_close_node]);
         assert_eq!(
             result,
             vec![very_close_node],
