@@ -20,28 +20,20 @@ pub struct Mail {
 
 #[derive(Debug)]
 pub struct MailBox {
-    mails: Mails,
+    mails: Arc<Mutex<NodeMails>>,
     peers_latency: Arc<RwLock<PeersLatency>>,
     tx: Sender<Mail>,
     rx: Receiver<Mail>,
 }
 
+type NodeMail = (
+    oneshot::Sender<()>,
+    oneshot::Sender<Message>,
+    SubscribableMessage,
+);
+
 // TODO name doesn't make sense anymore
-type Mails = Arc<
-    Mutex<
-        HashMap<
-            NodeId,
-            HashMap<
-                u32,
-                (
-                    oneshot::Sender<()>,
-                    oneshot::Sender<Message>,
-                    SubscribableMessage,
-                ),
-            >,
-        >,
-    >,
->;
+type NodeMails = HashMap<NodeId, HashMap<u32, NodeMail>>;
 
 impl MailBox {
     pub fn new(max_latency_records: usize) -> MailBox {
@@ -87,8 +79,8 @@ impl MailBox {
     /// Store a [`SubscribableMessage`] sent to a [`NodeId`] and return a tx handle that should be used to delete it once the response is received.
     /// The mail can only last a maximum of `duration`.
     pub async fn store_mail(
-        duration: Duration,
-        mails: Mails,
+        deadline: Duration,
+        mails: Arc<Mutex<NodeMails>>,
         node_id: NodeId,
         message: SubscribableMessage,
         peers_latency: Arc<RwLock<PeersLatency>>,
@@ -97,6 +89,7 @@ impl MailBox {
         let (tx, rx) = oneshot::channel();
 
         let request_id = *message.request_id();
+        let is_ping = matches!(message, SubscribableMessage::Ping(_));
         mails
             .lock()
             .unwrap()
@@ -106,11 +99,12 @@ impl MailBox {
 
         let start = Instant::now();
 
-        let res = tokio::time::timeout(duration, async move {
-            // TODO: handle sending the message over a channel here in order to be able to see response.
+        let res = tokio::time::timeout(deadline, async move {
             let _ = rx.await;
-            let lat = Instant::now().duration_since(start);
-            peers_latency.write().unwrap().record(node_id, lat);
+            if is_ping {
+                let lat = Instant::now().duration_since(start);
+                peers_latency.write().unwrap().record(node_id, lat);
+            }
         })
         .await;
 
@@ -142,7 +136,11 @@ impl MailBox {
             .get_mut(node_id)
             .and_then(|map| map.remove(request_id))
         {
-            let _ = tx.send(());
+            let is_ping = matches!(message, SubscribableMessage::Ping(_));
+            let is_pong = matches!(received_message, Message::Pong(_));
+            if is_ping == is_pong {
+                let _ = tx.send(());
+            }
             let _ = callback.send(received_message);
             Some(message.into())
         } else {

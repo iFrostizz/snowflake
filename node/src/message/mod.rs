@@ -1,7 +1,7 @@
 use proto_lib::p2p::{
     message::Message, Accepted, AcceptedFrontier, AcceptedStateSummary, Ancestors, AppError,
     AppRequest, AppResponse, Chits, Get, GetAccepted, GetAcceptedFrontier, GetAcceptedStateSummary,
-    GetAncestors, GetStateSummaryFrontier, PullQuery, PushQuery, Put, StateSummaryFrontier,
+    GetAncestors, GetStateSummaryFrontier, Ping, PullQuery, PushQuery, Put, StateSummaryFrontier,
 };
 
 use crate::stats;
@@ -10,6 +10,7 @@ pub mod mail_box;
 pub mod pipeline;
 
 mod mini;
+use crate::utils::constants;
 pub use mini::MiniMessage;
 
 /// Some [`Message`] can be subscribed.
@@ -25,6 +26,7 @@ pub enum SubscribableMessage {
     PushQuery(PushQuery),
     PullQuery(PullQuery),
     AppRequest(AppRequest),
+    Ping(Ping),
 }
 
 impl SubscribableMessage {
@@ -39,6 +41,7 @@ impl SubscribableMessage {
             | Message::Chits(Chits { request_id, .. })
             | Message::AppResponse(AppResponse { request_id, .. })
             | Message::AppError(AppError { request_id, .. }) => Some(request_id),
+            Message::Pong(_) => Some(&0),
             _ => None,
         }
     }
@@ -62,6 +65,7 @@ impl SubscribableMessage {
             | SubscribableMessage::PushQuery(PushQuery { request_id, .. })
             | SubscribableMessage::PullQuery(PullQuery { request_id, .. })
             | SubscribableMessage::AppRequest(AppRequest { request_id, .. }) => request_id,
+            SubscribableMessage::Ping(_) => &0,
         }
     }
 
@@ -83,6 +87,7 @@ impl SubscribableMessage {
             | SubscribableMessage::PushQuery(PushQuery { deadline, .. })
             | SubscribableMessage::PullQuery(PullQuery { deadline, .. })
             | SubscribableMessage::AppRequest(AppRequest { deadline, .. }) => *deadline,
+            SubscribableMessage::Ping(_) => constants::DEFAULT_DEADLINE,
         }
     }
 
@@ -98,6 +103,7 @@ impl SubscribableMessage {
                 | Message::PushQuery(_)
                 | Message::PullQuery(_)
                 | Message::AppRequest(_)
+                | Message::Ping(_)
         )
     }
 
@@ -130,6 +136,7 @@ impl From<SubscribableMessage> for Message {
             SubscribableMessage::PushQuery(push_query) => Message::PushQuery(push_query),
             SubscribableMessage::PullQuery(pull_query) => Message::PullQuery(pull_query),
             SubscribableMessage::AppRequest(app_request) => Message::AppRequest(app_request),
+            SubscribableMessage::Ping(ping) => Message::Ping(ping),
         }
     }
 }
