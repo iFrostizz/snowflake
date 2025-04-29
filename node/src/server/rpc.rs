@@ -707,6 +707,7 @@ mod tests {
             intervals: Intervals {
                 ping: 0,
                 get_peer_list: 0,
+                find_nodes: 0,
             },
             back_off: BackoffParams {
                 initial_duration: Default::default(),

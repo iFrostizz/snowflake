@@ -4,10 +4,12 @@ use crate::message::{mail_box::MailBox, SubscribableMessage};
 use crate::net::light::{LightNetwork, LightNetworkConfig};
 use crate::net::node::{AddPeerError, NetworkConfig};
 use crate::net::{
+    light,
     node::NodeError,
     queue::{ConnectionData, ConnectionQueue},
     HandshakeInfos, Network, Peer, PeerMessage,
 };
+use crate::server::msg::AppRequestMessage;
 use crate::server::peers::{PeerInfo, PeerLessInfo};
 use crate::stats::{self, Metrics};
 use crate::utils::{
@@ -23,6 +25,7 @@ use prost::Message as _;
 use proto_lib::p2p::{
     message::Message, AppGossip, BloomFilter, ClaimedIpPort, GetPeerList, PeerList,
 };
+use proto_lib::sdk;
 use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::sync::{Arc, RwLock};
@@ -512,7 +515,7 @@ impl Node {
 
     async fn send_tx(self: &Arc<Node>, signed_tx: Vec<u8>) -> Result<(), NodeError> {
         let chain_id = self.network.config.c_chain_id.as_ref().to_vec();
-        let push_gossip = proto_lib::sdk::PushGossip {
+        let push_gossip = sdk::PushGossip {
             gossip: vec![signed_tx],
         };
 
@@ -549,11 +552,15 @@ impl Node {
 
         let mut get_peer_list_interval =
             time::interval(Duration::from_millis(intervals.get_peer_list));
+        let mut find_nodes_interval = time::interval(Duration::from_millis(intervals.find_nodes));
 
         loop {
             tokio::select! {
                 _ = get_peer_list_interval.tick() => {
                     self.get_peer_list();
+                }
+                _ = find_nodes_interval.tick() => {
+                    self.find_nodes();
                 }
                 _ = rx.recv() => {
                     return Ok(())
@@ -582,6 +589,37 @@ impl Node {
                 self.network.peers_infos.clone(),
                 &mut self.light_network.light_peers.write().map,
                 vec![(node_id, Some(&NodeError::SendError))],
+            );
+        }
+    }
+
+    fn find_nodes(self: &Arc<Node>) {
+        let light_peers = self.light_network.light_peers.read().unwrap();
+        let Some(node_id) = light::closest_peer(self.network.node_id, &light_peers) else {
+            return;
+        };
+        let peers_infos = self.network.peers_infos.read().unwrap();
+        let Some(random_peer) = peers_infos.get(&node_id) else {
+            return;
+        };
+        if random_peer
+            .sender
+            .send(
+                AppRequestMessage::encode(
+                    &self.network.config.c_chain_id,
+                    sdk::FindNode {
+                        // TODO we really need conversion helpers.
+                        bucket: self.network.node_id.as_ref().to_vec(),
+                    },
+                )
+                .unwrap(),
+            )
+            .is_err()
+        {
+            Network::remove_peers(
+                self.network.peers_infos.clone(),
+                &mut self.light_network.light_peers.write().map,
+                vec![(&node_id, Some(&NodeError::SendError))],
             );
         }
     }

@@ -88,6 +88,10 @@ pub struct Args {
     #[arg(long, default_value_t = 60000)]
     pub intervals_get_peer_list_ms: u64,
 
+    /// Intervals configuration
+    #[arg(long, default_value_t = 60000)]
+    pub intervals_find_nodes: u64,
+
     #[arg(long, default_value_t = 9000)]
     pub metrics_port: u16,
 
@@ -132,6 +136,7 @@ impl Args {
         Intervals {
             ping: self.intervals_ping_ms,
             get_peer_list: self.intervals_get_peer_list_ms,
+            find_nodes: self.intervals_find_nodes,
         }
     }
 

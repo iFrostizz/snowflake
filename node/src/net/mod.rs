@@ -93,6 +93,7 @@ pub struct Network {
 pub struct Intervals {
     pub ping: u64,
     pub get_peer_list: u64,
+    pub find_nodes: u64,
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -568,7 +569,7 @@ impl Peer {
                 }
             }
             Message::Pong(_pong) => {}
-            _ => log::debug!("unsupported message {} {}", mini, self.identity.node_id),
+            _ => log::trace!("unsupported message {} {}", mini, self.identity.node_id),
         };
 
         Ok(())
@@ -581,7 +582,7 @@ impl Peer {
         sender: &PeerSender,
         light_message: sdk::light_request::Message,
     ) -> Result<(), NodeError> {
-        log::debug!("received light message {light_message:?}");
+        log::trace!("received light message {light_message:?}");
         let chain_id = c_chain_id.as_ref().to_vec();
         let res = match light_message {
             sdk::light_request::Message::LightHandshake(LightHandshake { buckets }) => {
@@ -664,7 +665,7 @@ impl Peer {
         light_request: sdk::light_request::Message,
         light_response: sdk::light_response::Message,
     ) -> Result<(), NodeError> {
-        log::debug!("received light response {light_response:?}");
+        log::trace!("received light response {light_response:?}");
 
         match light_response {
             sdk::light_response::Message::Ack(_) => {}

@@ -1071,7 +1071,6 @@ impl AccessList {
         } else {
             let length = Rlp::decode_list(bytes, &mut cursor)?;
             let start_cursor = cursor;
-            dbg!(&bytes[cursor..]);
             let mut access_list = Vec::new();
             while cursor < start_cursor + length as usize {
                 let address = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;

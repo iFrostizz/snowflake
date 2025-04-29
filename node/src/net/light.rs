@@ -246,7 +246,7 @@ impl DhtContent<u64, StatelessBlock> for DhtBlocks {
 #[derive(Debug, Clone)]
 pub struct LightPeers {
     node_id: NodeId,
-    light_peers: Arc<RwLock<HashMap<NodeId, DhtBuckets>>>,
+    light_peers: Arc<RwLock<IndexMap<NodeId, DhtBuckets>>>,
     peers_infos: Arc<RwLock<IndexMap<NodeId, PeerInfo>>>,
     connection_queue: Arc<ConnectionQueue>,
     max_light_peers: Option<usize>,
@@ -256,7 +256,7 @@ pub struct LightPeers {
 #[derive(Debug)]
 pub struct WriteLockGuardPeers<'a> {
     node_id: NodeId,
-    pub map: RwLockWriteGuard<'a, HashMap<NodeId, DhtBuckets>>,
+    pub map: RwLockWriteGuard<'a, IndexMap<NodeId, DhtBuckets>>,
     peers_infos: Arc<RwLock<IndexMap<NodeId, PeerInfo>>>,
     max_light_peers: Option<usize>,
 }
@@ -272,19 +272,32 @@ impl WriteLockGuardPeers<'_> {
     }
 }
 
-fn furthest_peer(node_id: NodeId, peers: &HashMap<NodeId, DhtBuckets>) -> Option<NodeId> {
+pub fn closest_peer(node_id: NodeId, peers: &IndexMap<NodeId, DhtBuckets>) -> Option<NodeId> {
     let bucket = Bucket::from_be_bytes(node_id.into());
     let node_ids = peers.keys().cloned().collect::<Vec<_>>();
-    let mut distances_from_us_sort: Vec<_> = node_ids
+    node_ids
         .iter()
         .map(|node_id| {
             let bucket_b = Bucket::from_be_bytes((*node_id).into());
             KademliaDht::distance(&bucket, bucket_b)
         })
         .enumerate()
-        .collect();
-    distances_from_us_sort.sort_by_key(|(_, distance)| *distance);
-    distances_from_us_sort.last().map(|(i, _)| node_ids[*i])
+        .min_by_key(|(_, distance)| *distance)
+        .map(|(i, _)| node_ids[i])
+}
+
+pub fn furthest_peer(node_id: NodeId, peers: &IndexMap<NodeId, DhtBuckets>) -> Option<NodeId> {
+    let bucket = Bucket::from_be_bytes(node_id.into());
+    let node_ids = peers.keys().cloned().collect::<Vec<_>>();
+    node_ids
+        .iter()
+        .map(|node_id| {
+            let bucket_b = Bucket::from_be_bytes((*node_id).into());
+            KademliaDht::distance(&bucket, bucket_b)
+        })
+        .enumerate()
+        .max_by_key(|(_, distance)| *distance)
+        .map(|(i, _)| node_ids[i])
 }
 
 impl Drop for WriteLockGuardPeers<'_> {
@@ -316,7 +329,7 @@ impl LightPeers {
         }
     }
 
-    pub fn read(&self) -> LockResult<RwLockReadGuard<'_, HashMap<NodeId, DhtBuckets>>> {
+    pub fn read(&self) -> LockResult<RwLockReadGuard<'_, IndexMap<NodeId, DhtBuckets>>> {
         self.light_peers.read()
     }
 

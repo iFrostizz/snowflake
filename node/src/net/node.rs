@@ -363,7 +363,7 @@ impl Network {
 
     pub fn remove_peers(
         peers_infos: Arc<RwLock<IndexMap<NodeId, PeerInfo>>>,
-        light_peers: &mut RwLockWriteGuard<HashMap<NodeId, DhtBuckets>>,
+        light_peers: &mut RwLockWriteGuard<IndexMap<NodeId, DhtBuckets>>,
         node_ids_errs: Vec<(&NodeId, Option<&NodeError>)>,
     ) {
         for (node_id, err) in &node_ids_errs {
@@ -390,14 +390,14 @@ impl Network {
 
         {
             for (node_id, _) in &node_ids_errs {
-                light_peers.remove(node_id);
+                light_peers.swap_remove(*node_id);
             }
         }
     }
 
     pub fn disconnect_peer(
         peers_infos: Arc<RwLock<IndexMap<NodeId, PeerInfo>>>,
-        light_peers: &mut RwLockWriteGuard<HashMap<NodeId, DhtBuckets>>,
+        light_peers: &mut RwLockWriteGuard<IndexMap<NodeId, DhtBuckets>>,
         node_id: &NodeId,
         err: Option<&NodeError>,
     ) {

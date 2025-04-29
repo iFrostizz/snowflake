@@ -76,7 +76,7 @@ impl KademliaDht {
     /// Find up to `n` unique nodes that are the closest to the `bucket`.
     fn find_closest_nodes(
         &self,
-        nodes: RwLockReadGuard<HashMap<NodeId, DhtBuckets>>,
+        nodes: RwLockReadGuard<IndexMap<NodeId, DhtBuckets>>,
         bucket: &Bucket,
         excluding: &[NodeId],
         mut n: usize,
