@@ -1,30 +1,34 @@
 use crate::dht::{LightMessage, LightResult};
 use crate::id::{Id, NodeId};
 use crate::message::{mail_box::MailBox, SubscribableMessage};
-use crate::net::light::LightNetwork;
-use crate::net::node::AddPeerError;
+use crate::net::light::{LightNetwork, LightNetworkConfig};
+use crate::net::node::{AddPeerError, NetworkConfig};
 use crate::net::{
+    light,
     node::NodeError,
     queue::{ConnectionData, ConnectionQueue},
     HandshakeInfos, Network, Peer, PeerMessage,
 };
+use crate::server::msg::AppRequestMessage;
 use crate::server::peers::{PeerInfo, PeerLessInfo};
 use crate::stats::{self, Metrics};
 use crate::utils::{
     bloom::{Filter, ReadFilter, ViewFilter},
     constants,
-    ip::{ip_from_octets, ip_octets},
+    ip::ip_octets,
 };
 use flume::Receiver;
 use futures::future;
 use indexmap::IndexMap;
+use openssl::x509;
 use prost::Message as _;
 use proto_lib::p2p::{
     message::Message, AppGossip, BloomFilter, ClaimedIpPort, GetPeerList, PeerList,
 };
+use proto_lib::sdk;
 use std::collections::HashSet;
-use std::net::{SocketAddr, ToSocketAddrs};
-use std::sync::Arc;
+use std::net::SocketAddr;
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
 use tokio::sync::{broadcast, OwnedSemaphorePermit, Semaphore};
@@ -34,8 +38,7 @@ use tokio::time::{self};
 pub struct Node {
     pub(crate) network: Arc<Network>,
     pub(crate) light_network: LightNetwork,
-    connection_queue: ConnectionQueue,
-    // TODO for now, we only use it for subscribable messages, but they are not currently supported.
+    connection_queue: Arc<ConnectionQueue>,
     // TODO We should maybe handle ping / pong messages in order to build peer the latency ranking.
     mail_box: Arc<MailBox>,
 }
@@ -62,27 +65,41 @@ pub enum SinglePickerConfig {
 
 impl Node {
     pub fn new(
-        mut network: Network,
+        network_config: NetworkConfig,
         max_concurrent: usize,
         max_latency_records: usize,
         sync_headers: bool,
     ) -> Self {
+        let bytes = std::fs::read(&network_config.cert_path).expect("failed to read cert");
+        let x509 = x509::X509::from_pem(&bytes).unwrap();
+        let cert = x509.to_der().unwrap();
+        let node_id = NodeId::from_cert(cert);
+
+        let connection_queue = Arc::new(ConnectionQueue::new(max_concurrent));
+        // TODO should refactor. Here light_peers depends on network and network on light_peers.
+        //  We should only use what is needed in the subset of network and light_peers, and those
+        //  two should be independent.
+        let peers_infos = Arc::new(RwLock::new(IndexMap::new()));
+        let network = Network::new(network_config, node_id, peers_infos.clone()).unwrap();
         let mail_box = MailBox::new(max_latency_records);
         let light_network = LightNetwork::new(
             network.node_id,
-            network.peers_infos.clone(),
+            peers_infos,
+            connection_queue.clone(),
             mail_box.tx().clone(),
             network.config.c_chain_id.clone(),
-            sync_headers,
-            10,
-            3,
+            LightNetworkConfig {
+                sync_headers,
+                max_lookups: 10,
+                alpha: 3,
+            },
+            network.config.max_light_peers,
         );
 
-        network.todo_remove_attach_light_peers(light_network.light_peers.clone());
         Self {
             network: Arc::new(network),
             light_network,
-            connection_queue: ConnectionQueue::new(max_concurrent),
+            connection_queue,
             mail_box: Arc::new(mail_box),
         }
     }
@@ -201,12 +218,18 @@ impl Node {
             }
             Err(err) => {
                 log::debug!("error on connecting with back off: {err}");
-                self.network.remove_peers(vec![(&data.node_id, Some(&err))]);
+                Network::remove_peers(
+                    self.network.peers_infos.clone(),
+                    &mut self.light_network.light_peers.write().map,
+                    vec![(&data.node_id, Some(&err))],
+                );
                 return Err(err);
             }
         };
 
         let node = self.clone();
+        let peers_infos = self.network.peers_infos.clone();
+        let light_peers = self.light_network.light_peers.clone();
         tokio::spawn(async move {
             let node_id = *peer.node_id();
             let err = match node.loop_peer(hs_permit, peer).await {
@@ -221,7 +244,11 @@ impl Node {
                 _ => None,
             };
 
-            node.network.remove_peers(vec![(&node_id, err.as_ref())]);
+            Network::remove_peers(
+                peers_infos,
+                &mut light_peers.write().map,
+                vec![(&node_id, err.as_ref())],
+            );
             node.connection_queue.maybe_add_connection(data);
         });
 
@@ -267,11 +294,17 @@ impl Node {
         let c_chain_id = self.network.config.c_chain_id.clone();
 
         let sender = peer.sender().clone();
+        let (tx, _) = broadcast::channel(1);
+        // TODO: consider adding the tx here to be able to remotely disconnect a peer.
         self.network
-            .add_peer(node_id, peer.x509_certificate().to_owned(), sender.clone())
+            .add_peer(
+                node_id,
+                peer.x509_certificate().to_owned(),
+                sender.clone(),
+                tx.clone(),
+            )
             .await;
 
-        let (tx, _) = broadcast::channel(1);
         let manage_peer = self.manage_peer(
             peer.rpn().clone(),
             peer.rpl().clone(),
@@ -307,6 +340,7 @@ impl Node {
             .is_some_and(Option::is_some)
         {
             // is a light bootstrapper, we need to initiate a handshake.
+            // TODO: remove?
         }
 
         let mut tasks = vec![manage_peer, write_peer, read_peer, hand_peer];
@@ -481,7 +515,7 @@ impl Node {
 
     async fn send_tx(self: &Arc<Node>, signed_tx: Vec<u8>) -> Result<(), NodeError> {
         let chain_id = self.network.config.c_chain_id.as_ref().to_vec();
-        let push_gossip = proto_lib::sdk::PushGossip {
+        let push_gossip = sdk::PushGossip {
             gossip: vec![signed_tx],
         };
 
@@ -518,11 +552,15 @@ impl Node {
 
         let mut get_peer_list_interval =
             time::interval(Duration::from_millis(intervals.get_peer_list));
+        let mut find_nodes_interval = time::interval(Duration::from_millis(intervals.find_nodes));
 
         loop {
             tokio::select! {
                 _ = get_peer_list_interval.tick() => {
                     self.get_peer_list();
+                }
+                _ = find_nodes_interval.tick() => {
+                    self.find_nodes();
                 }
                 _ = rx.recv() => {
                     return Ok(())
@@ -547,8 +585,42 @@ impl Node {
             }))
             .is_err()
         {
-            self.network
-                .remove_peers(vec![(node_id, Some(&NodeError::SendError))]);
+            Network::remove_peers(
+                self.network.peers_infos.clone(),
+                &mut self.light_network.light_peers.write().map,
+                vec![(node_id, Some(&NodeError::SendError))],
+            );
+        }
+    }
+
+    fn find_nodes(self: &Arc<Node>) {
+        let light_peers = self.light_network.light_peers.read().unwrap();
+        let Some(node_id) = light::closest_peer(self.network.node_id, &light_peers) else {
+            return;
+        };
+        let peers_infos = self.network.peers_infos.read().unwrap();
+        let Some(random_peer) = peers_infos.get(&node_id) else {
+            return;
+        };
+        if random_peer
+            .sender
+            .send(
+                AppRequestMessage::encode(
+                    &self.network.config.c_chain_id,
+                    sdk::FindNode {
+                        // TODO we really need conversion helpers.
+                        bucket: self.network.node_id.as_ref().to_vec(),
+                    },
+                )
+                .unwrap(),
+            )
+            .is_err()
+        {
+            Network::remove_peers(
+                self.network.peers_infos.clone(),
+                &mut self.light_network.light_peers.write().map,
+                vec![(&node_id, Some(&NodeError::SendError))],
+            );
         }
     }
 
@@ -603,41 +675,15 @@ impl Node {
     }
 
     fn try_connect_from_claimed(self: &Arc<Node>, claimed: ClaimedIpPort) {
-        let x509_certificate = claimed.x509_certificate;
-        let node_id = NodeId::from_cert(x509_certificate.clone());
-        match self.network.check_add_peer(&node_id) {
-            Ok(()) => match claimed.ip_port.try_into() {
-                Ok(port) => match ip_from_octets(claimed.ip_addr) {
-                    Ok(ip_addr) => {
-                        log::debug!("got peer list ip {ip_addr}");
-
-                        match (ip_addr, port)
-                            .to_socket_addrs()
-                            .map(|mut socks| socks.next().ok_or("empty socket"))
-                        {
-                            Ok(Ok(socket_addr)) => {
-                                self.connection_queue.add_connection(ConnectionData {
-                                    node_id,
-                                    socket_addr,
-                                    timestamp: claimed.timestamp,
-                                    x509_certificate,
-                                });
-                            }
-                            err => {
-                                log::error!("{err:?} {node_id}");
-                            }
-                        }
-                    }
-                    Err(err) => {
-                        log::error!("err when ip {err}");
-                    }
-                },
-                Err(err) => {
-                    log::error!("err when converting port {err}");
+        let connection_data: Result<ConnectionData, _> = claimed.try_into();
+        if let Ok(connection_data) = connection_data {
+            let node_id = &connection_data.node_id;
+            match self.network.check_add_peer(node_id) {
+                Ok(()) => {
+                    self.connection_queue
+                        .add_connection_without_retries(connection_data);
                 }
-            },
-            Err(err) => {
-                log::debug!("{err} {node_id}");
+                Err(err) => log::debug!("{err} {node_id}"),
             }
         }
     }
@@ -787,7 +833,11 @@ impl Node {
         let handles = handles.into_iter().map(|handle| tokio::spawn(handle));
 
         if !to_remove.is_empty() {
-            self.network.remove_peers(to_remove);
+            Network::remove_peers(
+                self.network.peers_infos.clone(),
+                &mut self.light_network.light_peers.write().map,
+                to_remove,
+            );
         }
 
         let mut messages = Vec::new();
@@ -862,7 +912,11 @@ impl Node {
             .unwrap()
             .contains_key(node_id);
         if !is_bootstrapper && remove_peer {
-            self.network.remove_peers(vec![(node_id, err.as_ref())]);
+            Network::remove_peers(
+                self.network.peers_infos.clone(),
+                &mut self.light_network.light_peers.write().map,
+                vec![(node_id, err.as_ref())],
+            );
         }
 
         None

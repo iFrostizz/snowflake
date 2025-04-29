@@ -88,6 +88,10 @@ pub struct Args {
     #[arg(long, default_value_t = 60000)]
     pub intervals_get_peer_list_ms: u64,
 
+    /// Intervals configuration
+    #[arg(long, default_value_t = 60000)]
+    pub intervals_find_nodes: u64,
+
     #[arg(long, default_value_t = 9000)]
     pub metrics_port: u16,
 
@@ -96,6 +100,9 @@ pub struct Args {
 
     #[arg(long, default_value = "50")]
     pub max_peers: Option<usize>,
+
+    #[arg(long, default_value = "50")]
+    pub max_light_peers: Option<usize>,
 
     /// RPC port
     #[arg(long, default_value_t = 9781)]
@@ -129,6 +136,7 @@ impl Args {
         Intervals {
             ping: self.intervals_ping_ms,
             get_peer_list: self.intervals_get_peer_list_ms,
+            find_nodes: self.intervals_find_nodes,
         }
     }
 
@@ -170,6 +178,7 @@ impl Args {
             bucket_size: 500_000,           // 500 kB
             max_concurrent_handshakes: self.max_handshakes,
             max_peers: self.max_peers,
+            max_light_peers: self.max_light_peers,
             bootstrappers: Bootstrappers::new(
                 &self.bootstrappers_path,
                 &self.light_bootstrappers_path,

@@ -36,9 +36,6 @@ services:
       dockerfile: docker/Dockerfile
     image: snowflake:latest
     hostname: peer1
-    ports:
-      - "3001:3001"
-      - "4001:4001"
     network_mode: host
     volumes:
       - snowflake:/shared
@@ -52,9 +49,6 @@ services:
       dockerfile: docker/Dockerfile
     image: snowflake:latest
     hostname: peer2
-    ports:
-      - "3002:3002"
-      - "4002:4002"
     network_mode: host
     volumes:
       - snowflake:/shared
@@ -68,9 +62,6 @@ services:
       dockerfile: docker/Dockerfile
     image: snowflake:latest
     hostname: peer3
-    ports:
-      - "3003:3003"
-      - "4003:4003"
     network_mode: host
     volumes:
       - snowflake:/shared

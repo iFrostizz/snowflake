@@ -73,18 +73,13 @@ pub mod light_response {
         #[prost(message, tag = "1")]
         Ack(super::Ack),
         #[prost(message, tag = "2")]
-        Nodes(super::Nodes),
+        Nodes(super::super::p2p::PeerList),
         #[prost(message, tag = "3")]
         Value(super::Value),
     }
 }
 #[derive(Clone, Copy, PartialEq, ::prost::Message)]
 pub struct Ack {}
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct Nodes {
-    #[prost(bytes = "vec", repeated, tag = "1")]
-    pub node_ids: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
-}
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Value {
     #[prost(bytes = "vec", tag = "1")]

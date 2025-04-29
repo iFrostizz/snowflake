@@ -20,8 +20,8 @@ impl From<sdk::Value> for sdk::light_response::Message {
     }
 }
 
-impl From<sdk::Nodes> for sdk::light_response::Message {
-    fn from(message: sdk::Nodes) -> Self {
+impl From<p2p::PeerList> for sdk::light_response::Message {
+    fn from(message: p2p::PeerList) -> Self {
         Self::Nodes(message)
     }
 }

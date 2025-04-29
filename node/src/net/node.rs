@@ -18,13 +18,13 @@ use crate::utils::{
 use flume::{Receiver, Sender};
 use futures::future;
 use indexmap::IndexMap;
-use openssl::x509;
 use prost::EncodeError;
 use proto_lib::p2p::{self};
 use proto_lib::sdk;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::RwLockWriteGuard;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
@@ -83,6 +83,7 @@ pub struct NetworkConfig {
     pub bucket_size: usize,
     pub max_concurrent_handshakes: usize,
     pub max_peers: Option<usize>,
+    pub max_light_peers: Option<usize>,
     pub bootstrappers: HashMap<NodeId, Option<DhtBuckets>>,
     pub dht_buckets: DhtBuckets,
 }
@@ -125,15 +126,12 @@ pub enum AddPeerError {
 }
 
 impl Network {
-    pub fn todo_remove_attach_light_peers(
-        &mut self,
-        light_peers: Arc<RwLock<HashMap<NodeId, DhtBuckets>>>,
-    ) {
-        self.light_peers = light_peers;
-    }
-
     /// Initiate the network by specifying this node's IP
-    pub fn new(config: NetworkConfig) -> Result<Self, ()> {
+    pub fn new(
+        config: NetworkConfig,
+        node_id: NodeId,
+        peers_infos: Arc<RwLock<IndexMap<NodeId, PeerInfo>>>,
+    ) -> Result<Self, ()> {
         let client_config = Arc::new(config::client_config(
             &config.cert_path,
             &config.pem_key_path,
@@ -165,11 +163,6 @@ impl Network {
         let bloom_filter = Filter::new(8, 1000).expect("usage of wrong constants");
         let bloom_filter = RwLock::new(bloom_filter);
 
-        let bytes = std::fs::read(&config.cert_path).expect("failed to read cert");
-        let x509 = x509::X509::from_pem(&bytes).unwrap();
-        let cert = x509.to_der().unwrap();
-        let node_id = NodeId::from_cert(cert);
-
         let out_pipeline = Arc::new(Pipeline::new(
             config.max_throughput,
             config.max_out_queue_size,
@@ -179,7 +172,6 @@ impl Network {
         let handshake_semaphore = Arc::new(Semaphore::new(config.max_concurrent_handshakes));
         let bootstrappers = RwLock::new(config.bootstrappers.clone());
 
-        let peers_infos = Arc::new(RwLock::new(IndexMap::new()));
         let buckets = config.dht_buckets.clone();
 
         Ok(Self {
@@ -189,7 +181,6 @@ impl Network {
             client,
             client_config,
             peers_infos,
-            light_peers: Default::default(),
             bootstrappers,
             signed_ip,
             bloom_filter,
@@ -268,6 +259,7 @@ impl Network {
         node_id: NodeId,
         x509_certificate: Vec<u8>,
         snp: PeerSender,
+        tx: broadcast::Sender<()>,
     ) {
         let mut peers = self.peers_infos.write().unwrap();
         if peers.get(&node_id).is_none() {
@@ -277,6 +269,7 @@ impl Network {
                     x509_certificate,
                     sender: snp, // TODO issue here, the passed snp won't be used if already here
                     infos: None,
+                    tx,
                 },
             );
             stats::connected_peers::inc();
@@ -368,7 +361,11 @@ impl Network {
             .map_err(|_| NodeError::SendError)
     }
 
-    pub fn remove_peers(self: &Arc<Network>, node_ids_errs: Vec<(&NodeId, Option<&NodeError>)>) {
+    pub fn remove_peers(
+        peers_infos: Arc<RwLock<IndexMap<NodeId, PeerInfo>>>,
+        light_peers: &mut RwLockWriteGuard<IndexMap<NodeId, DhtBuckets>>,
+        node_ids_errs: Vec<(&NodeId, Option<&NodeError>)>,
+    ) {
         for (node_id, err) in &node_ids_errs {
             if let Some(err) = err {
                 log::debug!("removing peer {}, reason: {}", node_id, err);
@@ -378,10 +375,11 @@ impl Network {
         }
 
         {
-            let mut peers_write = self.peers_infos.write().unwrap();
+            let mut peers_write = peers_infos.write().unwrap();
 
             for (node_id, _) in &node_ids_errs {
                 if let Some(peer) = peers_write.swap_remove(*node_id) {
+                    let _ = peer.tx.send(());
                     if peer.handshook() {
                         stats::handshook_peers::dec();
                     }
@@ -391,12 +389,19 @@ impl Network {
         }
 
         {
-            let mut peers_write = self.light_peers.write().unwrap();
-
             for (node_id, _) in &node_ids_errs {
-                peers_write.remove(node_id);
+                light_peers.swap_remove(*node_id);
             }
         }
+    }
+
+    pub fn disconnect_peer(
+        peers_infos: Arc<RwLock<IndexMap<NodeId, PeerInfo>>>,
+        light_peers: &mut RwLockWriteGuard<IndexMap<NodeId, DhtBuckets>>,
+        node_id: &NodeId,
+        err: Option<&NodeError>,
+    ) {
+        Self::remove_peers(peers_infos, light_peers, vec![(node_id, err)]);
     }
 
     pub fn has_reached_max_peers(&self, peers_infos: &IndexMap<NodeId, PeerInfo>) -> bool {

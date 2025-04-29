@@ -1,12 +1,15 @@
 use crate::id::NodeId;
 use crate::node::Node;
+use crate::utils::ip::{ip_from_octets, ip_octets};
 use flume::{Receiver, Sender};
+use proto_lib::p2p::ClaimedIpPort;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tokio::sync::{broadcast, Semaphore};
 
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct ConnectionData {
     pub node_id: NodeId,
     pub socket_addr: SocketAddr,
@@ -16,9 +19,50 @@ pub struct ConnectionData {
     pub x509_certificate: Vec<u8>,
 }
 
+impl TryFrom<ClaimedIpPort> for ConnectionData {
+    type Error = ();
+
+    fn try_from(value: ClaimedIpPort) -> Result<Self, Self::Error> {
+        // TODO error handling
+        let x509_certificate = value.x509_certificate;
+        let node_id = NodeId::from_cert(x509_certificate.clone());
+        let port = value.ip_port.try_into().map_err(|_| ())?;
+        let ip = ip_from_octets(value.ip_addr).map_err(|_| ())?;
+        let socket_addr = SocketAddr::new(ip, port);
+        let timestamp = value.timestamp;
+
+        Ok(ConnectionData {
+            node_id,
+            socket_addr,
+            timestamp,
+            x509_certificate,
+        })
+    }
+}
+
+impl From<ConnectionData> for ClaimedIpPort {
+    fn from(value: ConnectionData) -> Self {
+        let x509_certificate = value.x509_certificate;
+        let socket_addr = value.socket_addr;
+        let ip_addr = ip_octets(socket_addr.ip());
+        let ip_port = socket_addr.port().into();
+        let timestamp = value.timestamp;
+
+        ClaimedIpPort {
+            x509_certificate,
+            ip_addr,
+            ip_port,
+            timestamp,
+            signature: vec![],
+            tx_id: vec![],
+        }
+    }
+}
+
 /// A connection queue to manage and control concurrent connections
 /// This is to prevent too much concurrent connection and to remember about those which
 /// have been tried so far.
+#[derive(Debug)]
 pub struct ConnectionQueue {
     semaphore: Arc<Semaphore>,
     connections: RwLock<HashMap<NodeId, usize>>,
@@ -48,6 +92,10 @@ impl ConnectionQueue {
     /// It tries to connect to the oldest connections and never exceeds
     /// the max amount of concurrent connections.
     pub async fn watch_connections(&self, node: &Arc<Node>, mut rx: broadcast::Receiver<()>) {
+        // TODO: this is broken because the retries are never written.
+        //  We should fix that.
+        //  The retry logic is good, it will allow us to handle the backoff here and check that
+        //  the peer can still be added on every try. Allows to never overshoot the max peers.
         loop {
             tokio::select! {
                 res = self.rcd.recv_async() => {
@@ -89,7 +137,10 @@ impl ConnectionQueue {
     pub fn maybe_add_connection(&self, data: ConnectionData) -> bool {
         let maybe_retries = self.connections.read().unwrap().get(&data.node_id).cloned();
         match maybe_retries {
-            None => false,
+            None => {
+                self._add_connection(data, 0);
+                true
+            }
             Some(retries) => {
                 if retries >= Self::MAX_RETRIES {
                     self.connections.write().unwrap().remove(&data.node_id);
@@ -102,15 +153,12 @@ impl ConnectionQueue {
         }
     }
 
-    pub fn add_connection(&self, data: ConnectionData) -> bool {
-        let maybe_retries = self.connections.read().unwrap().get(&data.node_id).cloned();
-        match maybe_retries {
-            None => {
-                self._add_connection(data, 0);
-                true
-            }
-            Some(_) => false,
-        }
+    /// Bypasses the connection queue and tries to connect to the node.
+    /// Returns true if it was added.
+    pub fn add_connection_without_retries(&self, data: ConnectionData) -> bool {
+        self.connections.write().unwrap().remove(&data.node_id);
+        self.scd.send(data).expect("receivers dropped");
+        true
     }
 
     fn _add_connection(&self, data: ConnectionData, retries: usize) {

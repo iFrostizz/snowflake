@@ -1,4 +1,3 @@
-use crate::net::Network;
 use crate::node::Node;
 use crate::server::{config, Server};
 use cli::Args;
@@ -52,10 +51,9 @@ async fn main() -> Result<(), NodeError> {
     log::debug!("args: {:?}", args);
 
     let network_config = args.network_config();
-    let network = Network::new(network_config).unwrap();
 
     let node = Arc::new(Node::new(
-        network,
+        network_config,
         args.max_out_connections,
         args.max_latency_records,
         args.sync_headers,

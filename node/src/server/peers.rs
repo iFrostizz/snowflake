@@ -5,7 +5,7 @@ use crate::{
 };
 use flume::Sender;
 use proto_lib::p2p::{message::Message, Ping};
-use tokio::sync::oneshot;
+use tokio::sync::{broadcast, oneshot};
 
 // TODO better name
 #[derive(Debug)]
@@ -18,6 +18,7 @@ pub struct PeerInfo {
     pub x509_certificate: Vec<u8>,
     pub sender: PeerSender,
     pub infos: Option<HandshakeInfos>,
+    pub tx: broadcast::Sender<()>,
 }
 
 impl PeerInfo {

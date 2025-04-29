@@ -672,7 +672,6 @@ mod tests {
     use crate::net::node::NetworkConfig;
     use crate::net::BackoffParams;
     use crate::net::Intervals;
-    use crate::net::Network;
     use crate::node::Node;
     use alloy::providers::{network::EthereumWallet, Provider, ProviderBuilder};
     use alloy::signers::local::PrivateKeySigner;
@@ -697,7 +696,7 @@ mod tests {
         });
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         log::debug!("start");
-        let network = Network::new(NetworkConfig {
+        let config = NetworkConfig {
             socket_addr: SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), 0)),
             network_id: 0,
             eth_network_id: 0,
@@ -708,6 +707,7 @@ mod tests {
             intervals: Intervals {
                 ping: 0,
                 get_peer_list: 0,
+                find_nodes: 0,
             },
             back_off: BackoffParams {
                 initial_duration: Default::default(),
@@ -719,13 +719,13 @@ mod tests {
             bucket_size: 0,
             max_concurrent_handshakes: 0,
             max_peers: None,
+            max_light_peers: None,
             bootstrappers: HashMap::new(),
             dht_buckets: DhtBuckets {
                 block: Default::default(),
             },
-        })
-        .unwrap();
-        let node = Node::new(network, 1, 1, false);
+        };
+        let node = Node::new(config, 1, 1, false);
 
         let rpc = Rpc::new(Arc::from(node), 0, tx).await.unwrap();
         let addr = rpc.local_addr();
