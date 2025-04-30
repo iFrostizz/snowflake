@@ -1,3 +1,4 @@
+use crate::net::node::SendErrorWrapper;
 use crate::{
     id::NodeId,
     message::{mail_box::Mail, SubscribableMessage},
@@ -20,10 +21,9 @@ impl PeerInfo {
         self.infos.is_some()
     }
 
-    pub async fn ping(&self, node_id: NodeId, mail_tx: &Sender<Mail>) -> Result<(), NodeError> {
+    pub async fn ping(&self, mail_tx: &Sender<Mail>) -> Result<(), NodeError> {
         self.sender.send_without_response(
             mail_tx,
-            node_id,
             SubscribableMessage::Ping(Ping {
                 uptime: 100,
                 subnet_uptimes: vec![],
@@ -33,31 +33,38 @@ impl PeerInfo {
 }
 
 #[derive(Debug, Clone)]
-pub struct PeerSender(Sender<Message>);
+pub struct PeerSender {
+    pub(crate) node_id: NodeId,
+    pub(crate) tx: Sender<Message>,
+}
 
 impl PeerSender {
     pub fn send(&self, message: Message) -> Result<(), NodeError> {
-        self.0.send(message).map_err(|_| NodeError::SendError)
+        Ok(self.tx.send(message).map_err(SendErrorWrapper::from)?)
     }
 
-    /// Send a message that is supposed to receive an answer.
-    // This function works by generating a random request_id and spawn a task that will timeout at the deadline if the response was not received.
-    // These messages are: Get, GetAccepted, GetAcceptedFrontier, GetAcceptedStateSummary, GetAncestors, GetPeerList, GetStateSummaryFrontier, PushQuery, PullQuery, AppRequest
+    /// Send a message supposed to receive an answer.
+    // This function works by generating a random request_id and spawns a task that will timeout
+    // at the deadline if the response was not received.
+    // These messages are: Get, GetAccepted,
+    // GetAcceptedFrontier, GetAcceptedStateSummary, GetAncestors, GetPeerList,
+    // GetStateSummaryFrontier, PushQuery, PullQuery, AppRequest
+    // There is a reserved request_id of 0 for the ping message.
+    // We use those to keep track of latency.
     fn send_with_subscribe(
         &self,
         mail_tx: &Sender<Mail>,
-        node_id: NodeId,
         message: SubscribableMessage,
         callback: oneshot::Sender<Message>,
     ) -> Result<(), NodeError> {
         // TODO: the node_id parameter feels a bit duplicated here, does it really makes sense?
         mail_tx
             .send(Mail {
-                node_id,
+                node_id: self.node_id,
                 message: message.clone(),
                 callback,
             })
-            .map_err(|_| NodeError::SendError)?;
+            .map_err(SendErrorWrapper::from)?;
 
         self.send(message.into())
     }
@@ -68,30 +75,22 @@ impl PeerSender {
     pub fn send_and_response(
         &self,
         mail_tx: &Sender<Mail>,
-        node_id: NodeId,
         message: SubscribableMessage,
     ) -> Result<oneshot::Receiver<Message>, NodeError> {
         let (tx, rx) = oneshot::channel();
-        self.send_with_subscribe(mail_tx, node_id, message, tx)?;
+        self.send_with_subscribe(mail_tx, message, tx)?;
         Ok(rx)
     }
 
     pub fn send_without_response(
         &self,
         mail_tx: &Sender<Mail>,
-        node_id: NodeId,
         message: SubscribableMessage,
     ) -> Result<(), NodeError> {
-        self.send_with_subscribe(mail_tx, node_id, message, {
+        self.send_with_subscribe(mail_tx, message, {
             let (tx, _) = oneshot::channel();
             tx
         })?;
         Ok(())
-    }
-}
-
-impl From<Sender<Message>> for PeerSender {
-    fn from(value: Sender<Message>) -> Self {
-        PeerSender(value)
     }
 }

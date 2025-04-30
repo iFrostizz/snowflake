@@ -1,4 +1,3 @@
-use crate::utils::constants;
 use crate::client::config;
 use crate::dht::DhtBuckets;
 use crate::id::{ChainId, NodeId};
@@ -33,7 +32,7 @@ use tokio::io::WriteHalf;
 use tokio::net::TcpStream;
 use tokio::sync::{broadcast, oneshot, Semaphore};
 use tokio::task::JoinHandle;
-use tokio::time::{self};
+use tokio::time;
 use tokio_rustls::TlsStream;
 
 #[derive(Debug, Error)]
@@ -44,10 +43,8 @@ pub enum NodeError {
     Timeout(#[from] time::error::Elapsed),
     #[error("tcp error: {0}")]
     TcpConnection(#[from] std::io::Error),
-    #[error("send error: all receivers have been dropped")]
-    // TODO
-    //   SendError(#[from] flume::SendError<T>),
-    SendError,
+    #[error(transparent)]
+    SendError(#[from] SendErrorWrapper),
     #[error("recv error: all sender have been dropped")]
     RecvError(#[from] oneshot::error::RecvError),
     #[error("error when decoding inbound message {0}")]
@@ -67,6 +64,23 @@ pub enum NodeError {
     #[error("unexpected message: {0}")]
     Message(String),
 }
+
+#[derive(Debug)]
+pub struct SendErrorWrapper;
+
+impl<T> From<flume::SendError<T>> for SendErrorWrapper {
+    fn from(_: flume::SendError<T>) -> Self {
+        SendErrorWrapper
+    }
+}
+
+impl std::fmt::Display for SendErrorWrapper {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "send error: all receivers have been dropped")
+    }
+}
+
+impl std::error::Error for SendErrorWrapper {}
 
 #[derive(Debug)]
 pub struct NetworkConfig {
@@ -342,9 +356,7 @@ impl Network {
         };
 
         log::trace!("handshaking the peer");
-        sender
-            .send(p2p::message::Message::Handshake(handshake))
-            .map_err(|_| NodeError::SendError)
+        sender.send(p2p::message::Message::Handshake(handshake))
     }
 
     fn light_handshake(&self, sender: &PeerSender) -> Result<(), NodeError> {
@@ -356,16 +368,13 @@ impl Network {
             buckets: Some(buckets),
         });
         let app_request = AppRequestMessage::encode(&self.config.c_chain_id, message)?;
-        sender
-            .send(app_request)
-            // TODO include this variant in thiserror and watch all the dup lines being deleted!
-            .map_err(|_| NodeError::SendError)
+        sender.send(app_request)
     }
 
     pub fn remove_peers(
         peers_infos: Arc<RwLock<IndexMap<NodeId, PeerInfo>>>,
         light_peers: &mut RwLockWriteGuard<IndexMap<NodeId, DhtBuckets>>,
-        node_ids_errs: Vec<(&NodeId, Option<&NodeError>)>,
+        node_ids_errs: Vec<(NodeId, Option<NodeError>)>,
     ) {
         for (node_id, err) in &node_ids_errs {
             if let Some(err) = err {
@@ -379,7 +388,7 @@ impl Network {
             let mut peers_write = peers_infos.write().unwrap();
 
             for (node_id, _) in &node_ids_errs {
-                if let Some(peer) = peers_write.swap_remove(*node_id) {
+                if let Some(peer) = peers_write.swap_remove(node_id) {
                     let _ = peer.tx.send(());
                     if peer.handshook() {
                         stats::handshook_peers::dec();
@@ -391,7 +400,7 @@ impl Network {
 
         {
             for (node_id, _) in &node_ids_errs {
-                light_peers.swap_remove(*node_id);
+                light_peers.swap_remove(node_id);
             }
         }
     }
@@ -399,8 +408,8 @@ impl Network {
     pub fn disconnect_peer(
         peers_infos: Arc<RwLock<IndexMap<NodeId, PeerInfo>>>,
         light_peers: &mut RwLockWriteGuard<IndexMap<NodeId, DhtBuckets>>,
-        node_id: &NodeId,
-        err: Option<&NodeError>,
+        node_id: NodeId,
+        err: Option<NodeError>,
     ) {
         Self::remove_peers(peers_infos, light_peers, vec![(node_id, err)]);
     }

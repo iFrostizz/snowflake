@@ -45,7 +45,7 @@ impl DhtBlocks {
             if let Some(Message::AcceptedFrontier(res)) = node
                 .send_to_peer(
                     &MessageOrSubscribable::Subscribable(message.clone()),
-                    &bootstrapper,
+                    bootstrapper,
                 )
                 .await
             {
@@ -67,7 +67,7 @@ impl DhtBlocks {
                 if let Some(Message::Ancestors(res)) = node
                     .send_to_peer(
                         &MessageOrSubscribable::Subscribable(message.clone()),
-                        &bootstrapper,
+                        bootstrapper,
                     )
                     .await
                 {

@@ -306,7 +306,7 @@ impl Drop for WriteLockGuardPeers<'_> {
             let WriteLockGuardPeers { map, .. } = self;
             while map.len() > max_light_peers {
                 let furthest = furthest_peer(self.node_id, map).unwrap();
-                Network::disconnect_peer(self.peers_infos.clone(), map, &furthest, None);
+                Network::disconnect_peer(self.peers_infos.clone(), map, furthest, None);
                 // TODO add error
             }
         }
@@ -431,6 +431,7 @@ impl LightPeers {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::server::peers::PeerSender;
     use std::collections::HashMap;
 
     #[test]
@@ -464,7 +465,10 @@ mod tests {
                         x509_certificate: vec![],
                         sender: {
                             let (tx, _) = flume::unbounded();
-                            tx.into()
+                            PeerSender {
+                                tx,
+                                node_id: *node_id,
+                            }
                         },
                         infos: None,
                         tx: {
