@@ -5,6 +5,7 @@ use crate::dht::{DhtBuckets, LightValue};
 use crate::id::{ChainId, NodeId};
 use crate::message::mail_box::Mail;
 use crate::message::{mail_box::MailBox, pipeline::Pipeline, MiniMessage, SubscribableMessage};
+use crate::net::node::SendErrorWrapper;
 use crate::net::sdk::{FindNode, FindValue, LightHandshake};
 use crate::net::{
     ip::SignedIp,
@@ -78,7 +79,7 @@ pub struct Network {
     pub client: Client,
     pub client_config: Arc<ClientConfig>,
     /// All peers discovered by the node
-    pub peers_infos: Arc<RwLock<IndexMap<NodeId, PeerInfo>>>, // TODO can we find a way to do it lock-less ?
+    pub peers_infos: Arc<RwLock<IndexMap<NodeId, PeerInfo>>>,
     pub bootstrappers: RwLock<HashMap<NodeId, Option<DhtBuckets>>>,
     pub out_pipeline: Arc<Pipeline>,
     /// The canonically sorted validators map
@@ -86,7 +87,6 @@ pub struct Network {
     pub public_key: [u8; Bls::PUBLIC_KEY_BYTES],
     pub node_pop: Vec<u8>,
     pub handshake_semaphore: Arc<Semaphore>,
-    pub buckets: DhtBuckets,
 }
 
 /// Intervals of operations in milliseconds
@@ -170,7 +170,7 @@ impl Peer {
         let (spn, rpn) = flume::unbounded();
         let (spl, rpl) = flume::unbounded();
         let (snp, rnp) = flume::unbounded();
-        let sender: PeerSender = snp.into();
+        let sender = PeerSender { tx: snp, node_id };
 
         Self {
             identity: PeerIdentity {
@@ -404,7 +404,7 @@ impl Peer {
                     let Some(peer_info) = peers_infos.read().unwrap().get(&node_id).cloned() else {
                         continue;
                     };
-                    peer_info.ping(node_id, &mail_tx).await?;
+                    peer_info.ping(&mail_tx).await?;
                 }
                 // _ = find_nodes_interval.tick() => {
                 //     if let Some(peer_info) = peers_infos.read().unwrap().get(&node_id) {
@@ -466,7 +466,7 @@ impl Peer {
                 None
             };
 
-        // TODO if this node holds a stake, here is the minimum amount of messages to handle since
+        // NOTE if this node holds a stake, here is the minimum number of messages to handle since
         //   they are registered and will get the node benched:
         //   AppRequest, PullQuery, PushQuery, Get, GetAncestors, GetAccepted, GetAcceptedFrontier, GetAcceptedStateSummary, GetStateSummaryFrontier
         log::trace!("new incoming message {decoded:?}");
@@ -490,15 +490,13 @@ impl Peer {
                 self.channels
                     .spn
                     .send(PeerMessage::ObserveUptime(ping))
-                    .map_err(|_| NodeError::SendError)?;
+                    .map_err(SendErrorWrapper::from)?;
 
                 // TODO track uptime
-                sender
-                    .send(Message::Pong(p2p::Pong {
-                        uptime: 100,
-                        subnet_uptimes: Vec::new(),
-                    }))
-                    .map_err(|_| NodeError::SendError)?;
+                sender.send(Message::Pong(p2p::Pong {
+                    uptime: 100,
+                    subnet_uptimes: Vec::new(),
+                }))?;
             }
             Message::Handshake(handshake) => {
                 let Handshake {
@@ -523,7 +521,7 @@ impl Peer {
                         sender: sender.clone(),
                         known_peers,
                     })
-                    .map_err(|_| NodeError::SendError)?;
+                    .map_err(SendErrorWrapper::from)?;
 
                 let ip = ip_from_octets(ip_addr)
                     .map_err(|_| NodeError::Message("failed to serialize IP".to_string()))?;
@@ -549,13 +547,13 @@ impl Peer {
                             objected_acps,
                         },
                     })
-                    .map_err(|_| NodeError::SendError)?;
+                    .map_err(SendErrorWrapper::from)?;
             }
             Message::PeerList(peer_list) => {
                 self.channels
                     .spn
                     .send(PeerMessage::PeerList(peer_list))
-                    .map_err(|_| NodeError::SendError)?;
+                    .map_err(SendErrorWrapper::from)?;
             }
             Message::GetPeerList(GetPeerList { known_peers }) => {
                 self.channels
@@ -564,7 +562,7 @@ impl Peer {
                         sender: sender.clone(),
                         known_peers,
                     })
-                    .map_err(|_| NodeError::SendError)?;
+                    .map_err(SendErrorWrapper::from)?;
             }
             Message::AppRequest(app_request) => {
                 if app_request.chain_id != c_chain_id.as_ref() {
@@ -656,7 +654,7 @@ impl Peer {
                 let bucket = Bucket::from_be_bytes(bucket_arr);
                 let (tx, rx) = oneshot::channel();
                 spl.send((LightMessage::FindValue(dht_id, bucket), Some(tx)))
-                    .map_err(|_| NodeError::SendError)?;
+                    .map_err(SendErrorWrapper::from)?;
                 Some(rx.await?)
             }
             sdk::light_request::Message::FindNode(FindNode { bucket }) => {
@@ -666,7 +664,7 @@ impl Peer {
                 let bucket = Bucket::from_be_bytes(bucket_arr);
                 let (tx, rx) = oneshot::channel();
                 spl.send((LightMessage::FindNode(bucket), Some(tx)))
-                    .map_err(|_| NodeError::SendError)?;
+                    .map_err(SendErrorWrapper::from)?;
                 Some(rx.await?)
             }
         };
@@ -733,8 +731,7 @@ impl Peer {
                     .filter_map(|claimed_ip_port| claimed_ip_port.try_into().ok())
                     .collect();
                 let message = LightMessage::Nodes(nodes.into_iter().collect());
-                spl.send((message, None))
-                    .map_err(|_| NodeError::SendError)?;
+                spl.send((message, None)).map_err(SendErrorWrapper::from)?;
             }
             sdk::light_response::Message::Value(sdk::Value { value }) => {
                 let sdk::light_request::Message::FindValue(FindValue { dht_id, .. }) =
@@ -746,8 +743,7 @@ impl Peer {
                     .try_into()
                     .map_err(|_| NodeError::Message("invalid DHT".to_string()))?;
                 let message = LightMessage::Store(dht_id, value);
-                spl.send((message, None))
-                    .map_err(|_| NodeError::SendError)?;
+                spl.send((message, None)).map_err(SendErrorWrapper::from)?;
             }
         }
 

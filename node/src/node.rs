@@ -2,7 +2,7 @@ use crate::dht::{LightMessage, LightResult};
 use crate::id::{Id, NodeId};
 use crate::message::{mail_box::MailBox, SubscribableMessage};
 use crate::net::light::{LightNetwork, LightNetworkConfig};
-use crate::net::node::{AddPeerError, NetworkConfig};
+use crate::net::node::{AddPeerError, NetworkConfig, SendErrorWrapper};
 use crate::net::{
     light,
     node::NodeError,
@@ -10,7 +10,7 @@ use crate::net::{
     HandshakeInfos, Network, Peer, PeerMessage,
 };
 use crate::server::msg::AppRequestMessage;
-use crate::server::peers::PeerInfo;
+use crate::server::peers::{PeerInfo, PeerSender};
 use crate::stats::{self, Metrics};
 use crate::utils::{
     bloom::{Filter, ReadFilter, ViewFilter},
@@ -38,8 +38,8 @@ use tokio::time::{self};
 pub struct Node {
     pub(crate) network: Arc<Network>,
     pub(crate) light_network: LightNetwork,
-    connection_queue: Arc<ConnectionQueue>,
-    mail_box: Arc<MailBox>,
+    pub(crate) connection_queue: Arc<ConnectionQueue>,
+    pub(crate) mail_box: Arc<MailBox>,
 }
 
 #[derive(Debug, Clone)]
@@ -75,9 +75,6 @@ impl Node {
         let node_id = NodeId::from_cert(cert);
 
         let connection_queue = Arc::new(ConnectionQueue::new(max_concurrent));
-        // TODO should refactor. Here light_peers depends on network and network on light_peers.
-        //  We should only use what is needed in the subset of network and light_peers, and those
-        //  two should be independent.
         let peers_infos = Arc::new(RwLock::new(IndexMap::new()));
         let network = Network::new(network_config, node_id, peers_infos.clone()).unwrap();
         let mail_box = MailBox::new(max_latency_records);
@@ -217,11 +214,6 @@ impl Node {
             }
             Err(err) => {
                 log::debug!("error on connecting with back off: {err}");
-                Network::remove_peers(
-                    self.network.peers_infos.clone(),
-                    &mut self.light_network.light_peers.write().map,
-                    vec![(&data.node_id, Some(&err))],
-                );
                 return Err(err);
             }
         };
@@ -246,9 +238,9 @@ impl Node {
             Network::remove_peers(
                 peers_infos,
                 &mut light_peers.write().map,
-                vec![(&node_id, err.as_ref())],
+                vec![(node_id, err)],
             );
-            node.connection_queue.maybe_add_connection(data);
+            node.connection_queue.add_connection(data);
         });
 
         Ok(())
@@ -293,8 +285,7 @@ impl Node {
         let c_chain_id = self.network.config.c_chain_id.clone();
 
         let sender = peer.sender().clone();
-        let (tx, _) = broadcast::channel(1);
-        // TODO: consider adding the tx here to be able to remotely disconnect a peer.
+        let (tx, _) = broadcast::channel(100);
         self.network
             .add_peer(
                 node_id,
@@ -331,18 +322,6 @@ impl Node {
                 return Err(err); // propagate to disconnect cleanly
             }
         };
-
-        if self
-            .network
-            .bootstrappers
-            .read()
-            .unwrap()
-            .get(&node_id)
-            .is_some_and(Option::is_some)
-        {
-            // is a light bootstrapper, we need to initiate a handshake.
-            // TODO: remove?
-        }
 
         let tasks = vec![manage_peer, write_peer, read_peer, recurring, hand_peer];
 
@@ -537,17 +516,13 @@ impl Node {
             .get_index((rand::random::<u64>() % peers.len() as u64) as usize)
             .unwrap();
         let bloom_filter = self.network.bloom_filter.read().unwrap().as_proto();
-        if random_peer
-            .sender
-            .send(Message::GetPeerList(GetPeerList {
-                known_peers: Some(bloom_filter),
-            }))
-            .is_err()
-        {
+        if let Err(err) = random_peer.sender.send(Message::GetPeerList(GetPeerList {
+            known_peers: Some(bloom_filter),
+        })) {
             Network::remove_peers(
                 self.network.peers_infos.clone(),
                 &mut self.light_network.light_peers.write().map,
-                vec![(node_id, Some(&NodeError::SendError))],
+                vec![(*node_id, Some(err))],
             );
         }
     }
@@ -561,24 +536,19 @@ impl Node {
         let Some(random_peer) = peers_infos.get(&node_id) else {
             return;
         };
-        if random_peer
-            .sender
-            .send(
-                AppRequestMessage::encode(
-                    &self.network.config.c_chain_id,
-                    sdk::FindNode {
-                        // TODO we really need conversion helpers.
-                        bucket: self.network.node_id.as_ref().to_vec(),
-                    },
-                )
-                .unwrap(),
+        if let Err(err) = random_peer.sender.send(
+            AppRequestMessage::encode(
+                &self.network.config.c_chain_id,
+                sdk::FindNode {
+                    bucket: self.network.node_id.into(),
+                },
             )
-            .is_err()
-        {
+            .unwrap(),
+        ) {
             Network::remove_peers(
                 self.network.peers_infos.clone(),
                 &mut self.light_network.light_peers.write().map,
-                vec![(&node_id, Some(&NodeError::SendError))],
+                vec![(node_id, Some(err))],
             );
         }
     }
@@ -754,11 +724,9 @@ impl Node {
                             let sender = &peer.sender;
                             let res = match message {
                                 MessageOrSubscribable::Subscribable(message) => {
-                                    match sender.send_and_response(
-                                        self.mail_box.tx(),
-                                        *node_id,
-                                        message.clone(),
-                                    ) {
+                                    match sender
+                                        .send_and_response(self.mail_box.tx(), message.clone())
+                                    {
                                         Ok(handle) => {
                                             handles.push(handle);
                                             Ok(())
@@ -772,14 +740,14 @@ impl Node {
                             };
 
                             match res {
-                                Err(_err) => Some((node_id, Some(&NodeError::SendError))),
+                                Err(_err) => Some((*node_id, Some(_err))),
                                 Ok(_) => None,
                             }
                         } else {
                             None
                         }
                     }
-                    None => Some((node_id, None)),
+                    None => Some((*node_id, None)),
                 })
                 .collect();
             drop(peers);
@@ -811,74 +779,70 @@ impl Node {
     pub async fn send_to_peer(
         &self,
         message: &MessageOrSubscribable,
-        node_id: &NodeId,
+        node_id: NodeId,
     ) -> Option<Message> {
-        let (mut remove_peer, mut err) = (false, None);
-
         let peer_opt = {
             let peers = self.network.peers_infos.read().unwrap();
             if peers.is_empty() {
                 log::debug!("the set of peers is empty, cannot send to any");
                 return None;
             }
-            peers.get(node_id).cloned()
+            peers.get(&node_id).cloned()
         };
 
-        if let Some(peer) = peer_opt {
+        let (remove_peer, err) = if let Some(peer) = peer_opt {
             if peer.handshook() {
-                let sender = &peer.sender;
-
-                match message {
-                    MessageOrSubscribable::Subscribable(message) => {
-                        match sender.send_and_response(
-                            self.mail_box.tx(),
-                            *node_id,
-                            message.clone(),
-                        ) {
-                            Ok(handle) => match handle.await.map_err(|_| NodeError::SendError) {
-                                Ok(message) => return Some(message),
-                                Err(_err) => {
-                                    remove_peer = true;
-                                    err = Some(_err);
-                                }
-                            },
-                            Err(_err) => {
-                                remove_peer = true;
-                                err = Some(_err);
-                            }
-                        }
-                    }
-                    MessageOrSubscribable::Message(message) => {
-                        if let Err(_err) = sender.send(message.clone()) {
-                            remove_peer = true;
-                            err = Some(_err);
-                        }
-                    }
+                match self
+                    .send_this_message_to_rename(&peer.sender, message)
+                    .await
+                {
+                    Ok(maybe_message) => return maybe_message,
+                    Err((_remove_peer, _err)) => (_remove_peer, Some(_err)),
                 }
             } else {
-                remove_peer = true;
-                err = None;
+                (true, None)
             }
         } else {
-            remove_peer = true;
-            err = None;
-        }
+            (true, None)
+        };
 
         let is_bootstrapper = self
             .network
             .bootstrappers
             .read()
             .unwrap()
-            .contains_key(node_id);
+            .contains_key(&node_id);
         if !is_bootstrapper && remove_peer {
             Network::remove_peers(
                 self.network.peers_infos.clone(),
                 &mut self.light_network.light_peers.write().map,
-                vec![(node_id, err.as_ref())],
+                vec![(node_id, err)],
             );
         }
 
         None
+    }
+
+    async fn send_this_message_to_rename(
+        &self,
+        sender: &PeerSender,
+        message: &MessageOrSubscribable,
+    ) -> Result<Option<Message>, (bool, NodeError)> {
+        match message {
+            MessageOrSubscribable::Subscribable(message) => {
+                match sender.send_and_response(self.mail_box.tx(), message.clone()) {
+                    Ok(handle) => handle
+                        .await
+                        .map(Some)
+                        .map_err(|_| (true, SendErrorWrapper.into())),
+                    Err(_err) => Err((true, _err)),
+                }
+            }
+            MessageOrSubscribable::Message(message) => sender
+                .send(message.clone())
+                .map(|_| None)
+                .map_err(|_err| (true, _err)),
+        }
     }
 
     pub async fn hs_permit(&self) -> OwnedSemaphorePermit {

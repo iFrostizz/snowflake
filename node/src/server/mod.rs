@@ -2,7 +2,6 @@ use crate::net::node::NodeError;
 use crate::node::Node;
 use crate::server::{listener::Listener, rpc::Rpc};
 use flume::Sender;
-use rustls::ServerConfig;
 use std::{sync::Arc, time::Instant};
 use tokio::sync::oneshot;
 
@@ -21,14 +20,13 @@ pub struct Server {
 impl Server {
     pub async fn start(
         node: Arc<Node>,
-        config: Arc<ServerConfig>,
+        listener: Listener,
         tx: Sender<(Vec<u8>, Instant)>,
         rpc_port: u16,
-        max_in_connections: usize,
     ) -> Result<(), NodeError> {
         let node2 = node.clone();
         let listener = tokio::spawn(async move {
-            Listener::start(&node2, config, max_in_connections).await;
+            listener.start(node2).await;
         });
 
         let rpc = Rpc::new(node, rpc_port, tx).await?;

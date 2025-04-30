@@ -32,7 +32,7 @@ use tokio::io::WriteHalf;
 use tokio::net::TcpStream;
 use tokio::sync::{broadcast, oneshot, Semaphore};
 use tokio::task::JoinHandle;
-use tokio::time::{self};
+use tokio::time;
 use tokio_rustls::TlsStream;
 
 #[derive(Debug, Error)]
@@ -43,10 +43,8 @@ pub enum NodeError {
     Timeout(#[from] time::error::Elapsed),
     #[error("tcp error: {0}")]
     TcpConnection(#[from] std::io::Error),
-    #[error("send error: all receivers have been dropped")]
-    // TODO
-    //   SendError(#[from] flume::SendError<T>),
-    SendError,
+    #[error(transparent)]
+    SendError(#[from] SendErrorWrapper),
     #[error("recv error: all sender have been dropped")]
     RecvError(#[from] oneshot::error::RecvError),
     #[error("error when decoding inbound message {0}")]
@@ -61,9 +59,28 @@ pub enum NodeError {
     Bloom(#[from] BloomError),
     #[error("unwanted peer: reason: {0}")]
     UnwantedPeer(#[from] AddPeerError),
+    #[error("openssl error: {0}")]
+    OpenSsl(#[from] openssl::error::ErrorStack),
     #[error("unexpected message: {0}")]
     Message(String),
 }
+
+#[derive(Debug)]
+pub struct SendErrorWrapper;
+
+impl<T> From<flume::SendError<T>> for SendErrorWrapper {
+    fn from(_: flume::SendError<T>) -> Self {
+        SendErrorWrapper
+    }
+}
+
+impl std::fmt::Display for SendErrorWrapper {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "send error: all receivers have been dropped")
+    }
+}
+
+impl std::error::Error for SendErrorWrapper {}
 
 #[derive(Debug)]
 pub struct NetworkConfig {
@@ -131,7 +148,7 @@ impl Network {
         config: NetworkConfig,
         node_id: NodeId,
         peers_infos: Arc<RwLock<IndexMap<NodeId, PeerInfo>>>,
-    ) -> Result<Self, ()> {
+    ) -> Result<Self, NodeError> {
         let client_config = Arc::new(config::client_config(
             &config.cert_path,
             &config.pem_key_path,
@@ -150,7 +167,7 @@ impl Network {
             config.socket_addr.port(),
             sig_timestamp,
         );
-        let signed_ip = unsigned_ip.sign_with_key(&bls, &config.pem_key_path);
+        let signed_ip = unsigned_ip.sign_with_key(&bls, &config.pem_key_path)?;
 
         // TODO https://github.com/iFrostizz/snowflake/issues/13
         let client = p2p::Client {
@@ -172,8 +189,6 @@ impl Network {
         let handshake_semaphore = Arc::new(Semaphore::new(config.max_concurrent_handshakes));
         let bootstrappers = RwLock::new(config.bootstrappers.clone());
 
-        let buckets = config.dht_buckets.clone();
-
         Ok(Self {
             node_id,
             out_pipeline,
@@ -187,7 +202,6 @@ impl Network {
             public_key,
             node_pop,
             handshake_semaphore,
-            buckets,
         })
     }
 
@@ -284,35 +298,38 @@ impl Network {
         node_id: NodeId,
         mut rx: broadcast::Receiver<()>,
     ) -> Result<JoinHandle<Result<(), NodeError>>, NodeError> {
-        // TODO mistake because it's in nanos
-        // let handshake_deadline = Duration::from_millis(constants::DEFAULT_DEADLINE); // s // TODO configure
-        let handshake_deadline = Duration::from_millis(2000);
         self.handshake(sender)?;
-        let sleep = tokio::time::sleep(handshake_deadline);
-        let network = self.clone();
 
-        // TODO instead of this, have a oneshot channel return back the handshake result.
-        //   This should be sent once the PeerMessage::NewPeer is received.
+        let network = self.clone();
         let sender = sender.clone();
         let hand_peer = tokio::spawn(async move {
-            tokio::select! {
-                _ = sleep => {
-                    // timeout, we might have received the handshake before though
-                    // TODO use a loop to continuously check for faster confirmation.
-                    let peer_infos = network.peers_infos.read().unwrap();
-                    if !peer_infos.get(&node_id).is_some_and(|peer| peer.handshook()) {
-                        return Err(NodeError::Message("handshake expired".to_string()));
+            let mut interval = tokio::time::interval(Duration::from_millis(2000));
+            let mut i = 0;
+
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        let peer_infos = network.peers_infos.read().unwrap();
+                        let is_handshook = peer_infos.get(&node_id).is_some_and(|peer| peer.handshook());
+                        if i < 5 && is_handshook {
+                            break;
+                        } else if i >= 5 {
+                            return Err(NodeError::Message("handshake expired".to_string()));
+                        }
+                        i += 1;
                     }
-                }
-                _ = rx.recv() => {
-                    return Ok(())
+                    _ = rx.recv() => {
+                        return Ok(())
+                    }
                 }
             }
 
             network.light_handshake(&sender)?;
 
             // the handshake was successful, the channel can still stop this thread remotely
-            rx.recv().await.unwrap();
+            rx.recv()
+                .await
+                .map_err(|_| NodeError::Message("recv error".to_string()))?;
             Ok(())
         });
 
@@ -341,13 +358,11 @@ impl Network {
         };
 
         log::trace!("handshaking the peer");
-        sender
-            .send(p2p::message::Message::Handshake(handshake))
-            .map_err(|_| NodeError::SendError)
+        sender.send(p2p::message::Message::Handshake(handshake))
     }
 
     fn light_handshake(&self, sender: &PeerSender) -> Result<(), NodeError> {
-        let block_k = self.buckets.block;
+        let block_k = self.config.dht_buckets.block;
         let buckets = sdk::DhtBuckets {
             block: block_k.to_be_bytes_vec(),
         };
@@ -355,16 +370,13 @@ impl Network {
             buckets: Some(buckets),
         });
         let app_request = AppRequestMessage::encode(&self.config.c_chain_id, message)?;
-        sender
-            .send(app_request)
-            // TODO include this variant in thiserror and watch all the dup lines being deleted!
-            .map_err(|_| NodeError::SendError)
+        sender.send(app_request)
     }
 
     pub fn remove_peers(
         peers_infos: Arc<RwLock<IndexMap<NodeId, PeerInfo>>>,
         light_peers: &mut RwLockWriteGuard<IndexMap<NodeId, DhtBuckets>>,
-        node_ids_errs: Vec<(&NodeId, Option<&NodeError>)>,
+        node_ids_errs: Vec<(NodeId, Option<NodeError>)>,
     ) {
         for (node_id, err) in &node_ids_errs {
             if let Some(err) = err {
@@ -378,7 +390,7 @@ impl Network {
             let mut peers_write = peers_infos.write().unwrap();
 
             for (node_id, _) in &node_ids_errs {
-                if let Some(peer) = peers_write.swap_remove(*node_id) {
+                if let Some(peer) = peers_write.swap_remove(node_id) {
                     let _ = peer.tx.send(());
                     if peer.handshook() {
                         stats::handshook_peers::dec();
@@ -390,7 +402,7 @@ impl Network {
 
         {
             for (node_id, _) in &node_ids_errs {
-                light_peers.swap_remove(*node_id);
+                light_peers.swap_remove(node_id);
             }
         }
     }
@@ -398,8 +410,8 @@ impl Network {
     pub fn disconnect_peer(
         peers_infos: Arc<RwLock<IndexMap<NodeId, PeerInfo>>>,
         light_peers: &mut RwLockWriteGuard<IndexMap<NodeId, DhtBuckets>>,
-        node_id: &NodeId,
-        err: Option<&NodeError>,
+        node_id: NodeId,
+        err: Option<NodeError>,
     ) {
         Self::remove_peers(peers_infos, light_peers, vec![(node_id, err)]);
     }

@@ -171,6 +171,7 @@ impl KademliaDht {
         log::debug!("searching for value in dht {dht_id:?} at bucket {bucket}");
         let mut excluding = Vec::new();
         let mut worklist = Vec::new();
+        // TODO instead of a max_lookup, we should have a max nodes to query.
         for _ in 0..max_lookups {
             let senders = {
                 let reserved = loop {
@@ -227,7 +228,7 @@ impl KademliaDht {
         let dht_id: u32 = dht_id.into();
         let bucket = bucket.to_be_bytes::<20>();
 
-        for (node_id, sender) in senders {
+        for (_, sender) in senders {
             let bucket = bucket.to_vec();
             if let Ok(p2p::message::Message::AppRequest(app_request)) =
                 AppRequestMessage::encode(&self.chain_id, sdk::FindValue { dht_id, bucket })
@@ -236,7 +237,6 @@ impl KademliaDht {
                 set.spawn(async move {
                     let handle = sender.send_and_response(
                         &mail_tx,
-                        node_id,
                         SubscribableMessage::AppRequest(app_request),
                     )?;
                     let message = handle.await?;
@@ -266,7 +266,7 @@ impl KademliaDht {
             match light_message {
                 sdk::light_response::Message::Value(sdk::Value { value }) => {
                     // TODO verify data using publicly available data and return if successful.
-                    // if not successful, disconnect from node and decrease reputation
+                    //  if not successful, disconnect from node and decrease reputation
                     return Ok(ValueOrNodes::Value(value));
                 }
                 sdk::light_response::Message::Nodes(p2p::PeerList { claimed_ip_ports }) => {
@@ -349,15 +349,16 @@ mod tests {
             .map(extend_to_node_id)
             .collect::<Vec<_>>();
         let peer_infos: IndexMap<_, _> = node_ids
-            .iter()
+            .clone()
+            .into_iter()
             .map(|node_id| {
                 (
-                    *node_id,
+                    node_id,
                     PeerInfo {
                         x509_certificate: vec![],
                         sender: {
                             let (tx, _) = flume::unbounded();
-                            tx.into()
+                            PeerSender { tx, node_id }
                         },
                         infos: Some(HandshakeInfos {
                             ip_signing_time: 0,

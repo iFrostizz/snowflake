@@ -34,6 +34,7 @@ impl ConcreteDht<u64> for DhtBlocks {
 impl DhtBlocks {
     async fn sync_process(self: Arc<Self>, node: Arc<Node>) {
         let chain_id = node.network.config.c_chain_id.as_ref().to_vec();
+        // TODO instead of a random bootstrapper, we should pick them in a loop.
         let mut bootstrapper = Self::pick_random_bootstrapper(&node).await;
 
         let message = SubscribableMessage::GetAcceptedFrontier(GetAcceptedFrontier {
@@ -45,7 +46,7 @@ impl DhtBlocks {
             if let Some(Message::AcceptedFrontier(res)) = node
                 .send_to_peer(
                     &MessageOrSubscribable::Subscribable(message.clone()),
-                    &bootstrapper,
+                    bootstrapper,
                 )
                 .await
             {
@@ -67,7 +68,7 @@ impl DhtBlocks {
                 if let Some(Message::Ancestors(res)) = node
                     .send_to_peer(
                         &MessageOrSubscribable::Subscribable(message.clone()),
-                        &bootstrapper,
+                        bootstrapper,
                     )
                     .await
                 {

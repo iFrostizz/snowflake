@@ -36,7 +36,7 @@ pub struct Args {
     #[arg(long)]
     pub public_ip: Option<IpAddr>,
 
-    /// Public port of the node
+    /// Public port of the node. If set to 0, it will ask the OS to assign it.
     #[arg(long, default_value_t = 9751)]
     pub http_port: u16,
 
@@ -183,7 +183,8 @@ impl Args {
                 &self.bootstrappers_path,
                 &self.light_bootstrappers_path,
             )
-            .bootstrappers(&self.network_id.to_string()),
+            .bootstrappers(&self.network_id.to_string())
+            .expect("failed to instantiate bootstrappers"),
             dht_buckets: DhtBuckets {
                 block: Bucket::try_from(self.block_dht_buckets).unwrap(),
             },
