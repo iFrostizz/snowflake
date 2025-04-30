@@ -32,7 +32,6 @@ type NodeMail = (
     SubscribableMessage,
 );
 
-// TODO name doesn't make sense anymore
 type NodeMails = HashMap<NodeId, HashMap<u32, NodeMail>>;
 
 impl MailBox {
@@ -88,8 +87,9 @@ impl MailBox {
     ) {
         let (tx, rx) = oneshot::channel();
 
-        let request_id = *message.request_id();
         let is_ping = matches!(message, SubscribableMessage::Ping(_));
+
+        let request_id = *message.request_id();
         mails
             .lock()
             .unwrap()
@@ -98,7 +98,6 @@ impl MailBox {
             .insert(request_id, (tx, message_callback, message));
 
         let start = Instant::now();
-
         let res = tokio::time::timeout(deadline, async move {
             let _ = rx.await;
             if is_ping {

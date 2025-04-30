@@ -91,22 +91,6 @@ impl SubscribableMessage {
         }
     }
 
-    pub fn is_subscribable(message: &Message) -> bool {
-        matches!(
-            message,
-            Message::Get(_)
-                | Message::GetAccepted(_)
-                | Message::GetAcceptedFrontier(_)
-                | Message::GetAcceptedStateSummary(_)
-                | Message::GetAncestors(_)
-                | Message::GetStateSummaryFrontier(_)
-                | Message::PushQuery(_)
-                | Message::PullQuery(_)
-                | Message::AppRequest(_)
-                | Message::Ping(_)
-        )
-    }
-
     pub fn on_timeout(&self) {
         #[allow(clippy::single_match)]
         match self {

@@ -10,7 +10,7 @@ use crate::net::{
     HandshakeInfos, Network, Peer, PeerMessage,
 };
 use crate::server::msg::AppRequestMessage;
-use crate::server::peers::{PeerInfo, PeerLessInfo};
+use crate::server::peers::PeerInfo;
 use crate::stats::{self, Metrics};
 use crate::utils::{
     bloom::{Filter, ReadFilter, ViewFilter},
@@ -39,7 +39,6 @@ pub struct Node {
     pub(crate) network: Arc<Network>,
     pub(crate) light_network: LightNetwork,
     connection_queue: Arc<ConnectionQueue>,
-    // TODO We should maybe handle ping / pong messages in order to build peer the latency ranking.
     mail_box: Arc<MailBox>,
 }
 
@@ -312,7 +311,9 @@ impl Node {
             hs_permit,
             tx.subscribe(),
         );
-        let (write_peer, read_peer) = peer.communicate(
+        let (write_peer, read_peer, recurring) = peer.communicate(
+            self.network.peers_infos.clone(),
+            self.network.config.intervals.clone(),
             self.network.out_pipeline.clone(),
             self.mail_box.clone(),
             c_chain_id,
@@ -343,12 +344,7 @@ impl Node {
             // TODO: remove?
         }
 
-        let mut tasks = vec![manage_peer, write_peer, read_peer, hand_peer];
-
-        let sender = sender.clone();
-        let peer_less = PeerLessInfo { sender };
-        let loop_op = self.loop_messages_peer(peer_less, tx.subscribe());
-        tasks.push(loop_op);
+        let tasks = vec![manage_peer, write_peer, read_peer, recurring, hand_peer];
 
         Ok((tasks, tx))
     }
@@ -367,43 +363,6 @@ impl Node {
                 .await;
             Ok(())
         })
-    }
-
-    fn loop_messages_peer(
-        self: &Arc<Node>,
-        peer_less: PeerLessInfo,
-        rx: broadcast::Receiver<()>,
-    ) -> JoinHandle<Result<(), NodeError>> {
-        let node = self.clone();
-        tokio::spawn(async move {
-            let res = node.loop_messages(&peer_less, rx).await;
-            if res.is_err() {
-                log::debug!("error on recurring");
-            }
-            res
-        })
-    }
-
-    /// Send messages to a peer on a recurring basis
-    pub async fn loop_messages(
-        &self,
-        peer_less: &PeerLessInfo,
-        mut rx: broadcast::Receiver<()>,
-    ) -> Result<(), NodeError> {
-        let intervals = &self.network.config.intervals;
-
-        let mut ping_interval = tokio::time::interval(Duration::from_millis(intervals.ping));
-
-        loop {
-            tokio::select! {
-                _ = ping_interval.tick() => {
-                    peer_less.ping()?;
-                }
-                _ = rx.recv() => {
-                    return Ok(());
-                }
-            }
-        }
     }
 
     pub async fn execute_peer_operation(
