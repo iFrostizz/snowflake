@@ -7,12 +7,6 @@ use flume::Sender;
 use proto_lib::p2p::{message::Message, Ping};
 use tokio::sync::{broadcast, oneshot};
 
-// TODO better name
-#[derive(Debug)]
-pub struct PeerLessInfo {
-    pub sender: PeerSender,
-}
-
 #[derive(Debug, Clone)]
 pub struct PeerInfo {
     pub x509_certificate: Vec<u8>,
@@ -24,6 +18,17 @@ pub struct PeerInfo {
 impl PeerInfo {
     pub fn handshook(&self) -> bool {
         self.infos.is_some()
+    }
+
+    pub async fn ping(&self, node_id: NodeId, mail_tx: &Sender<Mail>) -> Result<(), NodeError> {
+        self.sender.send_without_response(
+            mail_tx,
+            node_id,
+            SubscribableMessage::Ping(Ping {
+                uptime: 100,
+                subnet_uptimes: vec![],
+            }),
+        )
     }
 }
 
@@ -57,6 +62,9 @@ impl PeerSender {
         self.send(message.into())
     }
 
+    // TODO: Instead, provide a generic that automatically resolves to the correct message
+    //  enum variant with specific impls. Also, it seems like we could just return the message
+    //  instead of the oneshot channel since it's always awaited after calling the function.
     pub fn send_and_response(
         &self,
         mail_tx: &Sender<Mail>,
@@ -67,24 +75,23 @@ impl PeerSender {
         self.send_with_subscribe(mail_tx, node_id, message, tx)?;
         Ok(rx)
     }
+
+    pub fn send_without_response(
+        &self,
+        mail_tx: &Sender<Mail>,
+        node_id: NodeId,
+        message: SubscribableMessage,
+    ) -> Result<(), NodeError> {
+        self.send_with_subscribe(mail_tx, node_id, message, {
+            let (tx, _) = oneshot::channel();
+            tx
+        })?;
+        Ok(())
+    }
 }
 
 impl From<Sender<Message>> for PeerSender {
     fn from(value: Sender<Message>) -> Self {
         PeerSender(value)
-    }
-}
-
-impl PeerLessInfo {
-    pub fn send(&self, message: Message) -> Result<(), NodeError> {
-        self.sender.send(message)
-    }
-
-    pub fn ping(&self) -> Result<(), NodeError> {
-        self.send(Message::Ping(Ping {
-            uptime: 100,
-            subnet_uptimes: Vec::new(),
-        }))
-        .map_err(|_| NodeError::SendError)
     }
 }

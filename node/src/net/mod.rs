@@ -3,6 +3,7 @@ use crate::dht::LightError;
 use crate::dht::{Bucket, DhtId, LightMessage, LightResult};
 use crate::dht::{DhtBuckets, LightValue};
 use crate::id::{ChainId, NodeId};
+use crate::message::mail_box::Mail;
 use crate::message::{mail_box::MailBox, pipeline::Pipeline, MiniMessage, SubscribableMessage};
 use crate::net::sdk::{FindNode, FindValue, LightHandshake};
 use crate::net::{
@@ -89,7 +90,7 @@ pub struct Network {
 }
 
 /// Intervals of operations in milliseconds
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Intervals {
     pub ping: u64,
     pub get_peer_list: u64,
@@ -279,14 +280,18 @@ impl Peer {
     #[allow(clippy::type_complexity)]
     pub fn communicate(
         mut self,
+        peers_infos: Arc<RwLock<IndexMap<NodeId, PeerInfo>>>,
+        intervals: Intervals,
         out_pipeline: Arc<Pipeline>,
         mail_box: Arc<MailBox>,
-        c_chain_id: ChainId,
+        chain_id: ChainId,
         disconnection_rx: broadcast::Receiver<()>,
     ) -> (
         JoinHandle<Result<(), NodeError>>,
         JoinHandle<Result<(), NodeError>>,
+        JoinHandle<Result<(), NodeError>>,
     ) {
+        let mail_tx = mail_box.tx().clone();
         let (read, write) = self.take_tls();
 
         let disconnection_rx2 = disconnection_rx.resubscribe();
@@ -300,10 +305,20 @@ impl Peer {
 
         let peer = Arc::new(self);
         let sender = peer.channels.sender.clone();
-        let read =
-            tokio::spawn(peer.read_peer(read, mail_box, sender, c_chain_id, disconnection_rx));
 
-        (write, read)
+        let peer2 = peer.clone();
+        let disconnection_rx2 = disconnection_rx.resubscribe();
+        let read =
+            tokio::spawn(peer2.read_peer(read, mail_box, sender, chain_id, disconnection_rx2));
+
+        let recurring = tokio::spawn(peer.loop_messages_peer(
+            peers_infos,
+            intervals,
+            mail_tx,
+            disconnection_rx,
+        ));
+
+        (write, read, recurring)
     }
 
     async fn connect(
@@ -368,6 +383,38 @@ impl Peer {
                 Err(NodeError::TcpConnection(tcp_err))
             }
             rest => rest,
+        }
+    }
+
+    /// Send messages to a peer on a recurring basis
+    async fn loop_messages_peer(
+        self: Arc<Peer>,
+        peers_infos: Arc<RwLock<IndexMap<NodeId, PeerInfo>>>,
+        intervals: Intervals,
+        mail_tx: Sender<Mail>,
+        mut rx: broadcast::Receiver<()>,
+    ) -> Result<(), NodeError> {
+        let mut ping_interval = tokio::time::interval(Duration::from_millis(intervals.ping));
+        // let mut find_nodes_interval = tokio::time::interval(Duration::from_millis(intervals.find_nodes));
+        let node_id = self.identity.node_id;
+
+        loop {
+            tokio::select! {
+                _ = ping_interval.tick() => {
+                    let Some(peer_info) = peers_infos.read().unwrap().get(&node_id).cloned() else {
+                        continue;
+                    };
+                    peer_info.ping(node_id, &mail_tx).await?;
+                }
+                // _ = find_nodes_interval.tick() => {
+                //     if let Some(peer_info) = peers_infos.read().unwrap().get(&node_id) {
+                //         peer_info.find_nodes(node_id, &mail_tx).await?;
+                //     }
+                // }
+                _ = rx.recv() => {
+                    return Ok(());
+                }
+            }
         }
     }
 
