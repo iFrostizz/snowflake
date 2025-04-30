@@ -171,6 +171,7 @@ impl KademliaDht {
         log::debug!("searching for value in dht {dht_id:?} at bucket {bucket}");
         let mut excluding = Vec::new();
         let mut worklist = Vec::new();
+        // TODO instead of a max_lookup, we should have a max nodes to query.
         for _ in 0..max_lookups {
             let senders = {
                 let reserved = loop {
@@ -265,7 +266,7 @@ impl KademliaDht {
             match light_message {
                 sdk::light_response::Message::Value(sdk::Value { value }) => {
                     // TODO verify data using publicly available data and return if successful.
-                    // if not successful, disconnect from node and decrease reputation
+                    //  if not successful, disconnect from node and decrease reputation
                     return Ok(ValueOrNodes::Value(value));
                 }
                 sdk::light_response::Message::Nodes(p2p::PeerList { claimed_ip_ports }) => {
