@@ -36,7 +36,7 @@ pub struct Args {
     #[arg(long)]
     pub public_ip: Option<IpAddr>,
 
-    /// Public port of the node
+    /// Public port of the node. If set to 0, it will ask the OS to assign it.
     #[arg(long, default_value_t = 9751)]
     pub http_port: u16,
 

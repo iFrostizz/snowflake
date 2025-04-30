@@ -10,9 +10,21 @@ pub struct NodeId {
     id: Id<{ Self::LEN }>,
 }
 
-impl AsRef<[u8]> for NodeId {
+impl AsRef<[u8]> for &NodeId {
     fn as_ref(&self) -> &[u8] {
         self.id.as_slice()
+    }
+}
+
+impl From<&NodeId> for Vec<u8> {
+    fn from(value: &NodeId) -> Self {
+        value.id.inner.to_vec()
+    }
+}
+
+impl From<NodeId> for Vec<u8> {
+    fn from(value: NodeId) -> Self {
+        value.id.inner.to_vec()
     }
 }
 

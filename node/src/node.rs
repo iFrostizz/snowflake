@@ -75,9 +75,6 @@ impl Node {
         let node_id = NodeId::from_cert(cert);
 
         let connection_queue = Arc::new(ConnectionQueue::new(max_concurrent));
-        // TODO should refactor. Here light_peers depends on network and network on light_peers.
-        //  We should only use what is needed in the subset of network and light_peers, and those
-        //  two should be independent.
         let peers_infos = Arc::new(RwLock::new(IndexMap::new()));
         let network = Network::new(network_config, node_id, peers_infos.clone()).unwrap();
         let mail_box = MailBox::new(max_latency_records);
@@ -288,8 +285,7 @@ impl Node {
         let c_chain_id = self.network.config.c_chain_id.clone();
 
         let sender = peer.sender().clone();
-        let (tx, _) = broadcast::channel(1);
-        // TODO: consider adding the tx here to be able to remotely disconnect a peer.
+        let (tx, _) = broadcast::channel(100);
         self.network
             .add_peer(
                 node_id,
@@ -544,8 +540,7 @@ impl Node {
             AppRequestMessage::encode(
                 &self.network.config.c_chain_id,
                 sdk::FindNode {
-                    // TODO we really need conversion helpers.
-                    bucket: self.network.node_id.as_ref().to_vec(),
+                    bucket: self.network.node_id.into(),
                 },
             )
             .unwrap(),

@@ -684,6 +684,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn send_transaction() {
         // tracing_subscriber::fmt::init();
+        let _ = rustls::crypto::ring::default_provider().install_default();
 
         let credentials_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/credentials/");
         let pem_key_path = credentials_path.join("node.key");

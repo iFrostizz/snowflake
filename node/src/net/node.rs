@@ -327,7 +327,9 @@ impl Network {
             network.light_handshake(&sender)?;
 
             // the handshake was successful, the channel can still stop this thread remotely
-            rx.recv().await.unwrap();
+            rx.recv()
+                .await
+                .map_err(|_| NodeError::Message("recv error".to_string()))?;
             Ok(())
         });
 
