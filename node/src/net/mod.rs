@@ -78,7 +78,7 @@ pub struct Network {
     pub client: Client,
     pub client_config: Arc<ClientConfig>,
     /// All peers discovered by the node
-    pub peers_infos: Arc<RwLock<IndexMap<NodeId, PeerInfo>>>, // TODO can we find a way to do it lock-less ?
+    pub peers_infos: Arc<RwLock<IndexMap<NodeId, PeerInfo>>>,
     pub bootstrappers: RwLock<HashMap<NodeId, Option<DhtBuckets>>>,
     pub out_pipeline: Arc<Pipeline>,
     /// The canonically sorted validators map
@@ -465,7 +465,7 @@ impl Peer {
                 None
             };
 
-        // TODO if this node holds a stake, here is the minimum amount of messages to handle since
+        // NOTE if this node holds a stake, here is the minimum amount of messages to handle since
         //   they are registered and will get the node benched:
         //   AppRequest, PullQuery, PushQuery, Get, GetAncestors, GetAccepted, GetAcceptedFrontier, GetAcceptedStateSummary, GetStateSummaryFrontier
         log::trace!("new incoming message {decoded:?}");

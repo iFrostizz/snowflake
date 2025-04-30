@@ -332,18 +332,6 @@ impl Node {
             }
         };
 
-        if self
-            .network
-            .bootstrappers
-            .read()
-            .unwrap()
-            .get(&node_id)
-            .is_some_and(Option::is_some)
-        {
-            // is a light bootstrapper, we need to initiate a handshake.
-            // TODO: remove?
-        }
-
         let tasks = vec![manage_peer, write_peer, read_peer, recurring, hand_peer];
 
         Ok((tasks, tx))

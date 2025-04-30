@@ -1,3 +1,4 @@
+use crate::utils::constants;
 use crate::client::config;
 use crate::dht::DhtBuckets;
 use crate::id::{ChainId, NodeId};
@@ -283,28 +284,29 @@ impl Network {
         node_id: NodeId,
         mut rx: broadcast::Receiver<()>,
     ) -> Result<JoinHandle<Result<(), NodeError>>, NodeError> {
-        // TODO mistake because it's in nanos
-        // let handshake_deadline = Duration::from_millis(constants::DEFAULT_DEADLINE); // s // TODO configure
-        let handshake_deadline = Duration::from_millis(2000);
         self.handshake(sender)?;
-        let sleep = tokio::time::sleep(handshake_deadline);
-        let network = self.clone();
 
-        // TODO instead of this, have a oneshot channel return back the handshake result.
-        //   This should be sent once the PeerMessage::NewPeer is received.
+        let network = self.clone();
         let sender = sender.clone();
         let hand_peer = tokio::spawn(async move {
-            tokio::select! {
-                _ = sleep => {
-                    // timeout, we might have received the handshake before though
-                    // TODO use a loop to continuously check for faster confirmation.
-                    let peer_infos = network.peers_infos.read().unwrap();
-                    if !peer_infos.get(&node_id).is_some_and(|peer| peer.handshook()) {
-                        return Err(NodeError::Message("handshake expired".to_string()));
+            let mut interval = tokio::time::interval(Duration::from_millis(2000));
+            let mut i = 0;
+
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        let peer_infos = network.peers_infos.read().unwrap();
+                        let is_handshook = peer_infos.get(&node_id).is_some_and(|peer| peer.handshook());
+                        if i < 5 && is_handshook {
+                            break;
+                        } else if i >= 5 {
+                            return Err(NodeError::Message("handshake expired".to_string()));
+                        }
+                        i += 1;
                     }
-                }
-                _ = rx.recv() => {
-                    return Ok(())
+                    _ = rx.recv() => {
+                        return Ok(())
+                    }
                 }
             }
 
