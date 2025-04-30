@@ -59,14 +59,13 @@ async fn main() -> Result<(), NodeError> {
         args.sync_headers,
     ));
 
-    let (node_tx, node_ops, server) = server(&node, &args).await;
+    let (node_tx, node_ops, server) = server(node.clone(), &args).await;
 
     let client = tokio::task::spawn(async move {
         client::start(
-            &node,
+            node,
             &args.bootstrappers_path,
             &args.light_bootstrappers_path,
-            args.max_out_connections,
             &args.network_id.to_string(),
         )
         .await
@@ -102,7 +101,7 @@ async fn main() -> Result<(), NodeError> {
 }
 
 async fn server(
-    node: &Arc<Node>,
+    node: Arc<Node>,
     args: &Args,
 ) -> (
     broadcast::Sender<()>,

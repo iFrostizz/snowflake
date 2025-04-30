@@ -183,7 +183,8 @@ impl Args {
                 &self.bootstrappers_path,
                 &self.light_bootstrappers_path,
             )
-            .bootstrappers(&self.network_id.to_string()),
+            .bootstrappers(&self.network_id.to_string())
+            .expect("failed to instantiate bootstrappers"),
             dht_buckets: DhtBuckets {
                 block: Bucket::try_from(self.block_dht_buckets).unwrap(),
             },

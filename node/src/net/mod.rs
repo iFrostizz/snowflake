@@ -86,7 +86,6 @@ pub struct Network {
     pub public_key: [u8; Bls::PUBLIC_KEY_BYTES],
     pub node_pop: Vec<u8>,
     pub handshake_semaphore: Arc<Semaphore>,
-    pub buckets: DhtBuckets,
 }
 
 /// Intervals of operations in milliseconds

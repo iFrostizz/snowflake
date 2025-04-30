@@ -5,12 +5,11 @@ use crate::node::Node;
 use serde::{Deserialize, Deserializer};
 use std::collections::HashMap;
 use std::fs::File;
+use std::io;
 use std::io::Read;
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::path::Path;
 use std::sync::Arc;
-use tokio::sync::Semaphore;
-use tokio::task::JoinSet;
 
 #[derive(Deserialize, Debug)]
 pub struct Bootstrapper {
@@ -41,45 +40,47 @@ impl<'a> Bootstrappers<'a> {
         }
     }
 
-    fn read_bootsrappers(&self) -> HashMap<String, Vec<Bootstrapper>> {
+    fn read_bootsrappers(&self) -> io::Result<HashMap<String, Vec<Bootstrapper>>> {
         let mut content = String::new();
-        let mut file = File::open(self.bootstrapper_path).unwrap();
-        File::read_to_string(&mut file, &mut content).unwrap();
-        serde_json::from_str(&content).unwrap()
+        let mut file = File::open(self.bootstrapper_path)?;
+        File::read_to_string(&mut file, &mut content)?;
+        Ok(serde_json::from_str(&content)?)
     }
 
-    fn read_light_bootsrappers(&self) -> HashMap<String, Vec<Bootstrapper>> {
+    fn read_light_bootsrappers(&self) -> io::Result<HashMap<String, Vec<Bootstrapper>>> {
         let mut content = String::new();
-        let mut file = File::open(self.light_bootstrapper_path).unwrap();
-        File::read_to_string(&mut file, &mut content).unwrap();
-        serde_json::from_str(&content).unwrap()
+        let mut file = File::open(self.light_bootstrapper_path)?;
+        File::read_to_string(&mut file, &mut content)?;
+        Ok(serde_json::from_str(&content)?)
     }
 
-    fn read_all_bootsrappers(&self, network_name: &str) -> Vec<Bootstrapper> {
+    fn read_all_bootsrappers(&self, network_name: &str) -> io::Result<Vec<Bootstrapper>> {
         let mut content = String::new();
-        let mut file = File::open(self.bootstrapper_path).unwrap();
-        File::read_to_string(&mut file, &mut content).unwrap();
-        let mut bootstrappers: HashMap<String, Vec<Bootstrapper>> =
-            serde_json::from_str(&content).unwrap();
+        let mut file = File::open(self.bootstrapper_path)?;
+        File::read_to_string(&mut file, &mut content)?;
+        let mut bootstrappers: HashMap<String, Vec<Bootstrapper>> = serde_json::from_str(&content)?;
         let mut bootstrappers = bootstrappers
             .remove(network_name)
             .expect("this network is not listed in the bootstrappers file");
 
         let mut content2 = String::new();
-        let mut file2 = File::open(self.light_bootstrapper_path).unwrap();
-        File::read_to_string(&mut file2, &mut content2).unwrap();
+        let mut file2 = File::open(self.light_bootstrapper_path)?;
+        File::read_to_string(&mut file2, &mut content2)?;
         let mut light_bootstrappers: HashMap<String, Vec<Bootstrapper>> =
-            serde_json::from_str(&content2).unwrap();
+            serde_json::from_str(&content2)?;
         let light_bootstrappers = light_bootstrappers
             .remove(network_name)
             .expect("this network is not listed in the bootstrappers file");
 
         bootstrappers.extend(light_bootstrappers);
-        bootstrappers
+        Ok(bootstrappers)
     }
 
-    pub fn bootstrappers(&self, network_name: &str) -> HashMap<NodeId, Option<DhtBuckets>> {
-        let bootstrappers = self.read_bootsrappers();
+    pub fn bootstrappers(
+        &self,
+        network_name: &str,
+    ) -> io::Result<HashMap<NodeId, Option<DhtBuckets>>> {
+        let bootstrappers = self.read_bootsrappers()?;
         let bootstrappers = bootstrappers
             .get(network_name)
             .expect("this network is not listed in the bootstrappers file");
@@ -87,7 +88,7 @@ impl<'a> Bootstrappers<'a> {
             .iter()
             .map(|bootstrapper| (bootstrapper.id, None))
             .collect();
-        let light_bootstrappers = self.read_light_bootsrappers();
+        let light_bootstrappers = self.read_light_bootsrappers()?;
         let light_bootstrappers = light_bootstrappers
             .get(network_name)
             .expect("this network is not listed in the bootstrappers file");
@@ -104,24 +105,19 @@ impl<'a> Bootstrappers<'a> {
                 })
                 .collect::<HashMap<_, _>>(),
         );
-        ret
+        Ok(ret)
     }
 
     pub async fn bootstrap_all(
         &self,
-        node: &Arc<Node>,
-        max_connections: usize,
+        node: Arc<Node>,
         network_name: &str,
-    ) -> Vec<Result<NodeId, NodeError>> {
+    ) -> io::Result<Vec<Result<NodeId, NodeError>>> {
         log::debug!("bootstrapping nodes");
 
-        // TODO error handling
-        let bootstrappers = self.read_all_bootsrappers(network_name);
+        let bootstrappers = self.read_all_bootsrappers(network_name)?;
 
-        // TODO should not create a new semaphore but use the common one
-        let semaphore = Arc::new(Semaphore::new(max_connections));
-
-        let mut set = JoinSet::new();
+        let mut set = Vec::new();
         for bootstrapper in bootstrappers {
             let socket = bootstrapper.ip;
             let node_id = bootstrapper.id;
@@ -132,32 +128,32 @@ impl<'a> Bootstrappers<'a> {
                 .next()
                 .expect("empty socket");
 
-            let node2 = node.clone();
-            let semaphore = semaphore.clone();
-            set.spawn(async move {
-                node2
-                    .create_connection(
-                        semaphore,
-                        // TODO this should not be a timestamp of 0
-                        // nor an empty cert.
-                        // how to get the cert of bootstrappers ?
-                        // maybe we should get it from the connection directly
-                        ConnectionData {
-                            node_id,
-                            socket_addr,
-                            timestamp: 0,
-                            x509_certificate: vec![],
-                        },
-                    )
-                    .await
-                    .map(|_| node_id)
-            });
+            let connection_queue = node.connection_queue.clone();
+            set.push((
+                node_id,
+                connection_queue.connect_peer(
+                    node.clone(),
+                    ConnectionData {
+                        node_id,
+                        socket_addr,
+                        timestamp: 0,
+                        x509_certificate: vec![],
+                    },
+                ),
+            ));
         }
 
         let mut res = Vec::new();
-        while let Some(fut) = set.join_next().await {
-            res.push(fut.unwrap());
+        let iter = set.into_iter();
+        for (node_id, fut) in iter {
+            let Some(handle) = fut else {
+                continue;
+            };
+            let Ok(ret) = handle.await else {
+                continue;
+            };
+            res.push(ret.map(|_| node_id));
         }
-        res
+        Ok(res)
     }
 }

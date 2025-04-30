@@ -417,7 +417,7 @@ impl LightPeers {
         for node_id in node_ids {
             // Add connections and watch out for reaching the max number of connections.
             // If it is reached, drop the connection with the furthest peers.
-            self.connection_queue.maybe_add_connection(
+            self.connection_queue.add_connection(
                 nodes
                     .iter()
                     .find(|node| node.node_id == node_id)

@@ -1,4 +1,5 @@
 use crate::id::NodeId;
+use crate::net::node::NodeError;
 use crate::node::Node;
 use crate::utils::ip::{ip_from_octets, ip_octets};
 use flume::{Receiver, Sender};
@@ -8,6 +9,7 @@ use std::net::SocketAddr;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tokio::sync::{broadcast, Semaphore};
+use tokio::task::JoinHandle;
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct ConnectionData {
@@ -92,31 +94,11 @@ impl ConnectionQueue {
     /// It tries to connect to the oldest connections and never exceeds
     /// the max amount of concurrent connections.
     pub async fn watch_connections(&self, node: &Arc<Node>, mut rx: broadcast::Receiver<()>) {
-        // TODO: this is broken because the retries are never written.
-        //  We should fix that.
-        //  The retry logic is good, it will allow us to handle the backoff here and check that
-        //  the peer can still be added on every try. Allows to never overshoot the max peers.
         loop {
             tokio::select! {
                 res = self.rcd.recv_async() => {
                     if let Ok(data) = res {
-                        let node = node.clone();
-                        let semaphore = self.semaphore.clone();
-                        match node.network.check_add_peer(&data.node_id) {
-                            Ok(()) => {
-                                tokio::spawn(async move {
-                                if let Err(err) = node
-                                    .create_connection(semaphore, data)
-                                    .await
-                                {
-                                    log::debug!("err when creating connection {err}");
-                                }
-                            });
-                            },
-                            Err(err) => {
-                                log::debug!("{}, {err}", &data.node_id);
-                            }
-                        }
+                        let _ = self.connect_peer(node.clone(), data);
                     } else {
                         return;
                     }
@@ -128,13 +110,38 @@ impl ConnectionQueue {
         }
     }
 
+    pub fn connect_peer(
+        &self,
+        node: Arc<Node>,
+        data: ConnectionData,
+    ) -> Option<JoinHandle<Result<(), NodeError>>> {
+        let node = node.clone();
+        let semaphore = self.semaphore.clone();
+        match node.network.check_add_peer(&data.node_id) {
+            Ok(()) => {
+                let handle = tokio::spawn(async move {
+                    let res = node.create_connection(semaphore, data).await;
+                    if let Err(err) = &res {
+                        log::debug!("err when creating connection {err}");
+                    }
+                    res
+                });
+                Some(handle)
+            }
+            Err(err) => {
+                log::debug!("{}, {err}", &data.node_id);
+                None
+            }
+        }
+    }
+
     pub fn mark_connected(&self, node_id: &NodeId) {
         self.connections.write().unwrap().remove(node_id);
     }
 
-    /// Schedule a connection that will be executed once that the semaphore will be acquired
+    /// Schedule a connection that will be executed once that the semaphore is acquired
     /// returns true if it was added
-    pub fn maybe_add_connection(&self, data: ConnectionData) -> bool {
+    pub fn add_connection(&self, data: ConnectionData) -> bool {
         let maybe_retries = self.connections.read().unwrap().get(&data.node_id).cloned();
         match maybe_retries {
             None => {

@@ -61,6 +61,8 @@ pub enum NodeError {
     Bloom(#[from] BloomError),
     #[error("unwanted peer: reason: {0}")]
     UnwantedPeer(#[from] AddPeerError),
+    #[error("openssl error: {0}")]
+    OpenSsl(#[from] openssl::error::ErrorStack),
     #[error("unexpected message: {0}")]
     Message(String),
 }
@@ -131,7 +133,7 @@ impl Network {
         config: NetworkConfig,
         node_id: NodeId,
         peers_infos: Arc<RwLock<IndexMap<NodeId, PeerInfo>>>,
-    ) -> Result<Self, ()> {
+    ) -> Result<Self, NodeError> {
         let client_config = Arc::new(config::client_config(
             &config.cert_path,
             &config.pem_key_path,
@@ -150,7 +152,7 @@ impl Network {
             config.socket_addr.port(),
             sig_timestamp,
         );
-        let signed_ip = unsigned_ip.sign_with_key(&bls, &config.pem_key_path);
+        let signed_ip = unsigned_ip.sign_with_key(&bls, &config.pem_key_path)?;
 
         // TODO https://github.com/iFrostizz/snowflake/issues/13
         let client = p2p::Client {
@@ -172,8 +174,6 @@ impl Network {
         let handshake_semaphore = Arc::new(Semaphore::new(config.max_concurrent_handshakes));
         let bootstrappers = RwLock::new(config.bootstrappers.clone());
 
-        let buckets = config.dht_buckets.clone();
-
         Ok(Self {
             node_id,
             out_pipeline,
@@ -187,7 +187,6 @@ impl Network {
             public_key,
             node_pop,
             handshake_semaphore,
-            buckets,
         })
     }
 
@@ -347,7 +346,7 @@ impl Network {
     }
 
     fn light_handshake(&self, sender: &PeerSender) -> Result<(), NodeError> {
-        let block_k = self.buckets.block;
+        let block_k = self.config.dht_buckets.block;
         let buckets = sdk::DhtBuckets {
             block: block_k.to_be_bytes_vec(),
         };

@@ -38,8 +38,8 @@ use tokio::time::{self};
 pub struct Node {
     pub(crate) network: Arc<Network>,
     pub(crate) light_network: LightNetwork,
-    connection_queue: Arc<ConnectionQueue>,
-    mail_box: Arc<MailBox>,
+    pub(crate) connection_queue: Arc<ConnectionQueue>,
+    pub(crate) mail_box: Arc<MailBox>,
 }
 
 #[derive(Debug, Clone)]
@@ -248,7 +248,7 @@ impl Node {
                 &mut light_peers.write().map,
                 vec![(&node_id, err.as_ref())],
             );
-            node.connection_queue.maybe_add_connection(data);
+            node.connection_queue.add_connection(data);
         });
 
         Ok(())
