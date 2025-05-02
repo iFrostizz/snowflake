@@ -118,24 +118,28 @@ pub mod light_errors {
         code: 1,
         message: "Content not found",
     };
-    pub(crate) const DECODING_FAILED: LightError = LightError {
+    pub(crate) const ENCODING_FAILED: LightError = LightError {
         code: 2,
         message: "Invalid encoded value",
     };
-    pub(crate) const UNDESIRED_BUCKET: LightError = LightError {
+    pub(crate) const DECODING_FAILED: LightError = LightError {
         code: 3,
+        message: "Invalid encoded value",
+    };
+    pub(crate) const UNDESIRED_BUCKET: LightError = LightError {
+        code: 4,
         message: "This bucket is not desired",
     };
     pub(crate) const INVALID_DHT: LightError = LightError {
-        code: 4,
+        code: 5,
         message: "Unimplemented dht",
     };
     pub(crate) const INVALID_CONTENT: LightError = LightError {
-        code: 5,
+        code: 6,
         message: "Content failed verification",
     };
     pub(crate) const PEER_MISSING: LightError = LightError {
-        code: 6,
+        code: 7,
         message: "The peer is missing",
     };
 }

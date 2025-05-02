@@ -27,24 +27,23 @@ pub struct Block {
     #[allow(unused)]
     pub uncles: Vec<Header>,
     pub version: u32,
-    pub ext_data: Vec<u8>
+    pub ext_data: Vec<u8>,
 }
 
 impl Block {
     pub fn decode(bytes: &[u8]) -> Result<Self, RlpError> {
         let mut cursor = 0;
-        let start_list = cursor;
         let length = Rlp::decode_list(bytes, &mut cursor)?;
+        let start_list = cursor;
         let (header, hash) = {
-            let start_list = cursor;
+            let start_outer_list = cursor;
             let length = Rlp::decode_list(bytes, &mut cursor)?;
-            let hash = keccak256(&bytes[start_list..cursor + length as usize]);
+            let hash = keccak256(&bytes[start_outer_list..cursor + length as usize]);
             let header = Self::decode_header(&bytes[cursor..cursor + length as usize])?;
             cursor += length as usize;
             (header, hash)
         };
         let transactions = {
-            let start_list = cursor;
             let length = Rlp::decode_list(bytes, &mut cursor)?;
             let transactions = Self::decode_transactions(&bytes[cursor..cursor + length as usize])?;
             cursor += length as usize;
@@ -53,24 +52,27 @@ impl Block {
         };
         let uncles = {
             let length = Rlp::decode_list(bytes, &mut cursor)?;
+            let start_list = cursor;
             let mut uncles = Vec::new();
-            for _ in 0..length {
-                let start_list = cursor;
+            while cursor < start_list + length as usize {
                 let length = Rlp::decode_list(bytes, &mut cursor)?;
                 let header = Self::decode_header(&bytes[cursor..cursor + length as usize])?;
                 cursor += length as usize;
                 uncles.push(header);
             }
+            if cursor != start_list + length as usize {
+                return Err(RlpError::InvalidFormat);
+            }
             uncles
         };
-        let version = { let arr = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
+        let version = {
+            let arr = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
             u32::from_be_bytes(arr)
         };
         let ext_data = Rlp::decode_string(bytes, &mut cursor)?.to_vec();
-        // dbg!(&bytes[cursor..]);
-        // if cursor != start_list + length as usize {
-        //     return Err(RlpError::InvalidFormat);
-        // }
+        if cursor != start_list + length as usize {
+            return Err(RlpError::InvalidFormat);
+        }
 
         let block = Block {
             hash,
@@ -459,7 +461,8 @@ impl Block {
 
     fn encode_uncles(buf: &mut Vec<u8>, uncles: &Vec<Header>) -> Result<(), RlpError> {
         for uncle in uncles {
-            todo!()
+            let ret2 = uncle.encode()?;
+            Rlp::encode_list(buf, &ret2)?;
         }
         Ok(())
     }

@@ -80,7 +80,7 @@ impl<const LEN: usize> std::fmt::Display for Id<LEN> {
 
 impl<const LEN: usize> std::fmt::Debug for Id<LEN> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.to_string())
+        write!(f, "{}", self)
     }
 }
 

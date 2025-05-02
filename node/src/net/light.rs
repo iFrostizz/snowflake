@@ -260,7 +260,7 @@ impl DhtContent<u64, StatelessBlock> for DhtBlocks {
     }
 
     fn encode(value: StatelessBlock) -> Result<Vec<u8>, LightError> {
-        todo!()
+        value.pack().map_err(|_| light_errors::ENCODING_FAILED)
     }
 
     fn decode(bytes: &[u8]) -> Result<StatelessBlock, LightError> {
