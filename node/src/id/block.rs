@@ -1,4 +1,5 @@
 use super::{Id, IdError};
+use serde::{Deserialize, Deserializer, Serialize};
 
 #[derive(Debug, Clone, Eq, Hash, PartialEq, Default)]
 pub struct BlockID {
@@ -26,6 +27,16 @@ impl TryFrom<&[u8]> for BlockID {
     }
 }
 
+impl TryFrom<&str> for BlockID {
+    type Error = IdError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        Ok(Self {
+            id: Id::try_from(value)?,
+        })
+    }
+}
+
 impl std::fmt::Display for BlockID {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.id)
@@ -35,6 +46,25 @@ impl std::fmt::Display for BlockID {
 impl AsRef<[u8]> for BlockID {
     fn as_ref(&self) -> &[u8] {
         self.id.as_slice()
+    }
+}
+
+impl Serialize for BlockID {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for BlockID {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = <&str>::deserialize(deserializer)?;
+        Self::try_from(s).map_err(serde::de::Error::custom)
     }
 }
 

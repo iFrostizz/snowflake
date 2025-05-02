@@ -218,6 +218,30 @@ impl KademliaDht {
         Err(light_errors::CONTENT_NOT_FOUND)
     }
 
+    pub async fn store(
+        &self,
+        node_id: NodeId,
+        dht_id: &DhtId,
+        value: Vec<u8>,
+    ) -> Result<(), LightError> {
+        let sender = self
+            .peers_infos
+            .read()
+            .unwrap()
+            .get(&node_id)
+            .map(|infos| infos.sender.tx.clone())
+            .ok_or(light_errors::PEER_MISSING)?;
+        let message = AppRequestMessage::encode(
+            &self.chain_id,
+            sdk::Store {
+                dht_id: dht_id.into(),
+                value,
+            },
+        )
+        .unwrap();
+        sender.send(message).map_err(|_| light_errors::PEER_MISSING)
+    }
+
     async fn iterative_lookup(
         &self,
         dht_id: &DhtId,

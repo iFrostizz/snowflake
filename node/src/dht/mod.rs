@@ -69,7 +69,8 @@ impl<DB: LockedMapDb<Bucket, Vec<u8>>> Dht<DB> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum DhtId {
     Block,
     State,
@@ -132,6 +133,10 @@ pub mod light_errors {
     pub(crate) const INVALID_CONTENT: LightError = LightError {
         code: 5,
         message: "Content failed verification",
+    };
+    pub(crate) const PEER_MISSING: LightError = LightError {
+        code: 6,
+        message: "The peer is missing",
     };
 }
 

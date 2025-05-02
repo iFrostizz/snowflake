@@ -33,6 +33,11 @@ macro_rules! not_implemented {
 
 mod rpc_impl {
     use super::*;
+    use crate::dht::block::DhtBlocks;
+    use crate::dht::Bucket;
+    use crate::dht::DhtId;
+    use crate::id::NodeId;
+    use crate::net::light::DhtContent;
     use crate::node::Node;
     use crate::utils::constants;
     use crate::utils::rlp::{Block, Transaction};
@@ -368,6 +373,31 @@ mod rpc_impl {
         fn get_logs(&self, filter_object: FilterObject) -> RpcResult<Vec<LogObject>>;
     }
 
+    #[rpc(server, namespace = "light")]
+    pub trait Light {
+        #[method(name = "ping")]
+        fn ping(&self, node_id: NodeId) -> RpcResult<()>;
+
+        #[method(name = "store")]
+        async fn store(
+            &self,
+            node_id: Option<NodeId>,
+            dht_id: DhtId,
+            value: Bytes,
+        ) -> RpcResult<()>;
+
+        #[method(name = "find_node")]
+        fn find_node(&self, node_id: Option<NodeId>) -> RpcResult<Vec<NodeId>>;
+
+        #[method(name = "find_value")]
+        fn find_value(
+            &self,
+            node_id: Option<NodeId>,
+            dht_id: DhtId,
+            bucket: Bucket,
+        ) -> RpcResult<Vec<NodeId>>;
+    }
+
     #[derive(Clone)]
     pub struct RpcServerImpl {
         pub(crate) node: Arc<Node>,
@@ -611,11 +641,52 @@ mod rpc_impl {
             not_implemented!()
         }
     }
+
+    #[async_trait]
+    impl LightServer for RpcServerImpl {
+        fn ping(&self, node_id: NodeId) -> RpcResult<()> {
+            not_implemented!()
+        }
+
+        async fn store(
+            &self,
+            node_id: Option<NodeId>,
+            dht_id: DhtId,
+            value: Bytes,
+        ) -> RpcResult<()> {
+            let node_id = if node_id.is_none() {
+                self.node.network.node_id
+            } else {
+                node_id.unwrap()
+            };
+            match dht_id {
+                DhtId::Block => {
+                    let block = DhtBlocks::decode(&value)?;
+                    self.node.light_network.store_block(node_id, block).await?;
+                }
+                DhtId::State => {}
+            }
+            Ok(())
+        }
+
+        fn find_node(&self, node_id: Option<NodeId>) -> RpcResult<Vec<NodeId>> {
+            not_implemented!()
+        }
+
+        fn find_value(
+            &self,
+            node_id: Option<NodeId>,
+            dht_id: DhtId,
+            bucket: Bucket,
+        ) -> RpcResult<Vec<NodeId>> {
+            not_implemented!()
+        }
+    }
 }
 
 use crate::net::node::NodeError;
 use crate::node::Node;
-use rpc_impl::{EthServer, NetServer, RpcServerImpl, Web3Server};
+use rpc_impl::{EthServer, LightServer, NetServer, RpcServerImpl, Web3Server};
 
 impl Rpc {
     pub async fn new(
@@ -649,7 +720,9 @@ impl Rpc {
         let mut rpc = Web3Server::into_rpc(rpc_impl.clone());
         rpc.merge(NetServer::into_rpc(rpc_impl.clone()))
             .expect("should not fail");
-        rpc.merge(EthServer::into_rpc(rpc_impl))
+        rpc.merge(EthServer::into_rpc(rpc_impl.clone()))
+            .expect("should not fail");
+        rpc.merge(LightServer::into_rpc(rpc_impl))
             .expect("should not fail");
 
         let server_handle = self.server.start(rpc);

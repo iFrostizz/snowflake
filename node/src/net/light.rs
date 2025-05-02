@@ -177,10 +177,36 @@ impl LightNetwork {
         }
     }
 
+    async fn store<DHT, K, V>(
+        &self,
+        dht: &Arc<DHT>,
+        node_id: NodeId,
+        value: V,
+    ) -> Result<(), LightError>
+    where
+        DHT: ConcreteDht<K> + DhtContent<K, V>,
+    {
+        let encoded = DHT::encode(value)?;
+        if node_id == self.light_peers.node_id {
+            dht.insert_to_store(encoded)?;
+            Ok(())
+        } else {
+            self.kademlia_dht.store(node_id, &DHT::id(), encoded).await
+        }
+    }
+
     pub async fn find_block(&self, number: u64) -> Result<Block, LightError> {
         self.find_content(&self.block_dht, number)
             .await
             .map(|stateless_block| stateless_block.block)
+    }
+
+    pub async fn store_block(
+        &self,
+        node_id: NodeId,
+        block: StatelessBlock,
+    ) -> Result<(), LightError> {
+        self.store(&self.block_dht, node_id, block).await
     }
 }
 
@@ -195,7 +221,6 @@ pub trait DhtContent<K, V>: ConcreteDht<K> {
     /// If the content is ill-formed, it should not be stored.
     fn verify(&self, value: &V) -> bool;
     /// Typed to encoded value
-    #[allow(unused)]
     fn encode(value: V) -> Result<Vec<u8>, LightError>;
     /// Encoded to typed value
     fn decode(bytes: &[u8]) -> Result<V, LightError>;
@@ -234,7 +259,7 @@ impl DhtContent<u64, StatelessBlock> for DhtBlocks {
         true
     }
 
-    fn encode(_value: StatelessBlock) -> Result<Vec<u8>, LightError> {
+    fn encode(value: StatelessBlock) -> Result<Vec<u8>, LightError> {
         todo!()
     }
 
