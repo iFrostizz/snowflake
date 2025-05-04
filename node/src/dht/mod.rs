@@ -96,6 +96,12 @@ impl From<&DhtId> for u32 {
     }
 }
 
+impl From<DhtId> for u32 {
+    fn from(value: DhtId) -> Self {
+        (&value).into()
+    }
+}
+
 #[derive(Debug)]
 pub enum LightMessage {
     NewPeer(DhtBuckets),
@@ -141,6 +147,10 @@ pub mod light_errors {
     pub(crate) const PEER_MISSING: LightError = LightError {
         code: 7,
         message: "The peer is missing",
+    };
+    pub(crate) const SEND_TO_SELF: LightError = LightError {
+        code: 8,
+        message: "Cannot send message to self",
     };
 }
 

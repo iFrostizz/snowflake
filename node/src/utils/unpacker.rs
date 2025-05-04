@@ -41,6 +41,7 @@ impl Unpacker {
 
 #[derive(Debug)]
 pub struct StatelessBlock {
+    #[allow(unused)]
     pub version: Option<Vec<u8>>,
     pub parent_id: BlockID,
     pub timestamp: u64,
@@ -78,9 +79,6 @@ impl StatelessBlock {
 
         let rlp_bytes = Unpacker::unpack_bytes(bytes, &mut cursor, "rlp_bytes".to_string())?;
         let block = Block::decode(rlp_bytes)?;
-        dbg!(&block);
-        // println!("{:?}", &block.encode().unwrap());
-        pretty_assertions::assert_eq!(block.encode().unwrap(), rlp_bytes);
 
         let sig_bytes = Unpacker::unpack_bytes(bytes, &mut cursor, "sig_bytes".to_string())?;
 

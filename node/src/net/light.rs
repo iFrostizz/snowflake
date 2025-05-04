@@ -134,7 +134,7 @@ impl LightNetwork {
     }
 
     /// Lookup locally for nodes spanning the bucket.
-    fn find_node(&self, bucket: &Bucket) -> Vec<ConnectionData> {
+    pub fn find_node(&self, bucket: &Bucket) -> Vec<ConnectionData> {
         self.kademlia_dht.find_node(bucket)
     }
 
@@ -195,6 +195,7 @@ impl LightNetwork {
         }
     }
 
+    // TODO: those dht-specific functions should be placed outside of this struct.
     pub async fn find_block(&self, number: u64) -> Result<Block, LightError> {
         self.find_content(&self.block_dht, number)
             .await
@@ -207,6 +208,27 @@ impl LightNetwork {
         block: StatelessBlock,
     ) -> Result<(), LightError> {
         self.store(&self.block_dht, node_id, block).await
+    }
+
+    pub async fn ping(&self, node_id: NodeId) -> Result<(), LightError> {
+        if node_id == self.light_peers.node_id {
+            return Err(light_errors::SEND_TO_SELF);
+        }
+        let maybe_peer_infos = {
+            let peers_infos = self.kademlia_dht.peers_infos.read().unwrap();
+            peers_infos.get(&node_id).cloned()
+        };
+        if let Some(peer_infos) = maybe_peer_infos {
+            peer_infos
+                .ping(&self.kademlia_dht.mail_tx)
+                .await
+                .map_err(|_todo_err| LightError {
+                    code: 8,
+                    message: "TODO",
+                })
+        } else {
+            Err(light_errors::PEER_MISSING)
+        }
     }
 }
 

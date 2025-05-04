@@ -38,10 +38,10 @@ where
 
 #[derive(Debug)]
 pub struct KademliaDht {
-    peers_infos: Arc<RwLock<IndexMap<NodeId, PeerInfo>>>,
+    pub peers_infos: Arc<RwLock<IndexMap<NodeId, PeerInfo>>>,
     light_peers: LightPeers,
-    mail_tx: Sender<Mail>,
-    chain_id: ChainId,
+    pub mail_tx: Sender<Mail>,
+    pub chain_id: ChainId,
     /// Maximum number of nodes to return in a `find_node` request.
     max_nodes: usize,
 }

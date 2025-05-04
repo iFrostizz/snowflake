@@ -1636,7 +1636,7 @@ impl AccessList {
 #[cfg(test)]
 mod tests {
     use crate::utils::unpacker::StatelessBlock;
-    // use pretty_assertions::assert_eq;
+    use pretty_assertions::assert_eq;
     use std::fmt::Debug;
     use std::fs;
 
