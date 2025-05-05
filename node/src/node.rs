@@ -35,6 +35,7 @@ use tokio::sync::{broadcast, OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinHandle;
 use tokio::time::{self};
 
+#[derive(Debug)]
 pub struct Node {
     pub(crate) network: Arc<Network>,
     pub(crate) light_network: LightNetwork,
@@ -76,7 +77,7 @@ impl Node {
 
         let connection_queue = Arc::new(ConnectionQueue::new(max_concurrent));
         let peers_infos = Arc::new(RwLock::new(IndexMap::new()));
-        let network = Network::new(network_config, node_id, peers_infos.clone()).unwrap();
+        let network = Arc::new(Network::new(network_config, node_id, peers_infos.clone()).unwrap());
         let mail_box = MailBox::new(max_latency_records);
         let light_network = LightNetwork::new(
             network.node_id,
@@ -93,7 +94,7 @@ impl Node {
         );
 
         Self {
-            network: Arc::new(network),
+            network,
             light_network,
             connection_queue,
             mail_box: Arc::new(mail_box),
@@ -147,6 +148,7 @@ impl Node {
         let node = self.clone();
         let rx2 = rx.resubscribe();
         // TODO this is probably bad design to have the node being passed twice here.
+        // TODO The light network may be independent.
         let light = tokio::spawn(async move { node.light_network.start(node.clone(), rx2).await });
 
         let node = self.clone();
@@ -354,6 +356,9 @@ impl Node {
     ) {
         let mut maybe_hs_permit = Some(hs_permit);
 
+        // TODO: this is single-threaded and the verification in the light_network.manage_message
+        //  function is asynchronous and may take some time, which will bloat message processing.
+        //  We should make it multi-threaded.
         loop {
             log::trace!("execute");
             tokio::select! {
@@ -364,7 +369,7 @@ impl Node {
                 }
                 res = rpl.recv_async() => {
                     if let Ok((msg, resp)) = res {
-                        self.light_network.manage_message(&node_id, msg, resp);
+                        self.light_network.manage_message(&node_id, msg, resp).await;
                     }
                 }
                 _ = rx.recv() => {
@@ -672,34 +677,6 @@ impl Node {
             peers.insert(p);
         }
         peers.into_iter().collect()
-    }
-
-    pub fn pick_peer(&self, config: SinglePickerConfig) -> Option<NodeId> {
-        match config {
-            SinglePickerConfig::Bootstrapper => {
-                let peers = self.network.peers_infos.read().unwrap();
-                let available_peers: HashSet<_> = peers.keys().collect();
-                let bootstrappers = self.network.bootstrappers.read().unwrap();
-                let bootstrappers: HashSet<_> = bootstrappers
-                    .iter()
-                    .filter_map(|(node_id, buckets)| {
-                        if buckets.is_none() {
-                            Some(node_id)
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-                let inter: Vec<_> = bootstrappers.intersection(&available_peers).collect();
-                if inter.is_empty() {
-                    None
-                } else {
-                    let i = (rand::random::<u64>() % inter.len() as u64) as usize;
-                    Some(**inter[i])
-                }
-            }
-            _ => todo!(),
-        }
     }
 
     pub async fn send_to_peers(

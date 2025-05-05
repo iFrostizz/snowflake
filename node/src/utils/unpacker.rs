@@ -48,7 +48,7 @@ pub struct StatelessBlock {
     pub p_chain_height: u64,
     pub certificate: Vec<u8>,
     pub block: Block,
-    pub id: BlockID,
+    id: BlockID,
     pub sig: Vec<u8>,
 }
 
@@ -108,6 +108,10 @@ impl StatelessBlock {
             id,
             sig: sig_bytes.to_vec(),
         })
+    }
+
+    pub fn id(&self) -> &BlockID {
+        &self.id
     }
 
     pub fn pack(&self) -> Result<Vec<u8>, PackerError> {

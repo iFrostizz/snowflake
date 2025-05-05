@@ -1,7 +1,7 @@
 use super::{Id, IdError};
 use serde::{Deserialize, Deserializer, Serialize};
 
-#[derive(Debug, Clone, Eq, Hash, PartialEq, Default)]
+#[derive(Debug, Clone, Copy, Eq, Hash, PartialEq, Default)]
 pub struct BlockID {
     id: Id<{ Self::LEN }>,
 }

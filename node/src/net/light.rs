@@ -15,7 +15,9 @@ use crate::utils::unpacker::StatelessBlock;
 use crate::Arc;
 use flume::Sender;
 use indexmap::IndexMap;
-use std::collections::{HashMap, HashSet};
+#[cfg(test)]
+use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::{LockResult, RwLockReadGuard, RwLockWriteGuard};
 use tokio::sync::broadcast;
 use tokio::sync::oneshot;
@@ -45,8 +47,7 @@ impl LightNetwork {
         config: LightNetworkConfig,
         max_light_peers: Option<usize>,
     ) -> Self {
-        let store = RwLock::new(HashMap::new());
-        let block_dht = Arc::new(DhtBlocks::new(node_id, Bucket::from(10), store));
+        let block_dht = Arc::new(DhtBlocks::new(node_id));
         let light_peers = LightPeers::new(
             node_id,
             peers_infos.clone(),
@@ -80,7 +81,7 @@ impl LightNetwork {
         Ok(())
     }
 
-    pub fn manage_message(
+    pub async fn manage_message(
         &self,
         node_id: &NodeId,
         message: LightMessage,
@@ -96,6 +97,7 @@ impl LightNetwork {
                     DhtId::Block => self
                         .block_dht
                         .insert_to_store(value)
+                        .await
                         .map(|_| LightValue::Ok),
                     _ => Err(light_errors::INVALID_DHT),
                 };
@@ -109,7 +111,7 @@ impl LightNetwork {
             }
             LightMessage::FindValue(dht_id, bucket) => {
                 let res = match dht_id {
-                    DhtId::Block => self.find_value(&self.block_dht.store, &bucket),
+                    DhtId::Block => self.find_value(&self.block_dht.dht.store, &bucket),
                     _ => Err(light_errors::INVALID_DHT),
                 };
                 Some(res)
@@ -188,7 +190,7 @@ impl LightNetwork {
     {
         let encoded = DHT::encode(value)?;
         if node_id == self.light_peers.node_id {
-            dht.insert_to_store(encoded)?;
+            dht.insert_to_store(encoded).await?;
             Ok(())
         } else {
             self.kademlia_dht.store(node_id, &DHT::id(), encoded).await
@@ -209,27 +211,6 @@ impl LightNetwork {
     ) -> Result<(), LightError> {
         self.store(&self.block_dht, node_id, block).await
     }
-
-    pub async fn ping(&self, node_id: NodeId) -> Result<(), LightError> {
-        if node_id == self.light_peers.node_id {
-            return Err(light_errors::SEND_TO_SELF);
-        }
-        let maybe_peer_infos = {
-            let peers_infos = self.kademlia_dht.peers_infos.read().unwrap();
-            peers_infos.get(&node_id).cloned()
-        };
-        if let Some(peer_infos) = maybe_peer_infos {
-            peer_infos
-                .ping(&self.kademlia_dht.mail_tx)
-                .await
-                .map_err(|_todo_err| LightError {
-                    code: 8,
-                    message: "TODO",
-                })
-        } else {
-            Err(light_errors::PEER_MISSING)
-        }
-    }
 }
 
 pub trait DhtContent<K, V>: ConcreteDht<K> {
@@ -237,57 +218,15 @@ pub trait DhtContent<K, V>: ConcreteDht<K> {
     fn get_from_store(&self, bucket: &Bucket) -> Result<Option<V>, LightError>;
     /// Insert an encoded value into the store.
     /// If the value is ill-formed, it should not be stored.
-    fn insert_to_store(&self, bytes: Vec<u8>) -> Result<Option<V>, LightError>;
+    async fn insert_to_store(&self, bytes: Vec<u8>) -> Result<Option<V>, LightError>;
     /// Verification of the validity of the content.
     /// It is used to check if the content is well-formed.
     /// If the content is ill-formed, it should not be stored.
-    fn verify(&self, value: &V) -> bool;
+    async fn verify(&self, value: &V) -> Result<bool, LightError>;
     /// Typed to encoded value
     fn encode(value: V) -> Result<Vec<u8>, LightError>;
     /// Encoded to typed value
     fn decode(bytes: &[u8]) -> Result<V, LightError>;
-}
-
-impl DhtContent<u64, StatelessBlock> for DhtBlocks {
-    fn get_from_store(&self, bucket: &Bucket) -> Result<Option<StatelessBlock>, LightError> {
-        match self.store.get(bucket) {
-            Some(block_bytes) => {
-                let block = Self::decode(&block_bytes)?;
-                Ok(Some(block))
-            }
-            None => Ok(None),
-        }
-    }
-
-    fn insert_to_store(&self, bytes: Vec<u8>) -> Result<Option<StatelessBlock>, LightError> {
-        let decoded = Self::decode(&bytes)?;
-        if !self.verify(&decoded) {
-            return Err(light_errors::INVALID_CONTENT);
-        }
-        let number = u64::from_be_bytes(*decoded.block.header.number());
-        let bucket = Self::key_to_bucket(number);
-        if !self.is_desired_bucket(&bucket) {
-            return Err(light_errors::UNDESIRED_BUCKET);
-        }
-        match self.store.insert(bucket, bytes) {
-            Some(ret_bytes) => Ok(Some(Self::decode(&ret_bytes)?)),
-            None => Ok(None),
-        }
-    }
-
-    fn verify(&self, _block: &StatelessBlock) -> bool {
-        // TODO implement robust block verification i.e make sure that the hash matches at least.
-        //   Then, send GetAccepted message to bootstrap node if this block doesn't come from a bootstrap node.
-        true
-    }
-
-    fn encode(value: StatelessBlock) -> Result<Vec<u8>, LightError> {
-        value.pack().map_err(|_| light_errors::ENCODING_FAILED)
-    }
-
-    fn decode(bytes: &[u8]) -> Result<StatelessBlock, LightError> {
-        StatelessBlock::unpack(bytes).map_err(|_| light_errors::DECODING_FAILED)
-    }
 }
 
 #[derive(Debug, Clone)]

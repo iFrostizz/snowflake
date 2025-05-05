@@ -35,9 +35,9 @@ mod rpc_impl {
     use super::*;
     use crate::dht::block::DhtBlocks;
 
-    use crate::dht::light_errors;
     use crate::dht::Bucket;
     use crate::dht::DhtId;
+    use crate::dht::{light_errors, LightError};
     use crate::id::NodeId;
     use crate::message::SubscribableMessage;
     use crate::net::light::DhtContent;
@@ -668,8 +668,33 @@ mod rpc_impl {
     #[async_trait]
     impl LightServer for RpcServerImpl {
         async fn ping(&self, node_id: NodeId) -> RpcResult<()> {
-            self.node.light_network.ping(node_id).await?;
-            Ok(())
+            if node_id == self.node.network.node_id {
+                return Err(light_errors::SEND_TO_SELF.into());
+            }
+            let maybe_peer_infos = {
+                let peers_infos = self
+                    .node
+                    .light_network
+                    .kademlia_dht
+                    .peers_infos
+                    .read()
+                    .unwrap();
+                peers_infos.get(&node_id).cloned()
+            };
+            if let Some(peer_infos) = maybe_peer_infos {
+                peer_infos
+                    .ping(&self.node.light_network.kademlia_dht.mail_tx)
+                    .await
+                    .map_err(|_todo_err| {
+                        LightError {
+                            code: 8,
+                            message: "TODO",
+                        }
+                        .into()
+                    })
+            } else {
+                Err(light_errors::PEER_MISSING.into())
+            }
         }
 
         async fn store(
@@ -789,7 +814,7 @@ mod rpc_impl {
             {
                 match dht_id {
                     DhtId::Block => {
-                        let store = self.node.light_network.block_dht.store.read().unwrap();
+                        let store = self.node.light_network.block_dht.dht.store.read().unwrap();
                         match store.get(&bucket) {
                             Some(value) => RpcValueOrNodes::Value(Value::Block(block_to_rpc(
                                 DhtBlocks::decode(value)?.block,
