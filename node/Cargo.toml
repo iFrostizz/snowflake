@@ -12,7 +12,7 @@ path = "src/bin.rs"
 [dependencies]
 prost = { workspace = true }
 proto = { workspace = true }
-rustls = "0.23.2"
+rustls = "0.23.27"
 rustls-pemfile = "2.1.1"
 log = "0.4.21"
 webpki-roots = "0.26.1"
