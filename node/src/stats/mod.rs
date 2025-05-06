@@ -154,7 +154,7 @@ pub mod latency {
 }
 
 // TODO this won't be sustainable. Find a way to make it compile-time and not annoying to write.
-// maybe write a newtype struct that does that ?
+//  Maybe write a newtype struct that does that ?
 const SENT_PING_BYTES: &str = "sent_ping_bytes";
 const RECV_PING_BYTES: &str = "recv_ping_bytes";
 

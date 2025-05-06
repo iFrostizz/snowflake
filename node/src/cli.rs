@@ -36,7 +36,7 @@ pub struct Args {
     #[arg(long)]
     pub public_ip: Option<IpAddr>,
 
-    /// Public port of the node
+    /// Public port of the node. If set to 0, it will ask the OS to assign it.
     #[arg(long, default_value_t = 9751)]
     pub http_port: u16,
 
@@ -88,6 +88,10 @@ pub struct Args {
     #[arg(long, default_value_t = 60000)]
     pub intervals_get_peer_list_ms: u64,
 
+    /// Intervals configuration
+    #[arg(long, default_value_t = 60000)]
+    pub intervals_find_nodes: u64,
+
     #[arg(long, default_value_t = 9000)]
     pub metrics_port: u16,
 
@@ -96,6 +100,9 @@ pub struct Args {
 
     #[arg(long, default_value = "50")]
     pub max_peers: Option<usize>,
+
+    #[arg(long, default_value = "50")]
+    pub max_light_peers: Option<usize>,
 
     /// RPC port
     #[arg(long, default_value_t = 9781)]
@@ -129,6 +136,7 @@ impl Args {
         Intervals {
             ping: self.intervals_ping_ms,
             get_peer_list: self.intervals_get_peer_list_ms,
+            find_nodes: self.intervals_find_nodes,
         }
     }
 
@@ -148,7 +156,7 @@ impl Args {
         let network = &self.network_id.to_string();
         let network_id = constants::NETWORK[network];
         let eth_network_id = constants::ETH_NETWORK[network];
-        let c_chain_id: ChainId = constants::C_CHAIN_ID[network].clone();
+        let c_chain_id: ChainId = constants::C_CHAIN_ID[network];
 
         let socket_addr = match self.public_ip.unwrap() {
             IpAddr::V4(ip) => SocketAddr::new(IpAddr::V4(ip), self.http_port),
@@ -170,11 +178,13 @@ impl Args {
             bucket_size: 500_000,           // 500 kB
             max_concurrent_handshakes: self.max_handshakes,
             max_peers: self.max_peers,
+            max_light_peers: self.max_light_peers,
             bootstrappers: Bootstrappers::new(
                 &self.bootstrappers_path,
                 &self.light_bootstrappers_path,
             )
-            .bootstrappers(&self.network_id.to_string()),
+            .bootstrappers(&self.network_id.to_string())
+            .expect("failed to instantiate bootstrappers"),
             dht_buckets: DhtBuckets {
                 block: Bucket::try_from(self.block_dht_buckets).unwrap(),
             },

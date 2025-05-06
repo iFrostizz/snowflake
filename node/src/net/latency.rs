@@ -10,6 +10,7 @@ struct Latency {
 }
 
 impl Latency {
+    /// Calculates the latency by averaging all records from the cache.
     fn get_lat_nanos(&self) -> u128 {
         let records = &self.records;
         let sum = records

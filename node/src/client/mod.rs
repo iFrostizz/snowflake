@@ -9,10 +9,9 @@ pub(crate) mod config;
 pub(crate) mod tls;
 
 pub async fn start(
-    node: &Arc<Node>,
+    node: Arc<Node>,
     bootstrappers_path: &Path,
     light_bootstrappers_path: &Path,
-    max_connections: usize,
     network_name: &str,
 ) -> Result<(), NodeError> {
     // TODO we need tracing to have these function-level logs
@@ -20,8 +19,9 @@ pub async fn start(
 
     let boot = Bootstrappers::new(bootstrappers_path, light_bootstrappers_path);
     let res = boot
-        .bootstrap_all(node, max_connections, network_name)
-        .await;
+        .bootstrap_all(node, network_name)
+        .await
+        .map_err(|err| NodeError::Message(format!("io error {err}")))?;
     let bootstrapped = res.len();
     let errs: Vec<_> = res.into_iter().filter_map(Result::err).collect();
     if !errs.is_empty() && errs.len() == bootstrapped {

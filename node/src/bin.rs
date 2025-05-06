@@ -1,5 +1,5 @@
-use crate::net::Network;
 use crate::node::Node;
+use crate::server::listener::Listener;
 use crate::server::{config, Server};
 use cli::Args;
 use net::node::NodeError;
@@ -48,27 +48,33 @@ async fn main() -> Result<(), NodeError> {
 
     debugger!(false);
 
-    let args = cli::read_args().await?;
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
+    let mut args = cli::read_args().await?;
     log::debug!("args: {:?}", args);
 
+    let server_config = config::server_config(&args.cert_path, &args.pem_key_path);
+    let server_config = Arc::new(server_config);
+    let listener = Listener::new(args.http_port, server_config, args.max_in_connections).await;
+    args.http_port = listener.network_port;
+
     let network_config = args.network_config();
-    let network = Network::new(network_config).unwrap();
 
     let node = Arc::new(Node::new(
-        network,
+        network_config,
         args.max_out_connections,
         args.max_latency_records,
         args.sync_headers,
     ));
+    node.light_network.block_dht.todo_attach_node(node.clone());
 
-    let (node_tx, node_ops, server) = server(&node, &args).await;
+    let (node_tx, node_ops, server) = server(node.clone(), listener, &args).await;
 
     let client = tokio::task::spawn(async move {
         client::start(
-            &node,
+            node,
             &args.bootstrappers_path,
             &args.light_bootstrappers_path,
-            args.max_out_connections,
             &args.network_id.to_string(),
         )
         .await
@@ -104,7 +110,8 @@ async fn main() -> Result<(), NodeError> {
 }
 
 async fn server(
-    node: &Arc<Node>,
+    node: Arc<Node>,
+    listener: Listener,
     args: &Args,
 ) -> (
     broadcast::Sender<()>,
@@ -124,20 +131,10 @@ async fn server(
             .await
     });
 
-    let server_config = config::server_config(&args.cert_path, &args.pem_key_path);
-    let server_config = Arc::new(server_config);
     let node2 = node.clone();
     let rpc_port = args.rpc_port;
-    let max_in_connections = args.max_in_connections;
     let server = tokio::task::spawn(async move {
-        Server::start(
-            node2,
-            server_config,
-            transaction_tx,
-            rpc_port,
-            max_in_connections,
-        )
-        .await
+        Server::start(node2, listener, transaction_tx, rpc_port).await
     });
 
     (node_tx, node_ops, server)

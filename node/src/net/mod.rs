@@ -1,9 +1,12 @@
 use crate::dht::kademlia::ValueOrNodes;
 use crate::dht::LightError;
-use crate::dht::{Bucket, DhtId, LightMessage, LightResult};
+use crate::dht::{Bucket, LightMessage, LightResult};
 use crate::dht::{DhtBuckets, LightValue};
 use crate::id::{ChainId, NodeId};
+use crate::message::mail_box::Mail;
 use crate::message::{mail_box::MailBox, pipeline::Pipeline, MiniMessage, SubscribableMessage};
+use crate::net::node::SendErrorWrapper;
+use crate::net::sdk::Store;
 use crate::net::sdk::{FindNode, FindValue, LightHandshake};
 use crate::net::{
     ip::SignedIp,
@@ -77,8 +80,7 @@ pub struct Network {
     pub client: Client,
     pub client_config: Arc<ClientConfig>,
     /// All peers discovered by the node
-    pub peers_infos: Arc<RwLock<IndexMap<NodeId, PeerInfo>>>, // TODO can we find a way to do it lock-less ?
-    pub light_peers: Arc<RwLock<HashMap<NodeId, DhtBuckets>>>,
+    pub peers_infos: Arc<RwLock<IndexMap<NodeId, PeerInfo>>>,
     pub bootstrappers: RwLock<HashMap<NodeId, Option<DhtBuckets>>>,
     pub out_pipeline: Arc<Pipeline>,
     /// The canonically sorted validators map
@@ -86,14 +88,14 @@ pub struct Network {
     pub public_key: [u8; Bls::PUBLIC_KEY_BYTES],
     pub node_pop: Vec<u8>,
     pub handshake_semaphore: Arc<Semaphore>,
-    pub buckets: DhtBuckets,
 }
 
 /// Intervals of operations in milliseconds
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Intervals {
     pub ping: u64,
     pub get_peer_list: u64,
+    pub find_nodes: u64,
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -169,7 +171,7 @@ impl Peer {
         let (spn, rpn) = flume::unbounded();
         let (spl, rpl) = flume::unbounded();
         let (snp, rnp) = flume::unbounded();
-        let sender: PeerSender = snp.into();
+        let sender = PeerSender { tx: snp, node_id };
 
         Self {
             identity: PeerIdentity {
@@ -212,7 +214,7 @@ impl Peer {
         &self.channels.rpl
     }
 
-    pub fn take_tls(
+    fn take_tls(
         &mut self,
     ) -> (
         ReadHalf<TlsStream<TcpStream>>,
@@ -279,14 +281,18 @@ impl Peer {
     #[allow(clippy::type_complexity)]
     pub fn communicate(
         mut self,
+        peers_infos: Arc<RwLock<IndexMap<NodeId, PeerInfo>>>,
+        intervals: Intervals,
         out_pipeline: Arc<Pipeline>,
         mail_box: Arc<MailBox>,
-        c_chain_id: ChainId,
+        chain_id: ChainId,
         disconnection_rx: broadcast::Receiver<()>,
     ) -> (
         JoinHandle<Result<(), NodeError>>,
         JoinHandle<Result<(), NodeError>>,
+        JoinHandle<Result<(), NodeError>>,
     ) {
+        let mail_tx = mail_box.tx().clone();
         let (read, write) = self.take_tls();
 
         let disconnection_rx2 = disconnection_rx.resubscribe();
@@ -300,10 +306,20 @@ impl Peer {
 
         let peer = Arc::new(self);
         let sender = peer.channels.sender.clone();
-        let read =
-            tokio::spawn(peer.read_peer(read, mail_box, sender, c_chain_id, disconnection_rx));
 
-        (write, read)
+        let peer2 = peer.clone();
+        let disconnection_rx2 = disconnection_rx.resubscribe();
+        let read =
+            tokio::spawn(peer2.read_peer(read, mail_box, sender, chain_id, disconnection_rx2));
+
+        let recurring = tokio::spawn(peer.loop_messages_peer(
+            peers_infos,
+            intervals,
+            mail_tx,
+            disconnection_rx,
+        ));
+
+        (write, read, recurring)
     }
 
     async fn connect(
@@ -371,6 +387,38 @@ impl Peer {
         }
     }
 
+    /// Send messages to a peer on a recurring basis
+    async fn loop_messages_peer(
+        self: Arc<Peer>,
+        peers_infos: Arc<RwLock<IndexMap<NodeId, PeerInfo>>>,
+        intervals: Intervals,
+        mail_tx: Sender<Mail>,
+        mut rx: broadcast::Receiver<()>,
+    ) -> Result<(), NodeError> {
+        let mut ping_interval = tokio::time::interval(Duration::from_millis(intervals.ping));
+        // let mut find_nodes_interval = tokio::time::interval(Duration::from_millis(intervals.find_nodes));
+        let node_id = self.identity.node_id;
+
+        loop {
+            tokio::select! {
+                _ = ping_interval.tick() => {
+                    let Some(peer_info) = peers_infos.read().unwrap().get(&node_id).cloned() else {
+                        continue;
+                    };
+                    peer_info.ping(&mail_tx).await?;
+                }
+                // _ = find_nodes_interval.tick() => {
+                //     if let Some(peer_info) = peers_infos.read().unwrap().get(&node_id) {
+                //         peer_info.find_nodes(node_id, &mail_tx).await?;
+                //     }
+                // }
+                _ = rx.recv() => {
+                    return Ok(());
+                }
+            }
+        }
+    }
+
     /// Continuously read messages and return an error on an EOF
     async fn read_messages(
         &self,
@@ -419,7 +467,7 @@ impl Peer {
                 None
             };
 
-        // TODO if this node holds a stake, here is the minimum amount of messages to handle since
+        // NOTE if this node holds a stake, here is the minimum number of messages to handle since
         //   they are registered and will get the node benched:
         //   AppRequest, PullQuery, PushQuery, Get, GetAncestors, GetAccepted, GetAcceptedFrontier, GetAcceptedStateSummary, GetStateSummaryFrontier
         log::trace!("new incoming message {decoded:?}");
@@ -443,15 +491,13 @@ impl Peer {
                 self.channels
                     .spn
                     .send(PeerMessage::ObserveUptime(ping))
-                    .map_err(|_| NodeError::SendError)?;
+                    .map_err(SendErrorWrapper::from)?;
 
                 // TODO track uptime
-                sender
-                    .send(Message::Pong(p2p::Pong {
-                        uptime: 100,
-                        subnet_uptimes: Vec::new(),
-                    }))
-                    .map_err(|_| NodeError::SendError)?;
+                sender.send(Message::Pong(p2p::Pong {
+                    uptime: 100,
+                    subnet_uptimes: Vec::new(),
+                }))?;
             }
             Message::Handshake(handshake) => {
                 let Handshake {
@@ -476,7 +522,7 @@ impl Peer {
                         sender: sender.clone(),
                         known_peers,
                     })
-                    .map_err(|_| NodeError::SendError)?;
+                    .map_err(SendErrorWrapper::from)?;
 
                 let ip = ip_from_octets(ip_addr)
                     .map_err(|_| NodeError::Message("failed to serialize IP".to_string()))?;
@@ -502,13 +548,13 @@ impl Peer {
                             objected_acps,
                         },
                     })
-                    .map_err(|_| NodeError::SendError)?;
+                    .map_err(SendErrorWrapper::from)?;
             }
             Message::PeerList(peer_list) => {
                 self.channels
                     .spn
                     .send(PeerMessage::PeerList(peer_list))
-                    .map_err(|_| NodeError::SendError)?;
+                    .map_err(SendErrorWrapper::from)?;
             }
             Message::GetPeerList(GetPeerList { known_peers }) => {
                 self.channels
@@ -517,7 +563,7 @@ impl Peer {
                         sender: sender.clone(),
                         known_peers,
                     })
-                    .map_err(|_| NodeError::SendError)?;
+                    .map_err(SendErrorWrapper::from)?;
             }
             Message::AppRequest(app_request) => {
                 if app_request.chain_id != c_chain_id.as_ref() {
@@ -569,7 +615,7 @@ impl Peer {
                 }
             }
             Message::Pong(_pong) => {}
-            _ => log::debug!("unsupported message {} {}", mini, self.identity.node_id),
+            _ => log::trace!("unsupported message {} {}", mini, self.identity.node_id),
         };
 
         Ok(())
@@ -582,9 +628,17 @@ impl Peer {
         sender: &PeerSender,
         light_message: sdk::light_request::Message,
     ) -> Result<(), NodeError> {
-        log::debug!("received light message {light_message:?}");
+        log::trace!("received light message {light_message:?}");
         let chain_id = c_chain_id.as_ref().to_vec();
         let res = match light_message {
+            sdk::light_request::Message::Store(Store { dht_id, value }) => {
+                let dht_id = dht_id
+                    .try_into()
+                    .map_err(|_| NodeError::Message("unsupported DHT".to_string()))?;
+                spl.send((LightMessage::Store(dht_id, value), None))
+                    .map_err(SendErrorWrapper::from)?;
+                None
+            }
             sdk::light_request::Message::LightHandshake(LightHandshake { buckets }) => {
                 if let Some(buckets) = buckets {
                     let bucket_arr: [u8; 20] = buckets
@@ -599,17 +653,16 @@ impl Peer {
                 }
             }
             sdk::light_request::Message::FindValue(FindValue { dht_id, bucket }) => {
-                let dht_id = match dht_id {
-                    0 => DhtId::Block,
-                    _ => return Err(NodeError::Message("unsupported DHT".to_string())),
-                };
+                let dht_id = dht_id
+                    .try_into()
+                    .map_err(|_| NodeError::Message("unsupported DHT".to_string()))?;
                 let bucket_arr: [u8; 20] = bucket
                     .try_into()
                     .map_err(|_| NodeError::Message("invalid bucket".to_string()))?;
                 let bucket = Bucket::from_be_bytes(bucket_arr);
                 let (tx, rx) = oneshot::channel();
                 spl.send((LightMessage::FindValue(dht_id, bucket), Some(tx)))
-                    .map_err(|_| NodeError::SendError)?;
+                    .map_err(SendErrorWrapper::from)?;
                 Some(rx.await?)
             }
             sdk::light_request::Message::FindNode(FindNode { bucket }) => {
@@ -619,7 +672,7 @@ impl Peer {
                 let bucket = Bucket::from_be_bytes(bucket_arr);
                 let (tx, rx) = oneshot::channel();
                 spl.send((LightMessage::FindNode(bucket), Some(tx)))
-                    .map_err(|_| NodeError::SendError)?;
+                    .map_err(SendErrorWrapper::from)?;
                 Some(rx.await?)
             }
         };
@@ -629,11 +682,8 @@ impl Peer {
                 LightValue::ValueOrNodes(value_or_nodes) => {
                     let response: sdk::light_response::Message = match value_or_nodes {
                         ValueOrNodes::Value(value) => sdk::Value { value }.into(),
-                        ValueOrNodes::Nodes(nodes) => sdk::Nodes {
-                            node_ids: nodes
-                                .into_iter()
-                                .map(|node_id| node_id.as_ref().to_vec())
-                                .collect(),
+                        ValueOrNodes::Nodes(data) => p2p::PeerList {
+                            claimed_ip_ports: data.into_iter().map(Into::into).collect(),
                         }
                         .into(),
                     };
@@ -668,11 +718,11 @@ impl Peer {
         light_request: sdk::light_request::Message,
         light_response: sdk::light_response::Message,
     ) -> Result<(), NodeError> {
-        log::debug!("received light message 2 {light_response:?}");
+        log::trace!("received light response {light_response:?}");
 
         match light_response {
             sdk::light_response::Message::Ack(_) => {}
-            sdk::light_response::Message::Nodes(sdk::Nodes { node_ids }) => {
+            sdk::light_response::Message::Nodes(p2p::PeerList { claimed_ip_ports }) => {
                 if !matches!(
                     light_request,
                     sdk::light_request::Message::FindValue(_)
@@ -680,21 +730,16 @@ impl Peer {
                 ) {
                     return Err(NodeError::Message("invalid request".to_string()));
                 }
-                if node_ids.len() > 10 {
+                if claimed_ip_ports.len() > 10 {
                     // disconnect and decrease reputation
                     return Err(NodeError::Message("too many nodes".to_string()));
                 }
-                let node_ids: HashSet<_> = node_ids
+                let nodes: HashSet<_> = claimed_ip_ports
                     .into_iter()
-                    .filter_map(|node_id| {
-                        let arr: Option<[u8; 20]> = node_id.try_into().ok();
-                        arr.map(NodeId::from)
-                    })
+                    .filter_map(|claimed_ip_port| claimed_ip_port.try_into().ok())
                     .collect();
-                let node_ids: Vec<_> = node_ids.into_iter().collect();
-                let message = LightMessage::Nodes(node_ids);
-                spl.send((message, None))
-                    .map_err(|_| NodeError::SendError)?;
+                let message = LightMessage::Nodes(nodes.into_iter().collect());
+                spl.send((message, None)).map_err(SendErrorWrapper::from)?;
             }
             sdk::light_response::Message::Value(sdk::Value { value }) => {
                 let sdk::light_request::Message::FindValue(FindValue { dht_id, .. }) =
@@ -706,8 +751,7 @@ impl Peer {
                     .try_into()
                     .map_err(|_| NodeError::Message("invalid DHT".to_string()))?;
                 let message = LightMessage::Store(dht_id, value);
-                spl.send((message, None))
-                    .map_err(|_| NodeError::SendError)?;
+                spl.send((message, None)).map_err(SendErrorWrapper::from)?;
             }
         }
 

@@ -1,3 +1,4 @@
+use crate::net::node::NodeError;
 use crate::utils::{bls::Bls, ip::ip_octets, packer::Packer};
 use openssl::{
     error::ErrorStack,
@@ -51,28 +52,28 @@ impl UnsignedIp {
         packer.finish()
     }
 
-    pub fn sign_with_key(self, bls: &Bls, pem_key_path: &Path) -> SignedIp {
-        let pem_private_key = std::fs::read(pem_key_path).unwrap();
-        let pem_private_key = openssl::rsa::Rsa::private_key_from_pem(&pem_private_key).unwrap();
-        let pem_private_key = openssl::pkey::PKey::from_rsa(pem_private_key).unwrap();
+    pub fn sign_with_key(self, bls: &Bls, pem_key_path: &Path) -> Result<SignedIp, NodeError> {
+        let pem_private_key = std::fs::read(pem_key_path)?;
+        let rsa_private_key = Rsa::private_key_from_pem(&pem_private_key)?;
+        let private_key = PKey::from_rsa(rsa_private_key)?;
 
-        self.sign(&pem_private_key, bls)
+        Ok(self.sign(&private_key, bls)?)
     }
 
     /// Sign the sha256 of the public IP given the staker RSA private key
-    fn sign(self, keypair: &PKey<Private>, bls: &Bls) -> SignedIp {
-        let mut signer = Signer::new(MessageDigest::sha256(), keypair).unwrap();
+    fn sign(self, keypair: &PKey<Private>, bls: &Bls) -> Result<SignedIp, ErrorStack> {
+        let mut signer = Signer::new(MessageDigest::sha256(), keypair)?;
         let ip_bytes = self.bytes();
         assert_eq!(ip_bytes.len(), self.capacity());
-        signer.update(&ip_bytes).unwrap();
-        let ip_sig = signer.sign_to_vec().unwrap(); // TODO error handling if necessary
+        signer.update(&ip_bytes)?;
+        let ip_sig = signer.sign_to_vec()?;
         let ip_bls_sig = bls.sign_pop(&ip_bytes);
 
-        SignedIp {
+        Ok(SignedIp {
             unsigned_ip: self,
             ip_sig,
             ip_bls_sig,
-        }
+        })
     }
 
     // TODO handle certificate from the TLS connection
@@ -87,14 +88,14 @@ impl UnsignedIp {
             return Ok(false);
         }
 
-        let pkey = &PKey::from_rsa(pkey).unwrap();
-        let mut verifier = Verifier::new(MessageDigest::sha256(), pkey).unwrap();
+        let pkey = &PKey::from_rsa(pkey)?;
+        let mut verifier = Verifier::new(MessageDigest::sha256(), pkey)?;
 
         let as_bytes = self.bytes();
         let mut hasher = sha2::Sha256::new();
         hasher.update(as_bytes);
         let hashed_ip = hasher.finalize();
-        verifier.update(&hashed_ip).unwrap();
+        verifier.update(&hashed_ip)?;
 
         verifier.verify(signature)
     }
@@ -106,7 +107,7 @@ mod tests {
     use openssl::{
         hash::MessageDigest,
         pkey::PKey,
-        rsa::Padding,
+        rsa::{Padding, Rsa},
         sign::{Signer, Verifier},
         x509,
     };
@@ -147,7 +148,7 @@ mod tests {
         let cert_path = credentials_path.join("node.crt");
 
         let private_key = fs::read(private_key_path).unwrap();
-        let private_key_pem = openssl::rsa::Rsa::private_key_from_pem(&private_key).unwrap();
+        let private_key_pem = Rsa::private_key_from_pem(&private_key).unwrap();
         let keypair = PKey::from_rsa(private_key_pem).unwrap();
 
         let mut signer = Signer::new(MessageDigest::sha256(), &keypair).unwrap();
