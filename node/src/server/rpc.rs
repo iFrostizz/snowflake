@@ -33,7 +33,18 @@ macro_rules! not_implemented {
 
 mod rpc_impl {
     use super::*;
+    use crate::dht::block::DhtBlocks;
+    use crate::dht::light_errors;
+    use crate::dht::Bucket;
+    use crate::dht::DhtId;
+    use crate::id::NodeId;
+    use crate::message::SubscribableMessage;
+    use crate::net::light::DhtContent;
+    use crate::net::queue::ConnectionData;
     use crate::node::Node;
+    use crate::server::msg::AppRequestMessage;
+    use crate::server::msg::InboundMessage;
+    use crate::server::msg::InboundMessageExt;
     use crate::utils::constants;
     use crate::utils::rlp::{Block, Transaction};
     use crate::Arc;
@@ -44,6 +55,7 @@ mod rpc_impl {
     use jsonrpsee::core::{async_trait, RpcResult};
     use jsonrpsee::proc_macros::rpc;
     use jsonrpsee::types::ErrorObject;
+    use proto_lib::{p2p, sdk};
     use serde::{Deserialize, Deserializer, Serialize};
     use std::env;
     use std::str::FromStr;
@@ -368,6 +380,46 @@ mod rpc_impl {
         fn get_logs(&self, filter_object: FilterObject) -> RpcResult<Vec<LogObject>>;
     }
 
+    #[derive(Serialize, Clone)]
+    pub enum Value {
+        Block(alloy::rpc::types::Block),
+    }
+
+    #[derive(Serialize, Clone)]
+    pub enum RpcValueOrNodes {
+        Value(Value),
+        Nodes(Vec<NodeId>),
+    }
+
+    #[rpc(server, namespace = "light")]
+    pub trait Light {
+        #[method(name = "ping")]
+        async fn ping(&self, node_id: NodeId) -> RpcResult<()>;
+
+        #[method(name = "store")]
+        async fn store(
+            &self,
+            node_id: Option<NodeId>,
+            dht_id: DhtId,
+            value: Bytes,
+        ) -> RpcResult<()>;
+
+        #[method(name = "find_node")]
+        async fn find_node(
+            &self,
+            node_id: Option<NodeId>,
+            bucket: Bucket,
+        ) -> RpcResult<Vec<NodeId>>;
+
+        #[method(name = "find_value")]
+        async fn find_value(
+            &self,
+            node_id: Option<NodeId>,
+            dht_id: DhtId,
+            bucket: Bucket,
+        ) -> RpcResult<RpcValueOrNodes>;
+    }
+
     #[derive(Clone)]
     pub struct RpcServerImpl {
         pub(crate) node: Arc<Node>,
@@ -447,8 +499,12 @@ mod rpc_impl {
                 BlockParameter::Number(number) => number,
                 _ => not_implemented!(), // resolve block
             };
-            let block = self.node.light_network.find_block(number).await?;
-            Ok(block.transactions.len() as u64)
+            let block = self
+                .node
+                .light_network
+                .find_content(&self.node.light_network.block_dht, number)
+                .await?;
+            Ok(block.block.transactions.len() as u64)
         }
 
         fn get_uncle_count_by_block_hash(
@@ -534,9 +590,9 @@ mod rpc_impl {
             };
             self.node
                 .light_network
-                .find_block(number)
+                .find_content(&self.node.light_network.block_dht, number)
                 .await
-                .map(|block| block_to_rpc(block, full))
+                .map(|block| block_to_rpc(block.block, full))
                 .map_err(Into::into)
         }
 
@@ -611,11 +667,238 @@ mod rpc_impl {
             not_implemented!()
         }
     }
+
+    #[async_trait]
+    impl LightServer for RpcServerImpl {
+        async fn ping(&self, node_id: NodeId) -> RpcResult<()> {
+            if node_id == self.node.network.node_id {
+                return Err(light_errors::SEND_TO_SELF.into());
+            }
+            let maybe_peer_infos = {
+                let peers_infos = self
+                    .node
+                    .light_network
+                    .kademlia_dht
+                    .peers_infos
+                    .read()
+                    .unwrap();
+                peers_infos.get(&node_id).cloned()
+            };
+            if let Some(peer_infos) = maybe_peer_infos {
+                peer_infos
+                    .ping(&self.node.light_network.kademlia_dht.mail_tx)
+                    .await
+                    .map_err(|err| ErrorObject::owned(1000, err.to_string(), None::<()>))
+            } else {
+                Err(light_errors::PEER_MISSING.into())
+            }
+        }
+
+        async fn store(
+            &self,
+            node_id: Option<NodeId>,
+            dht_id: DhtId,
+            value: Bytes,
+        ) -> RpcResult<()> {
+            let node_id = if node_id.is_none() {
+                self.node.network.node_id
+            } else {
+                node_id.unwrap()
+            };
+            match dht_id {
+                DhtId::Block => {
+                    let block = DhtBlocks::decode(&value)?;
+                    self.node
+                        .light_network
+                        .store(&self.node.light_network.block_dht, node_id, block)
+                        .await?;
+                }
+                DhtId::State => {}
+            }
+            Ok(())
+        }
+
+        async fn find_node(
+            &self,
+            node_id: Option<NodeId>,
+            bucket: Bucket,
+        ) -> RpcResult<Vec<NodeId>> {
+            let node_ids = if node_id.is_none() || node_id == Some(self.node.network.node_id) {
+                self.node
+                    .light_network
+                    .kademlia_dht
+                    .find_node(&bucket)
+                    .into_iter()
+                    .map(|ConnectionData { node_id, .. }| node_id)
+                    .collect()
+            } else {
+                let node_id = node_id.unwrap();
+                let sender = {
+                    let peers_infos = self
+                        .node
+                        .light_network
+                        .kademlia_dht
+                        .peers_infos
+                        .read()
+                        .unwrap();
+                    let Some(peer_infos) = peers_infos.get(&node_id) else {
+                        return Err(light_errors::PEER_MISSING.into());
+                    };
+                    peer_infos.sender.clone()
+                };
+                let message = AppRequestMessage::encode(
+                    &self.node.light_network.kademlia_dht.chain_id,
+                    sdk::FindNode {
+                        bucket: bucket.to_be_bytes_vec(),
+                    },
+                );
+                let Ok(p2p::message::Message::AppRequest(app_request)) = message else {
+                    return Err(light_errors::INVALID_CONTENT.into());
+                };
+                let light_message: sdk::light_response::Message = sender
+                    .send_and_app_response(
+                        self.node.light_network.kademlia_dht.chain_id,
+                        constants::SNOWFLAKE_HANDLER_ID,
+                        &self.node.light_network.kademlia_dht.mail_tx,
+                        SubscribableMessage::AppRequest(app_request),
+                    )
+                    .await
+                    .map_err(|err| ErrorObject::owned(1000, err.to_string(), None::<()>))?;
+                match light_message {
+                    sdk::light_response::Message::Nodes(p2p::PeerList { claimed_ip_ports }) => {
+                        if claimed_ip_ports.len() > 10 {
+                            return Err(light_errors::INVALID_CONTENT.into());
+                        }
+                        claimed_ip_ports
+                            .into_iter()
+                            .filter_map(|claimed_ip_port| claimed_ip_port.try_into().ok())
+                            .map(|ConnectionData { node_id, .. }| node_id)
+                            .collect()
+                    }
+                    _ => return Err(light_errors::INVALID_CONTENT.into()),
+                }
+            };
+            Ok(node_ids)
+        }
+
+        async fn find_value(
+            &self,
+            node_id: Option<NodeId>,
+            dht_id: DhtId,
+            bucket: Bucket,
+        ) -> RpcResult<RpcValueOrNodes> {
+            let value_or_nodes = if node_id.is_none() || node_id == Some(self.node.network.node_id)
+            {
+                match dht_id {
+                    DhtId::Block => {
+                        let store = self.node.light_network.block_dht.dht.store.read().unwrap();
+                        match store.get(&bucket) {
+                            Some(value) => RpcValueOrNodes::Value(Value::Block(block_to_rpc(
+                                DhtBlocks::decode(value)?.block,
+                                true,
+                            ))),
+                            None => {
+                                let connections_data =
+                                    self.node.light_network.kademlia_dht.find_node(&bucket);
+                                let node_ids = connections_data
+                                    .into_iter()
+                                    .map(|ConnectionData { node_id, .. }| node_id)
+                                    .collect();
+                                RpcValueOrNodes::Nodes(node_ids)
+                            }
+                        }
+                    }
+                    _ => return Err(light_errors::INVALID_DHT.into()),
+                }
+            } else {
+                let node_id = node_id.unwrap();
+                let sender = {
+                    let peers_infos = self
+                        .node
+                        .light_network
+                        .kademlia_dht
+                        .peers_infos
+                        .read()
+                        .unwrap();
+                    let Some(peer_infos) = peers_infos.get(&node_id) else {
+                        return Err(light_errors::PEER_MISSING.into());
+                    };
+                    peer_infos.sender.clone()
+                };
+                let message = AppRequestMessage::encode(
+                    &self.node.light_network.kademlia_dht.chain_id,
+                    sdk::FindValue {
+                        dht_id: dht_id.into(),
+                        bucket: bucket.to_be_bytes_vec(),
+                    },
+                );
+                let Ok(p2p::message::Message::AppRequest(app_request)) = message else {
+                    return Err(light_errors::INVALID_CONTENT.into());
+                };
+                let rx = sender
+                    .send_and_response(
+                        &self.node.light_network.kademlia_dht.mail_tx,
+                        SubscribableMessage::AppRequest(app_request),
+                    )
+                    .map_err(|err| ErrorObject::owned(1000, err.to_string(), None::<()>))?;
+
+                let p2p::message::Message::AppResponse(app_response) = rx
+                    .await
+                    .map_err(|_| ErrorObject::borrowed(1000, "timeout", None))?
+                else {
+                    return Err(light_errors::INVALID_CONTENT.into());
+                };
+                if app_response.chain_id
+                    != self
+                        .node
+                        .light_network
+                        .kademlia_dht
+                        .chain_id
+                        .as_ref()
+                        .to_vec()
+                {
+                    return Err(light_errors::INVALID_CONTENT.into());
+                }
+                let bytes = app_response.app_bytes;
+                let Ok((app_id, bytes)) = unsigned_varint::decode::u64(&bytes) else {
+                    return Err(light_errors::INVALID_CONTENT.into());
+                };
+                if app_id != constants::SNOWFLAKE_HANDLER_ID {
+                    return Err(light_errors::INVALID_CONTENT.into());
+                }
+                let Ok(light_message) = InboundMessage::decode(bytes) else {
+                    return Err(light_errors::INVALID_CONTENT.into());
+                };
+                match light_message {
+                    sdk::light_response::Message::Value(sdk::Value { value }) => match dht_id {
+                        DhtId::Block => {
+                            let block = DhtBlocks::decode(&value)?;
+                            RpcValueOrNodes::Value(Value::Block(block_to_rpc(block.block, true)))
+                        }
+                        _ => return Err(light_errors::INVALID_DHT.into()),
+                    },
+                    sdk::light_response::Message::Nodes(p2p::PeerList { claimed_ip_ports }) => {
+                        if claimed_ip_ports.len() > 10 {
+                            return Err(light_errors::INVALID_CONTENT.into());
+                        }
+                        let node_ids = claimed_ip_ports
+                            .into_iter()
+                            .filter_map(|claimed_ip_port| claimed_ip_port.try_into().ok())
+                            .map(|ConnectionData { node_id, .. }| node_id)
+                            .collect();
+                        RpcValueOrNodes::Nodes(node_ids)
+                    }
+                    _ => return Err(light_errors::INVALID_CONTENT.into()),
+                }
+            };
+            Ok(value_or_nodes)
+        }
+    }
 }
 
 use crate::net::node::NodeError;
 use crate::node::Node;
-use rpc_impl::{EthServer, NetServer, RpcServerImpl, Web3Server};
+use rpc_impl::{EthServer, LightServer, NetServer, RpcServerImpl, Web3Server};
 
 impl Rpc {
     pub async fn new(
@@ -649,7 +932,9 @@ impl Rpc {
         let mut rpc = Web3Server::into_rpc(rpc_impl.clone());
         rpc.merge(NetServer::into_rpc(rpc_impl.clone()))
             .expect("should not fail");
-        rpc.merge(EthServer::into_rpc(rpc_impl))
+        rpc.merge(EthServer::into_rpc(rpc_impl.clone()))
+            .expect("should not fail");
+        rpc.merge(LightServer::into_rpc(rpc_impl))
             .expect("should not fail");
 
         let server_handle = self.server.start(rpc);

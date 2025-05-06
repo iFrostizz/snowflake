@@ -1,6 +1,6 @@
 use super::{Id, IdError};
 
-#[derive(Debug, Clone, Eq, Hash, PartialEq, Default)]
+#[derive(Debug, Clone, Copy, Eq, Hash, PartialEq, Default)]
 pub struct BlockID {
     id: Id<{ Self::LEN }>,
 }
@@ -23,6 +23,16 @@ impl TryFrom<&[u8]> for BlockID {
     fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
         let arr: [u8; Self::LEN] = value.try_into().map_err(|_| IdError::WrongSize)?;
         Ok(arr.into())
+    }
+}
+
+impl TryFrom<&str> for BlockID {
+    type Error = IdError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        Ok(Self {
+            id: Id::try_from(value)?,
+        })
     }
 }
 

@@ -42,11 +42,11 @@ pub enum DecodingError {
     EmptyMessage,
 }
 
-pub trait InboundMessageExt<OUTER, MESSAGE> {
+pub trait InboundMessageExt<MESSAGE> {
     fn decode(message: &[u8]) -> Result<MESSAGE, DecodingError>;
 }
 
-impl InboundMessageExt<p2p::Message, p2p::message::Message> for InboundMessage {
+impl InboundMessageExt<p2p::message::Message> for InboundMessage {
     fn decode(message: &[u8]) -> Result<p2p::message::Message, DecodingError> {
         let len = message.len();
         if len == 0 {
@@ -59,7 +59,7 @@ impl InboundMessageExt<p2p::Message, p2p::message::Message> for InboundMessage {
     }
 }
 
-impl InboundMessageExt<sdk::LightRequest, sdk::light_request::Message> for InboundMessage {
+impl InboundMessageExt<sdk::light_request::Message> for InboundMessage {
     fn decode(message: &[u8]) -> Result<sdk::light_request::Message, DecodingError> {
         let len = message.len();
         if len == 0 {
@@ -72,7 +72,7 @@ impl InboundMessageExt<sdk::LightRequest, sdk::light_request::Message> for Inbou
     }
 }
 
-impl InboundMessageExt<sdk::LightResponse, sdk::light_response::Message> for InboundMessage {
+impl InboundMessageExt<sdk::light_response::Message> for InboundMessage {
     fn decode(message: &[u8]) -> Result<sdk::light_response::Message, DecodingError> {
         let len = message.len();
         if len == 0 {

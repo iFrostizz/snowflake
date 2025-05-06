@@ -35,7 +35,7 @@ impl Frontier {
                     (BlockID::default(), 0),
                     |(block_id, height), (new_block_id, new_height)| {
                         if new_height >= &height {
-                            (new_block_id.clone(), *new_height)
+                            (*new_block_id, *new_height)
                         } else {
                             (block_id, height)
                         }
@@ -47,7 +47,7 @@ impl Frontier {
 
     pub fn push(&mut self, block_id: BlockID) {
         if !self.has_block(&block_id) {
-            if let Some(rem_block_id) = self.blocks.push(block_id.clone()) {
+            if let Some(rem_block_id) = self.blocks.push(block_id) {
                 self.set.remove(&rem_block_id);
             }
             self.set.insert(block_id);
@@ -69,10 +69,10 @@ mod tests {
         let mut front = Frontier::new(5);
         assert!(front.tip(&BlockStore::new(1)).is_none());
         let block_id = BlockID::from([1; 32]);
-        front.push(block_id.clone());
+        front.push(block_id);
         assert!(front.tip(&BlockStore::new(1)).is_none());
         let mut store = BlockStore::new(1);
-        store.push(block_id.clone(), 0);
+        store.push(block_id, 0);
         assert_eq!(front.tip(&store), Some((block_id, 0)));
     }
 }

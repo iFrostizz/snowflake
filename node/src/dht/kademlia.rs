@@ -3,12 +3,10 @@ use crate::id::{ChainId, NodeId};
 use crate::message::mail_box::Mail;
 use crate::message::SubscribableMessage;
 use crate::net::light::LightPeers;
-use crate::net::node::NodeError;
 use crate::net::queue::ConnectionData;
-use crate::server::msg::InboundMessageExt;
-use crate::server::msg::{AppRequestMessage, InboundMessage};
+use crate::server::msg::AppRequestMessage;
 use crate::server::peers::{PeerInfo, PeerSender};
-use crate::utils::constants::SNOWFLAKE_HANDLER_ID;
+use crate::utils::constants;
 use flume::Sender;
 use indexmap::IndexMap;
 use proto_lib::{p2p, sdk};
@@ -38,10 +36,10 @@ where
 
 #[derive(Debug)]
 pub struct KademliaDht {
-    peers_infos: Arc<RwLock<IndexMap<NodeId, PeerInfo>>>,
+    pub peers_infos: Arc<RwLock<IndexMap<NodeId, PeerInfo>>>,
     light_peers: LightPeers,
-    mail_tx: Sender<Mail>,
-    chain_id: ChainId,
+    pub mail_tx: Sender<Mail>,
+    pub chain_id: ChainId,
     /// Maximum number of nodes to return in a `find_node` request.
     max_nodes: usize,
 }
@@ -153,6 +151,7 @@ impl KademliaDht {
         nodes_with_content
     }
 
+    /// Lookup locally for nodes spanning the bucket.
     /// Find up to `n` unique nodes that are the closest to the `bucket`.
     pub fn find_node(&self, bucket: &Bucket) -> Vec<ConnectionData> {
         let nodes = self.light_peers.read().unwrap();
@@ -218,6 +217,30 @@ impl KademliaDht {
         Err(light_errors::CONTENT_NOT_FOUND)
     }
 
+    pub async fn store(
+        &self,
+        node_id: NodeId,
+        dht_id: &DhtId,
+        value: Vec<u8>,
+    ) -> Result<(), LightError> {
+        let sender = self
+            .peers_infos
+            .read()
+            .unwrap()
+            .get(&node_id)
+            .map(|infos| infos.sender.tx.clone())
+            .ok_or(light_errors::PEER_MISSING)?;
+        let message = AppRequestMessage::encode(
+            &self.chain_id,
+            sdk::Store {
+                dht_id: dht_id.into(),
+                value,
+            },
+        )
+        .unwrap();
+        sender.send(message).map_err(|_| light_errors::PEER_MISSING)
+    }
+
     async fn iterative_lookup(
         &self,
         dht_id: &DhtId,
@@ -234,33 +257,23 @@ impl KademliaDht {
                 AppRequestMessage::encode(&self.chain_id, sdk::FindValue { dht_id, bucket })
             {
                 let mail_tx = self.mail_tx.clone();
+                let chain_id = self.chain_id;
                 set.spawn(async move {
-                    let handle = sender.send_and_response(
-                        &mail_tx,
-                        SubscribableMessage::AppRequest(app_request),
-                    )?;
-                    let message = handle.await?;
-                    Result::<p2p::message::Message, NodeError>::Ok(message)
+                    sender
+                        .send_and_app_response(
+                            chain_id,
+                            constants::SNOWFLAKE_HANDLER_ID,
+                            &mail_tx,
+                            SubscribableMessage::AppRequest(app_request),
+                        )
+                        .await
                 });
             }
         }
 
         let mut nodes = HashSet::new();
         while let Some(result) = set.join_next().await {
-            let Ok(Ok(p2p::message::Message::AppResponse(app_response))) = result else {
-                continue;
-            };
-            if app_response.chain_id != self.chain_id.as_ref().to_vec() {
-                continue;
-            }
-            let bytes = app_response.app_bytes;
-            let Ok((app_id, bytes)) = unsigned_varint::decode::u64(&bytes) else {
-                continue;
-            };
-            if app_id != SNOWFLAKE_HANDLER_ID {
-                continue;
-            }
-            let Ok(light_message) = InboundMessage::decode(bytes) else {
+            let Ok(Ok(light_message)) = result else {
                 continue;
             };
             match light_message {
