@@ -3,7 +3,7 @@ use crate::dht::{light_errors, Bucket, DhtId, LightError};
 use crate::dht::{ConcreteDht, Dht};
 use crate::id::{BlockID, NodeId};
 use crate::message::SubscribableMessage;
-use crate::net::light::DhtContent;
+use crate::net::light::{DhtCodex, DhtContent};
 use crate::net::Network;
 use crate::node::{MessageOrSubscribable, Node, SinglePickerConfig};
 use crate::utils::constants::DEFAULT_DEADLINE;
@@ -23,54 +23,15 @@ use tokio::sync::broadcast;
 #[derive(Debug)]
 pub struct DhtBlocks {
     node: Mutex<Option<Arc<Node>>>,
-    pub dht: Dht<RwLock<HashMap<Bucket, Vec<u8>>>>,
+    pub number_dht: Dht<RwLock<HashMap<Bucket, Vec<u8>>>>,
+    pub hash_dht: Dht<RwLock<HashMap<Bucket, Vec<u8>>>>,
     pub verified_blocks: RwLock<FIFOSet<BlockID>>,
 }
 
-impl ConcreteDht<u64> for DhtBlocks {
-    fn id() -> DhtId {
-        DhtId::Block
-    }
-
-    fn key_to_bucket(block_number: u64) -> Bucket {
-        let arr: [u8; 20] = keccak256(block_number.to_be_bytes())[0..20]
-            .try_into()
-            .unwrap();
-        <Bucket>::from_be_bytes(arr)
-    }
-}
-
-impl DhtContent<u64, StatelessBlock> for DhtBlocks {
-    fn get_from_store(&self, bucket: &Bucket) -> Result<Option<StatelessBlock>, LightError> {
-        match self.dht.store.get(bucket) {
-            Some(block_bytes) => {
-                let block = Self::decode(&block_bytes)?;
-                Ok(Some(block))
-            }
-            None => Ok(None),
-        }
-    }
-
-    async fn insert_to_store(&self, bytes: Vec<u8>) -> Result<Option<StatelessBlock>, LightError> {
-        let decoded = Self::decode(&bytes)?;
-        let number = u64::from_be_bytes(*decoded.block.header.number());
-        let bucket = Self::key_to_bucket(number);
-        if !self.dht.is_desired_bucket(&bucket) {
-            return Err(light_errors::UNDESIRED_BUCKET);
-        }
-        if !self.verify(&decoded).await? {
-            return Err(light_errors::INVALID_CONTENT);
-        }
-        match self.dht.store.insert(bucket, bytes) {
-            Some(ret_bytes) => Ok(Some(Self::decode(&ret_bytes)?)),
-            None => Ok(None),
-        }
-    }
-
+impl DhtCodex<StatelessBlock> for DhtBlocks {
     async fn verify(&self, block: &StatelessBlock) -> Result<bool, LightError> {
         let number = u64::from_be_bytes(*block.block.header.number());
-        let bucket = Self::key_to_bucket(number);
-        if self.get_from_store(&bucket)?.is_some() {
+        if self.get_from_store(number)?.is_some() || self.get_from_store(*block.id())?.is_some() {
             return Ok(true);
         }
         if self.verified_blocks.read().unwrap().contains(block.id()) {
@@ -119,12 +80,93 @@ impl DhtContent<u64, StatelessBlock> for DhtBlocks {
     }
 }
 
+impl ConcreteDht<u64> for DhtBlocks {
+    fn id() -> DhtId {
+        DhtId::Block
+    }
+
+    fn key_to_bucket(block_number: u64) -> Bucket {
+        let arr: [u8; 20] = keccak256(block_number.to_be_bytes())[0..20]
+            .try_into()
+            .unwrap();
+        <Bucket>::from_be_bytes(arr)
+    }
+}
+
+impl DhtContent<u64, StatelessBlock> for DhtBlocks {
+    fn get_from_store(&self, number: u64) -> Result<Option<StatelessBlock>, LightError> {
+        let bucket = Self::key_to_bucket(number);
+        match self.number_dht.store.get(&bucket) {
+            Some(block_bytes) => {
+                let block = Self::decode(&block_bytes)?;
+                Ok(Some(block))
+            }
+            None => Ok(None),
+        }
+    }
+
+    async fn insert_to_store(&self, bytes: Vec<u8>) -> Result<Option<StatelessBlock>, LightError> {
+        let decoded = Self::decode(&bytes)?;
+        let number = u64::from_be_bytes(*decoded.block.header.number());
+        let bucket = Self::key_to_bucket(number);
+        if !self.number_dht.is_desired_bucket(&bucket) {
+            return Err(light_errors::UNDESIRED_BUCKET);
+        }
+        if !self.verify(&decoded).await? {
+            return Err(light_errors::INVALID_CONTENT);
+        }
+        match self.number_dht.store.insert(bucket, bytes) {
+            Some(ret_bytes) => Ok(Some(Self::decode(&ret_bytes)?)),
+            None => Ok(None),
+        }
+    }
+}
+
+impl ConcreteDht<BlockID> for DhtBlocks {
+    fn id() -> DhtId {
+        DhtId::Block
+    }
+
+    fn key_to_bucket(block_hash: BlockID) -> Bucket {
+        let arr: [u8; 20] = keccak256(block_hash)[0..20].try_into().unwrap();
+        <Bucket>::from_be_bytes(arr)
+    }
+}
+
+impl DhtContent<BlockID, StatelessBlock> for DhtBlocks {
+    fn get_from_store(&self, block_id: BlockID) -> Result<Option<StatelessBlock>, LightError> {
+        let bucket = Self::key_to_bucket(block_id);
+        match self.hash_dht.store.get(&bucket) {
+            Some(block_bytes) => {
+                let block = Self::decode(&block_bytes)?;
+                Ok(Some(block))
+            }
+            None => Ok(None),
+        }
+    }
+
+    async fn insert_to_store(&self, bytes: Vec<u8>) -> Result<Option<StatelessBlock>, LightError> {
+        let decoded = Self::decode(&bytes)?;
+        let bucket = Self::key_to_bucket(*decoded.id());
+        if !self.hash_dht.is_desired_bucket(&bucket) {
+            return Err(light_errors::UNDESIRED_BUCKET);
+        }
+        if !self.verify(&decoded).await? {
+            return Err(light_errors::INVALID_CONTENT);
+        }
+        match self.hash_dht.store.insert(bucket, bytes) {
+            Some(ret_bytes) => Ok(Some(Self::decode(&ret_bytes)?)),
+            None => Ok(None),
+        }
+    }
+}
+
 impl DhtBlocks {
     pub(crate) fn new(node_id: NodeId) -> Self {
-        let store = RwLock::new(HashMap::new());
         Self {
             node: Mutex::new(None),
-            dht: Dht::new(node_id, Bucket::from(10), store),
+            number_dht: Dht::new(node_id, Bucket::from(10), RwLock::new(HashMap::new())),
+            hash_dht: Dht::new(node_id, Bucket::from(10), RwLock::new(HashMap::new())),
             verified_blocks: RwLock::new(FIFOSet::new(10000)),
         }
     }
@@ -186,9 +228,12 @@ impl DhtBlocks {
                     last_container_id = block.id().as_ref().to_vec();
                 }
                 let number = u64::from_be_bytes(*block.block.header.number());
-                self.dht
+                self.number_dht
                     .store
-                    .insert(Self::key_to_bucket(number), container);
+                    .insert(Self::key_to_bucket(number), container.clone());
+                self.hash_dht
+                    .store
+                    .insert(Self::key_to_bucket(*block.id()), container);
                 bootstrapper = Self::pick_random_bootstrapper(&node.network).await;
             }
         }
@@ -218,5 +263,30 @@ impl DhtBlocks {
             );
         }
         maybe_bootstrapper.unwrap()
+    }
+
+    pub async fn insert_block(&self, bytes: Vec<u8>) -> Result<(), LightError> {
+        let decoded = Self::decode(&bytes)?;
+
+        let number = u64::from_be_bytes(*decoded.block.header.number());
+        let number_bucket = Self::key_to_bucket(number);
+        let id = *decoded.id();
+        let id_bucket = Self::key_to_bucket(id);
+
+        if self.number_dht.is_desired_bucket(&number_bucket) {
+            if !self.verify(&decoded).await? {
+                return Err(light_errors::INVALID_CONTENT);
+            }
+            self.number_dht.store.insert(number_bucket, bytes);
+            Ok(())
+        } else if self.hash_dht.is_desired_bucket(&id_bucket) {
+            if !self.verify(&decoded).await? {
+                return Err(light_errors::INVALID_CONTENT);
+            }
+            self.hash_dht.store.insert(id_bucket, bytes);
+            Ok(())
+        } else {
+            Err(light_errors::UNDESIRED_BUCKET)
+        }
     }
 }

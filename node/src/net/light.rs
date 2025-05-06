@@ -94,7 +94,7 @@ impl LightNetwork {
                 let res = match dht_id {
                     DhtId::Block => self
                         .block_dht
-                        .insert_to_store(value)
+                        .insert_block(value)
                         .await
                         .map(|_| LightValue::Ok),
                     _ => Err(light_errors::INVALID_DHT),
@@ -109,7 +109,7 @@ impl LightNetwork {
             }
             LightMessage::FindValue(dht_id, bucket) => {
                 let res = match dht_id {
-                    DhtId::Block => self.find_value(&self.block_dht.dht.store, &bucket),
+                    DhtId::Block => self.find_value(&self.block_dht.number_dht.store, &bucket),
                     _ => Err(light_errors::INVALID_DHT),
                 };
                 Some(res)
@@ -150,14 +150,15 @@ impl LightNetwork {
     pub async fn find_content<DHT, K, V>(&self, dht: &Arc<DHT>, key: K) -> Result<V, LightError>
     where
         DHT: ConcreteDht<K> + DhtContent<K, V>,
+        K: Copy,
     {
-        let bucket = DHT::key_to_bucket(key);
         match dht
-            .get_from_store(&bucket)
+            .get_from_store(key)
             .expect("should not be stored if ill-formed")
         {
             Some(value) => Ok(value),
             None => {
+                let bucket = DHT::key_to_bucket(key);
                 let value = self
                     .kademlia_dht
                     .search_value(
@@ -191,12 +192,7 @@ impl LightNetwork {
     }
 }
 
-pub trait DhtContent<K, V>: ConcreteDht<K> {
-    /// Get a typed value from the store.
-    fn get_from_store(&self, bucket: &Bucket) -> Result<Option<V>, LightError>;
-    /// Insert an encoded value into the store.
-    /// If the value is ill-formed, it should not be stored.
-    async fn insert_to_store(&self, bytes: Vec<u8>) -> Result<Option<V>, LightError>;
+pub trait DhtCodex<V> {
     /// Verification of the validity of the content.
     /// It is used to check if the content is well-formed.
     /// If the content is ill-formed, it should not be stored.
@@ -205,6 +201,14 @@ pub trait DhtContent<K, V>: ConcreteDht<K> {
     fn encode(value: V) -> Result<Vec<u8>, LightError>;
     /// Encoded to typed value
     fn decode(bytes: &[u8]) -> Result<V, LightError>;
+}
+
+pub trait DhtContent<K, V>: ConcreteDht<K> + DhtCodex<V> {
+    /// Get a typed value from the store.
+    fn get_from_store(&self, bucket: K) -> Result<Option<V>, LightError>;
+    /// Insert an encoded value into the store.
+    /// If the value is ill-formed, it should not be stored.
+    async fn insert_to_store(&self, bytes: Vec<u8>) -> Result<Option<V>, LightError>;
 }
 
 #[derive(Debug, Clone)]

@@ -37,9 +37,9 @@ mod rpc_impl {
     use crate::dht::light_errors;
     use crate::dht::Bucket;
     use crate::dht::DhtId;
-    use crate::id::NodeId;
+    use crate::id::{BlockID, NodeId};
     use crate::message::SubscribableMessage;
-    use crate::net::light::DhtContent;
+    use crate::net::light::DhtCodex;
     use crate::net::queue::ConnectionData;
     use crate::node::Node;
     use crate::server::msg::AppRequestMessage;
@@ -47,6 +47,7 @@ mod rpc_impl {
     use crate::server::msg::InboundMessageExt;
     use crate::utils::constants;
     use crate::utils::rlp::{Block, Transaction};
+    use crate::utils::unpacker::StatelessBlock;
     use crate::Arc;
     use alloy::consensus::{EthereumTxEnvelope, TxEip4844};
     use alloy::primitives::{keccak256, Address, Bytes, FixedBytes, U256, U64};
@@ -710,7 +711,11 @@ mod rpc_impl {
                     let block = DhtBlocks::decode(&value)?;
                     self.node
                         .light_network
-                        .store(&self.node.light_network.block_dht, node_id, block)
+                        .store::<DhtBlocks, BlockID, StatelessBlock>(
+                            &self.node.light_network.block_dht,
+                            node_id,
+                            block,
+                        )
                         .await?;
                 }
                 DhtId::State => {}
@@ -791,7 +796,14 @@ mod rpc_impl {
             {
                 match dht_id {
                     DhtId::Block => {
-                        let store = self.node.light_network.block_dht.dht.store.read().unwrap();
+                        let store = self
+                            .node
+                            .light_network
+                            .block_dht
+                            .number_dht
+                            .store
+                            .read()
+                            .unwrap();
                         match store.get(&bucket) {
                             Some(value) => RpcValueOrNodes::Value(Value::Block(block_to_rpc(
                                 DhtBlocks::decode(value)?.block,
