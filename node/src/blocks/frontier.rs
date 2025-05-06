@@ -69,10 +69,10 @@ mod tests {
         let mut front = Frontier::new(5);
         assert!(front.tip(&BlockStore::new(1)).is_none());
         let block_id = BlockID::from([1; 32]);
-        front.push(block_id.clone());
+        front.push(block_id);
         assert!(front.tip(&BlockStore::new(1)).is_none());
         let mut store = BlockStore::new(1);
-        store.push(block_id.clone(), 0);
+        store.push(block_id, 0);
         assert_eq!(front.tip(&store), Some((block_id, 0)));
     }
 }

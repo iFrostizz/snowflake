@@ -84,7 +84,7 @@ impl Node {
             peers_infos,
             connection_queue.clone(),
             mail_box.tx().clone(),
-            network.config.c_chain_id.clone(),
+            network.config.c_chain_id,
             LightNetworkConfig {
                 sync_headers,
                 max_lookups: 10,
@@ -284,7 +284,7 @@ impl Node {
         NodeError,
     > {
         let node_id = *peer.node_id();
-        let c_chain_id = self.network.config.c_chain_id.clone();
+        let c_chain_id = self.network.config.c_chain_id;
 
         let sender = peer.sender().clone();
         let (tx, _) = broadcast::channel(100);

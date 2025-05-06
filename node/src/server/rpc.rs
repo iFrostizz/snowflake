@@ -755,40 +755,15 @@ mod rpc_impl {
                 let Ok(p2p::message::Message::AppRequest(app_request)) = message else {
                     return Err(light_errors::INVALID_CONTENT.into());
                 };
-                let rx = sender
-                    .send_and_response(
+                let light_message: sdk::light_response::Message = sender
+                    .send_and_app_response(
+                        self.node.light_network.kademlia_dht.chain_id,
+                        constants::SNOWFLAKE_HANDLER_ID,
                         &self.node.light_network.kademlia_dht.mail_tx,
                         SubscribableMessage::AppRequest(app_request),
                     )
-                    .map_err(|err| ErrorObject::owned(1000, err.to_string(), None::<()>))?;
-
-                let p2p::message::Message::AppResponse(app_response) = rx
                     .await
-                    .map_err(|_| ErrorObject::borrowed(1000, "timeout", None))?
-                else {
-                    return Err(light_errors::INVALID_CONTENT.into());
-                };
-                if app_response.chain_id
-                    != self
-                        .node
-                        .light_network
-                        .kademlia_dht
-                        .chain_id
-                        .as_ref()
-                        .to_vec()
-                {
-                    return Err(light_errors::INVALID_CONTENT.into());
-                }
-                let bytes = app_response.app_bytes;
-                let Ok((app_id, bytes)) = unsigned_varint::decode::u64(&bytes) else {
-                    return Err(light_errors::INVALID_CONTENT.into());
-                };
-                if app_id != constants::SNOWFLAKE_HANDLER_ID {
-                    return Err(light_errors::INVALID_CONTENT.into());
-                }
-                let Ok(light_message) = InboundMessage::decode(bytes) else {
-                    return Err(light_errors::INVALID_CONTENT.into());
-                };
+                    .map_err(|err| ErrorObject::owned(1000, err.to_string(), None::<()>))?;
                 match light_message {
                     sdk::light_response::Message::Nodes(p2p::PeerList { claimed_ip_ports }) => {
                         if claimed_ip_ports.len() > 10 {

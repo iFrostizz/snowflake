@@ -8,7 +8,7 @@ use crate::net::queue::ConnectionData;
 use crate::server::msg::InboundMessageExt;
 use crate::server::msg::{AppRequestMessage, InboundMessage};
 use crate::server::peers::{PeerInfo, PeerSender};
-use crate::utils::constants::SNOWFLAKE_HANDLER_ID;
+use crate::utils::constants;
 use flume::Sender;
 use indexmap::IndexMap;
 use proto_lib::{p2p, sdk};
@@ -259,33 +259,23 @@ impl KademliaDht {
                 AppRequestMessage::encode(&self.chain_id, sdk::FindValue { dht_id, bucket })
             {
                 let mail_tx = self.mail_tx.clone();
+                let chain_id = self.chain_id;
                 set.spawn(async move {
-                    let handle = sender.send_and_response(
-                        &mail_tx,
-                        SubscribableMessage::AppRequest(app_request),
-                    )?;
-                    let message = handle.await?;
-                    Result::<p2p::message::Message, NodeError>::Ok(message)
+                    sender
+                        .send_and_app_response(
+                            chain_id,
+                            constants::SNOWFLAKE_HANDLER_ID,
+                            &mail_tx,
+                            SubscribableMessage::AppRequest(app_request),
+                        )
+                        .await
                 });
             }
         }
 
         let mut nodes = HashSet::new();
         while let Some(result) = set.join_next().await {
-            let Ok(Ok(p2p::message::Message::AppResponse(app_response))) = result else {
-                continue;
-            };
-            if app_response.chain_id != self.chain_id.as_ref().to_vec() {
-                continue;
-            }
-            let bytes = app_response.app_bytes;
-            let Ok((app_id, bytes)) = unsigned_varint::decode::u64(&bytes) else {
-                continue;
-            };
-            if app_id != SNOWFLAKE_HANDLER_ID {
-                continue;
-            }
-            let Ok(light_message) = InboundMessage::decode(bytes) else {
+            let Ok(Ok(light_message)) = result else {
                 continue;
             };
             match light_message {

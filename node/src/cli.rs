@@ -156,7 +156,7 @@ impl Args {
         let network = &self.network_id.to_string();
         let network_id = constants::NETWORK[network];
         let eth_network_id = constants::ETH_NETWORK[network];
-        let c_chain_id: ChainId = constants::C_CHAIN_ID[network].clone();
+        let c_chain_id: ChainId = constants::C_CHAIN_ID[network];
 
         let socket_addr = match self.public_ip.unwrap() {
             IpAddr::V4(ip) => SocketAddr::new(IpAddr::V4(ip), self.http_port),

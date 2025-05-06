@@ -407,7 +407,7 @@ mod tests {
         let far_peer = NodeId::from([0xF0; 20]);
         let medium_peer = NodeId::from([0x80; 20]);
 
-        let peers = vec![far_peer, medium_peer];
+        let peers = [far_peer, medium_peer];
 
         let peers_light: HashMap<_, _> = peers
             .iter()
