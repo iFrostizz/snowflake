@@ -2,11 +2,11 @@ use crate::dht::{light_errors, Bucket, BucketDht, DhtBuckets, DhtId, LightError}
 use crate::id::{ChainId, NodeId};
 use crate::message::mail_box::Mail;
 use crate::message::SubscribableMessage;
-use crate::net::node::NodeError;
-use crate::server::msg::InboundMessageExt;
-use crate::server::msg::{AppRequestMessage, InboundMessage};
+use crate::net::light::LightPeers;
+use crate::net::queue::ConnectionData;
+use crate::server::msg::AppRequestMessage;
 use crate::server::peers::{PeerInfo, PeerSender};
-use crate::utils::constants::SNOWFLAKE_HANDLER_ID;
+use crate::utils::constants;
 use flume::Sender;
 use indexmap::IndexMap;
 use proto_lib::{p2p, sdk};
@@ -36,10 +36,10 @@ where
 
 #[derive(Debug)]
 pub struct KademliaDht {
-    peers_infos: Arc<RwLock<IndexMap<NodeId, PeerInfo>>>,
-    light_peers: Arc<RwLock<HashMap<NodeId, DhtBuckets>>>,
-    mail_tx: Sender<Mail>,
-    chain_id: ChainId,
+    pub peers_infos: Arc<RwLock<IndexMap<NodeId, PeerInfo>>>,
+    light_peers: LightPeers,
+    pub mail_tx: Sender<Mail>,
+    pub chain_id: ChainId,
     /// Maximum number of nodes to return in a `find_node` request.
     max_nodes: usize,
 }
@@ -47,13 +47,13 @@ pub struct KademliaDht {
 #[derive(Debug, Eq, PartialEq)]
 pub enum ValueOrNodes<V> {
     Value(V),
-    Nodes(Vec<NodeId>),
+    Nodes(Vec<ConnectionData>),
 }
 
 impl KademliaDht {
     pub fn new(
         peers_infos: Arc<RwLock<IndexMap<NodeId, PeerInfo>>>,
-        light_peers: Arc<RwLock<HashMap<NodeId, DhtBuckets>>>,
+        light_peers: LightPeers,
         mail_tx: Sender<Mail>,
         chain_id: ChainId,
         max_nodes: usize,
@@ -67,14 +67,14 @@ impl KademliaDht {
         }
     }
 
-    fn distance(a: &Bucket, b: Bucket) -> Bucket {
+    pub fn distance(a: &Bucket, b: Bucket) -> Bucket {
         a ^ b
     }
 
     /// Find up to `n` unique nodes that are the closest to the `bucket`.
     fn find_closest_nodes(
         &self,
-        nodes: RwLockReadGuard<HashMap<NodeId, DhtBuckets>>,
+        nodes: RwLockReadGuard<IndexMap<NodeId, DhtBuckets>>,
         bucket: &Bucket,
         excluding: &[NodeId],
         mut n: usize,
@@ -151,10 +151,12 @@ impl KademliaDht {
         nodes_with_content
     }
 
+    /// Lookup locally for nodes spanning the bucket.
     /// Find up to `n` unique nodes that are the closest to the `bucket`.
-    pub fn find_node(&self, bucket: &Bucket) -> Vec<NodeId> {
+    pub fn find_node(&self, bucket: &Bucket) -> Vec<ConnectionData> {
         let nodes = self.light_peers.read().unwrap();
-        self.find_closest_nodes(nodes, bucket, &[], self.max_nodes)
+        let node_ids = self.find_closest_nodes(nodes, bucket, &[], self.max_nodes);
+        self.map_to_connection_data(node_ids)
     }
 
     /// Recursively search for a value. Once found, it is verified against publicly untrusted data.
@@ -168,6 +170,7 @@ impl KademliaDht {
         log::debug!("searching for value in dht {dht_id:?} at bucket {bucket}");
         let mut excluding = Vec::new();
         let mut worklist = Vec::new();
+        // TODO instead of a max_lookup, we should have a max nodes to query.
         for _ in 0..max_lookups {
             let senders = {
                 let reserved = loop {
@@ -201,7 +204,10 @@ impl KademliaDht {
             if let Ok(value_or_nodes) = self.iterative_lookup(dht_id, senders, bucket).await {
                 match value_or_nodes {
                     ValueOrNodes::Value(value) => return Ok(value),
-                    ValueOrNodes::Nodes(nodes) => {
+                    ValueOrNodes::Nodes(connections_data) => {
+                        // TODO should not deal with socket, cert, etc. here.
+                        let nodes: Vec<_> =
+                            connections_data.into_iter().map(|c| c.node_id).collect();
                         worklist.extend(nodes.clone());
                         excluding.extend(nodes);
                     }
@@ -209,6 +215,30 @@ impl KademliaDht {
             }
         }
         Err(light_errors::CONTENT_NOT_FOUND)
+    }
+
+    pub async fn store(
+        &self,
+        node_id: NodeId,
+        dht_id: &DhtId,
+        value: Vec<u8>,
+    ) -> Result<(), LightError> {
+        let sender = self
+            .peers_infos
+            .read()
+            .unwrap()
+            .get(&node_id)
+            .map(|infos| infos.sender.tx.clone())
+            .ok_or(light_errors::PEER_MISSING)?;
+        let message = AppRequestMessage::encode(
+            &self.chain_id,
+            sdk::Store {
+                dht_id: dht_id.into(),
+                value,
+            },
+        )
+        .unwrap();
+        sender.send(message).map_err(|_| light_errors::PEER_MISSING)
     }
 
     async fn iterative_lookup(
@@ -221,60 +251,46 @@ impl KademliaDht {
         let dht_id: u32 = dht_id.into();
         let bucket = bucket.to_be_bytes::<20>();
 
-        for (node_id, sender) in senders {
+        for (_, sender) in senders {
             let bucket = bucket.to_vec();
             if let Ok(p2p::message::Message::AppRequest(app_request)) =
                 AppRequestMessage::encode(&self.chain_id, sdk::FindValue { dht_id, bucket })
             {
                 let mail_tx = self.mail_tx.clone();
+                let chain_id = self.chain_id;
                 set.spawn(async move {
-                    let handle = sender.send_and_response(
-                        &mail_tx,
-                        node_id,
-                        SubscribableMessage::AppRequest(app_request),
-                    )?;
-                    let message = handle.await?;
-                    Result::<p2p::message::Message, NodeError>::Ok(message)
+                    sender
+                        .send_and_app_response(
+                            chain_id,
+                            constants::SNOWFLAKE_HANDLER_ID,
+                            &mail_tx,
+                            SubscribableMessage::AppRequest(app_request),
+                        )
+                        .await
                 });
             }
         }
 
         let mut nodes = HashSet::new();
         while let Some(result) = set.join_next().await {
-            let Ok(Ok(p2p::message::Message::AppResponse(app_response))) = result else {
-                continue;
-            };
-            if app_response.chain_id != self.chain_id.as_ref().to_vec() {
-                continue;
-            }
-            let bytes = app_response.app_bytes;
-            let Ok((app_id, bytes)) = unsigned_varint::decode::u64(&bytes) else {
-                continue;
-            };
-            if app_id != SNOWFLAKE_HANDLER_ID {
-                continue;
-            }
-            let Ok(light_message) = InboundMessage::decode(bytes) else {
+            let Ok(Ok(light_message)) = result else {
                 continue;
             };
             match light_message {
                 sdk::light_response::Message::Value(sdk::Value { value }) => {
                     // TODO verify data using publicly available data and return if successful.
-                    // if not successful, disconnect from node and decrease reputation
+                    //  if not successful, disconnect from node and decrease reputation
                     return Ok(ValueOrNodes::Value(value));
                 }
-                sdk::light_response::Message::Nodes(sdk::Nodes { node_ids }) => {
+                sdk::light_response::Message::Nodes(p2p::PeerList { claimed_ip_ports }) => {
                     // TODO: only pick nodes that are getting us closer to the bucket
-                    if node_ids.len() > 10 {
+                    if claimed_ip_ports.len() > 10 {
                         // disconnect and decrease reputation
                         continue;
                     }
-                    let node_ids: HashSet<_> = node_ids
+                    let node_ids: HashSet<_> = claimed_ip_ports
                         .into_iter()
-                        .filter_map(|node_id| {
-                            let arr: Option<[u8; 20]> = node_id.try_into().ok();
-                            arr.map(NodeId::from)
-                        })
+                        .filter_map(|claimed_ip_port| claimed_ip_port.try_into().ok())
                         .collect();
                     nodes.extend(node_ids);
                 }
@@ -292,12 +308,33 @@ impl KademliaDht {
             Err(light_errors::CONTENT_NOT_FOUND)
         }
     }
+
+    fn map_to_connection_data(&self, node_ids: Vec<NodeId>) -> Vec<ConnectionData> {
+        let peers_infos = self.peers_infos.read().unwrap();
+        node_ids
+            .into_iter()
+            .filter_map(|node_id| {
+                peers_infos.get(&node_id).and_then(|peer_info| {
+                    peer_info.infos.as_ref().map(|infos| ConnectionData {
+                        node_id,
+                        socket_addr: infos.sock_addr,
+                        timestamp: infos.ip_signing_time,
+                        x509_certificate: peer_info.x509_certificate.clone(),
+                    })
+                })
+            })
+            .collect()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::broadcast;
+    use crate::net::queue::ConnectionQueue;
+    use crate::net::HandshakeInfos;
     use std::collections::HashSet;
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
     fn extend_to_bytes<const N: usize>(arr: [u8; N]) -> [u8; 20] {
         let mut out = [0u8; 20];
@@ -318,24 +355,41 @@ mod tests {
         buckets: Vec<[u8; 2]>,
     ) -> (
         Arc<RwLock<IndexMap<NodeId, PeerInfo>>>,
-        Arc<RwLock<HashMap<NodeId, DhtBuckets>>>,
+        HashMap<NodeId, DhtBuckets>,
     ) {
         let node_ids = buckets
             .into_iter()
             .map(extend_to_node_id)
             .collect::<Vec<_>>();
         let peer_infos: IndexMap<_, _> = node_ids
-            .iter()
+            .clone()
+            .into_iter()
             .map(|node_id| {
                 (
-                    *node_id,
+                    node_id,
                     PeerInfo {
                         x509_certificate: vec![],
                         sender: {
                             let (tx, _) = flume::unbounded();
-                            tx.into()
+                            PeerSender { tx, node_id }
                         },
-                        infos: None,
+                        infos: Some(HandshakeInfos {
+                            ip_signing_time: 0,
+                            network_id: 0,
+                            sock_addr: SocketAddr::new(
+                                IpAddr::from(Ipv4Addr::from([0, 0, 0, 0])),
+                                0,
+                            ),
+                            ip_node_id_sig: vec![],
+                            client: None,
+                            tracked_subnets: vec![],
+                            supported_acps: vec![],
+                            objected_acps: vec![],
+                        }),
+                        tx: {
+                            let (tx, _) = broadcast::channel(1);
+                            tx
+                        },
                     },
                 )
             })
@@ -351,10 +405,7 @@ mod tests {
                 )
             })
             .collect();
-        (
-            Arc::new(RwLock::new(peer_infos)),
-            Arc::new(RwLock::new(light_peers)),
-        )
+        (Arc::new(RwLock::new(peer_infos)), light_peers)
     }
 
     #[test]
@@ -370,14 +421,24 @@ mod tests {
             [0, 0b11000000],
             [0, 0b00000010],
         ];
-        let (peer_infos, light_peers) = node_ids_to_infos(buckets.to_vec());
+        let (peer_infos, light_peers_data) = node_ids_to_infos(buckets.to_vec());
         let (mail_tx, _) = flume::unbounded();
+        let light_peers = LightPeers::new(
+            Default::default(),
+            peer_infos.clone(),
+            Arc::new(ConnectionQueue::new(0)),
+            Some(light_peers_data.len()),
+        );
+        light_peers.write().extend(light_peers_data);
         let dht: KademliaDht =
             KademliaDht::new(peer_infos, light_peers, mail_tx, ChainId::from([0; 32]), 3);
         let closest = dht.find_node(&extend_to_bucket(buckets[4]));
         assert_eq!(closest.len(), 3);
         assert_eq!(
-            closest.into_iter().collect::<HashSet<_>>(),
+            closest
+                .into_iter()
+                .map(|infos| infos.node_id)
+                .collect::<HashSet<_>>(),
             HashSet::from([
                 extend_to_node_id(buckets[3]),
                 extend_to_node_id(buckets[4]),

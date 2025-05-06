@@ -5,7 +5,9 @@ pub use chain::*;
 mod node;
 pub use node::*;
 
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::cmp::Ordering;
+use std::fmt::Formatter;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -18,7 +20,7 @@ pub enum IdError {
     CB58DecodeError,
 }
 
-#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
+#[derive(Clone, Copy, Hash, PartialEq, Eq)]
 pub struct Id<const LEN: usize> {
     inner: [u8; LEN],
 }
@@ -76,6 +78,12 @@ impl<const LEN: usize> std::fmt::Display for Id<LEN> {
     }
 }
 
+impl<const LEN: usize> std::fmt::Debug for Id<LEN> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self)
+    }
+}
+
 impl<const LEN: usize> PartialOrd for Id<LEN> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
@@ -92,5 +100,25 @@ impl<const LEN: usize> Ord for Id<LEN> {
         }
 
         Ordering::Equal
+    }
+}
+
+impl<const LEN: usize> Serialize for Id<LEN> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de, const LEN: usize> Deserialize<'de> for Id<LEN> {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let id_string = <String>::deserialize(deserializer)?;
+        let id = Id::try_from(id_string.as_str()).map_err(serde::de::Error::custom)?;
+        Ok(id)
     }
 }

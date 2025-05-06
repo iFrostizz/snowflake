@@ -14,14 +14,20 @@ impl From<sdk::FindNode> for sdk::light_request::Message {
     }
 }
 
+impl From<sdk::Store> for sdk::light_request::Message {
+    fn from(message: sdk::Store) -> Self {
+        Self::Store(message)
+    }
+}
+
 impl From<sdk::Value> for sdk::light_response::Message {
     fn from(message: sdk::Value) -> Self {
         Self::Value(message)
     }
 }
 
-impl From<sdk::Nodes> for sdk::light_response::Message {
-    fn from(message: sdk::Nodes) -> Self {
+impl From<p2p::PeerList> for sdk::light_response::Message {
+    fn from(message: p2p::PeerList) -> Self {
         Self::Nodes(message)
     }
 }
