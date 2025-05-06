@@ -1,11 +1,12 @@
 use crate::dht::kademlia::ValueOrNodes;
 use crate::dht::LightError;
-use crate::dht::{Bucket, DhtId, LightMessage, LightResult};
+use crate::dht::{Bucket, LightMessage, LightResult};
 use crate::dht::{DhtBuckets, LightValue};
 use crate::id::{ChainId, NodeId};
 use crate::message::mail_box::Mail;
 use crate::message::{mail_box::MailBox, pipeline::Pipeline, MiniMessage, SubscribableMessage};
 use crate::net::node::SendErrorWrapper;
+use crate::net::sdk::Store;
 use crate::net::sdk::{FindNode, FindValue, LightHandshake};
 use crate::net::{
     ip::SignedIp,
@@ -630,6 +631,14 @@ impl Peer {
         log::trace!("received light message {light_message:?}");
         let chain_id = c_chain_id.as_ref().to_vec();
         let res = match light_message {
+            sdk::light_request::Message::Store(Store { dht_id, value }) => {
+                let dht_id = dht_id
+                    .try_into()
+                    .map_err(|_| NodeError::Message("unsupported DHT".to_string()))?;
+                spl.send((LightMessage::Store(dht_id, value), None))
+                    .map_err(SendErrorWrapper::from)?;
+                None
+            }
             sdk::light_request::Message::LightHandshake(LightHandshake { buckets }) => {
                 if let Some(buckets) = buckets {
                     let bucket_arr: [u8; 20] = buckets
@@ -644,10 +653,9 @@ impl Peer {
                 }
             }
             sdk::light_request::Message::FindValue(FindValue { dht_id, bucket }) => {
-                let dht_id = match dht_id {
-                    0 => DhtId::Block,
-                    _ => return Err(NodeError::Message("unsupported DHT".to_string())),
-                };
+                let dht_id = dht_id
+                    .try_into()
+                    .map_err(|_| NodeError::Message("unsupported DHT".to_string()))?;
                 let bucket_arr: [u8; 20] = bucket
                     .try_into()
                     .map_err(|_| NodeError::Message("invalid bucket".to_string()))?;

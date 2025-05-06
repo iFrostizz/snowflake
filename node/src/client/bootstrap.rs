@@ -2,7 +2,7 @@ use crate::dht::DhtBuckets;
 use crate::id::NodeId;
 use crate::net::{node::NodeError, queue::ConnectionData};
 use crate::node::Node;
-use serde::{Deserialize, Deserializer};
+use serde::Deserialize;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io;
@@ -13,18 +13,8 @@ use std::sync::Arc;
 
 #[derive(Deserialize, Debug)]
 pub struct Bootstrapper {
-    #[serde(deserialize_with = "string_to_node_id")]
     pub id: NodeId,
     pub ip: SocketAddr,
-}
-
-fn string_to_node_id<'de, D>(de: D) -> Result<NodeId, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let node_id_string = <String>::deserialize(de)?;
-    let node_id = NodeId::try_from(node_id_string.as_str()).map_err(serde::de::Error::custom)?;
-    Ok(node_id)
 }
 
 pub struct Bootstrappers<'a> {

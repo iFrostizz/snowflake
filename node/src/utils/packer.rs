@@ -6,6 +6,10 @@ pub struct Packer {
 }
 
 impl Packer {
+    pub fn new() -> Self {
+        Self { bytes: Vec::new() }
+    }
+
     pub fn new_with_capacity(capacity: usize) -> Self {
         Self {
             bytes: Vec::with_capacity(capacity),
@@ -16,12 +20,21 @@ impl Packer {
         self.bytes.extend_from_slice(bytes)
     }
 
+    pub fn pack_bytes(&mut self, bytes: &[u8]) {
+        self.pack_med(&(bytes.len() as u32));
+        self.bytes.extend_from_slice(bytes);
+    }
+
     pub fn pack_short(&mut self, short: &u16) {
-        self.bytes.append(&mut short.to_be_bytes().to_vec())
+        self.bytes.extend_from_slice(&short.to_be_bytes())
+    }
+
+    pub fn pack_med(&mut self, med: &u32) {
+        self.bytes.extend_from_slice(&med.to_be_bytes())
     }
 
     pub fn pack_long(&mut self, long: &u64) {
-        self.bytes.append(&mut long.to_be_bytes().to_vec())
+        self.bytes.extend_from_slice(&long.to_be_bytes())
     }
 
     pub fn finish(self) -> Vec<u8> {

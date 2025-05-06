@@ -1,5 +1,6 @@
 use super::{Id, IdError};
 use ripemd::Ripemd160;
+use serde::{Deserialize, Deserializer, Serialize};
 use sha2::{Digest, Sha256};
 use std::fmt::{Debug, Display, Formatter};
 
@@ -97,6 +98,27 @@ impl TryFrom<&str> for NodeId {
         } else {
             Err(IdError::MissingPrefix)
         }
+    }
+}
+
+impl<'de> Deserialize<'de> for NodeId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let node_id_string = <String>::deserialize(deserializer)?;
+        let node_id =
+            NodeId::try_from(node_id_string.as_str()).map_err(serde::de::Error::custom)?;
+        Ok(node_id)
+    }
+}
+
+impl Serialize for NodeId {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.to_string())
     }
 }
 
