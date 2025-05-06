@@ -104,178 +104,6 @@ impl Block {
         let mix_digest = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
         let nonce = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
 
-        // let header = if cursor == bytes.len() {
-        //     Header::Legacy {
-        //         parent_hash,
-        //         uncle_hash,
-        //         coinbase,
-        //         state_root,
-        //         tx_root,
-        //         receipt_hash,
-        //         bloom,
-        //         difficulty,
-        //         number,
-        //         gas_limit,
-        //         gas_used,
-        //         time,
-        //         extra,
-        //         mix_digest,
-        //         nonce,
-        //     }
-        // } else {
-        //     let base_fee = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
-        //     if cursor == bytes.len() {
-        //         Header::EIP1559 {
-        //             parent_hash,
-        //             uncle_hash,
-        //             coinbase,
-        //             state_root,
-        //             tx_root,
-        //             receipt_hash,
-        //             bloom,
-        //             difficulty,
-        //             number,
-        //             gas_limit,
-        //             gas_used,
-        //             time,
-        //             extra,
-        //             mix_digest,
-        //             nonce,
-        //             base_fee,
-        //         }
-        //     } else {
-        //         let withdrawal_root = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
-        //         if cursor == bytes.len() {
-        //             Header::EIP4895 {
-        //                 parent_hash,
-        //                 uncle_hash,
-        //                 coinbase,
-        //                 state_root,
-        //                 tx_root,
-        //                 receipt_hash,
-        //                 bloom,
-        //                 difficulty,
-        //                 number,
-        //                 gas_limit,
-        //                 gas_used,
-        //                 time,
-        //                 extra,
-        //                 mix_digest,
-        //                 nonce,
-        //                 base_fee,
-        //                 withdrawal_root,
-        //             }
-        //         } else {
-        //             let ext_data_gas_used = withdrawal_root;
-        //             if cursor == bytes.len() {
-        //                 let block_gas_cost = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
-        //                 Header::Apricot4 {
-        //                     parent_hash,
-        //                     uncle_hash,
-        //                     coinbase,
-        //                     state_root,
-        //                     tx_root,
-        //                     receipt_hash,
-        //                     bloom,
-        //                     difficulty,
-        //                     number,
-        //                     gas_limit,
-        //                     gas_used,
-        //                     time,
-        //                     extra,
-        //                     mix_digest,
-        //                     nonce,
-        //                     base_fee,
-        //                     ext_data_gas_used,
-        //                     block_gas_cost,
-        //                 }
-        //             } else if cursor == bytes.len() {
-        //                 let blob_gas_used = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
-        //                 let excess_blob_gas = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
-        //                 Header::EIP4844 {
-        //                     parent_hash,
-        //                     uncle_hash,
-        //                     coinbase,
-        //                     state_root,
-        //                     tx_root,
-        //                     receipt_hash,
-        //                     bloom,
-        //                     difficulty,
-        //                     number,
-        //                     gas_limit,
-        //                     gas_used,
-        //                     time,
-        //                     extra,
-        //                     mix_digest,
-        //                     nonce,
-        //                     base_fee,
-        //                     withdrawal_root,
-        //                     blob_gas_used,
-        //                     excess_blob_gas,
-        //                 }
-        //             } else if cursor == bytes.len() {
-        //                 let blob_gas_used = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
-        //                 let excess_blob_gas = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
-        //                 let parent_beacon_block_root = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
-        //                 Header::EIP4788 {
-        //                     parent_hash,
-        //                     uncle_hash,
-        //                     coinbase,
-        //                     state_root,
-        //                     tx_root,
-        //                     receipt_hash,
-        //                     bloom,
-        //                     difficulty,
-        //                     number,
-        //                     gas_limit,
-        //                     gas_used,
-        //                     time,
-        //                     extra,
-        //                     mix_digest,
-        //                     nonce,
-        //                     base_fee,
-        //                     withdrawal_root,
-        //                     blob_gas_used,
-        //                     excess_blob_gas,
-        //                     parent_beacon_block_root,
-        //                 }
-        //             } else {
-        //                 let block_gas_cost = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
-        //                 let blob_gas_used = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
-        //                 let excess_blob_gas = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
-        //                 let parent_beacon_block_root = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
-        //                 if cursor != bytes.len() {
-        //                     return Err(RlpError::InvalidFormat);
-        //                 }
-        //                 Header::Extra {
-        //                     parent_hash,
-        //                     uncle_hash,
-        //                     coinbase,
-        //                     state_root,
-        //                     tx_root,
-        //                     receipt_hash,
-        //                     bloom,
-        //                     difficulty,
-        //                     number,
-        //                     gas_limit,
-        //                     gas_used,
-        //                     time,
-        //                     extra,
-        //                     mix_digest,
-        //                     nonce,
-        //                     ext_data_hash,
-        //                     base_fee,
-        //                     ext_data_gas_used,
-        //                     block_gas_cost,
-        //                     blob_gas_used,
-        //                     excess_blob_gas,
-        //                     parent_beacon_block_root,
-        //                 }
-        //             }
-        //         }
-        //     }
-        // };
-
         let header = {
             let ext_data_hash = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
             let base_fee = Rlp::decode_fixed_bytes(bytes, &mut cursor)?;
@@ -340,7 +168,6 @@ impl Block {
     }
 
     pub fn encode(&self) -> Result<Vec<u8>, RlpError> {
-        // TODO this function is allocating way too much!
         let mut buf = Vec::new();
         {
             let mut buf2 = Vec::new();
@@ -376,82 +203,12 @@ impl Block {
     ) -> Result<(), RlpError> {
         for tx in transactions {
             match tx {
-                Transaction::Legacy {
-                    tx:
-                        TransactionLegacy {
-                            nonce,
-                            gas_price,
-                            gas_limit,
-                            to,
-                            value,
-                            data,
-                            v,
-                            r,
-                            s,
-                        },
-                    ..
-                } => {
-                    let mut ret2 = Vec::new();
-                    Rlp::encode_string(&mut ret2, nonce)?;
-                    Rlp::encode_string(&mut ret2, gas_price)?;
-                    Rlp::encode_string(&mut ret2, gas_limit)?;
-                    if to == &[0; 20] {
-                        Rlp::encode_string(&mut ret2, &[])?;
-                    } else {
-                        Rlp::encode_normalized_string(&mut ret2, to)?;
-                    }
-                    Rlp::encode_string(&mut ret2, value)?;
-                    Rlp::encode_string(&mut ret2, data)?;
-                    Rlp::encode_string(&mut ret2, v)?;
-                    Rlp::encode_string(&mut ret2, r)?;
-                    Rlp::encode_string(&mut ret2, s)?;
+                Transaction::Legacy { tx, .. } => {
+                    let ret2 = tx.encode()?;
                     Rlp::encode_list(buf, &ret2)?;
                 }
                 Transaction::EIP2718 { envelope, .. } => {
-                    let mut ret2 = Vec::new();
-                    match envelope {
-                        TransactionEnvelope::DynamicFee(TransactionDynamicFee {
-                            chain_id,
-                            nonce,
-                            max_priority_fee_per_gas,
-                            max_fee_per_gas,
-                            gas_limit,
-                            destination,
-                            amount,
-                            data,
-                            access_list,
-                            v,
-                            r,
-                            s,
-                        }) => {
-                            ret2.push(0x02);
-                            {
-                                let mut ret3 = Vec::new();
-                                Rlp::encode_string(&mut ret3, chain_id)?;
-                                Rlp::encode_string(&mut ret3, nonce)?;
-                                Rlp::encode_string(&mut ret3, max_priority_fee_per_gas)?;
-                                Rlp::encode_string(&mut ret3, max_fee_per_gas)?;
-                                Rlp::encode_string(&mut ret3, gas_limit)?;
-                                if destination == &[0; 20] {
-                                    Rlp::encode_string(&mut ret3, &[])?;
-                                } else {
-                                    Rlp::encode_normalized_string(&mut ret3, destination)?;
-                                }
-                                Rlp::encode_string(&mut ret3, amount)?;
-                                Rlp::encode_string(&mut ret3, data)?;
-                                {
-                                    let mut ret4 = Vec::new();
-                                    ret4.append(&mut access_list.encode()?);
-                                    Rlp::encode_list(&mut ret3, &ret4)?;
-                                }
-                                Rlp::encode_string(&mut ret3, v)?;
-                                Rlp::encode_string(&mut ret3, r)?;
-                                Rlp::encode_string(&mut ret3, s)?;
-                                Rlp::encode_list(&mut ret2, &ret3)?;
-                            }
-                        }
-                        _ => todo!(),
-                    }
+                    let ret2 = envelope.encode()?;
                     Rlp::encode_string(buf, &ret2)?;
                 }
             }
@@ -807,222 +564,6 @@ impl Header {
 
     fn encode(&self) -> Result<Vec<u8>, RlpError> {
         let mut buf = Vec::new();
-        // match self {
-        //     Header::Legacy {
-        //         parent_hash,
-        //         uncle_hash,
-        //         coinbase,
-        //         state_root,
-        //         tx_root,
-        //         receipt_hash,
-        //         bloom,
-        //         difficulty,
-        //         number,
-        //         gas_limit,
-        //         gas_used,
-        //         time,
-        //         extra,
-        //         mix_digest,
-        //         nonce,
-        //     }
-        //     | Header::EIP1559 {
-        //         parent_hash,
-        //         uncle_hash,
-        //         coinbase,
-        //         state_root,
-        //         tx_root,
-        //         receipt_hash,
-        //         bloom,
-        //         difficulty,
-        //         number,
-        //         gas_limit,
-        //         gas_used,
-        //         time,
-        //         extra,
-        //         mix_digest,
-        //         nonce,
-        //         ..
-        //     }
-        //     | Header::EIP4895 {
-        //         parent_hash,
-        //         uncle_hash,
-        //         coinbase,
-        //         state_root,
-        //         tx_root,
-        //         receipt_hash,
-        //         bloom,
-        //         difficulty,
-        //         number,
-        //         gas_limit,
-        //         gas_used,
-        //         time,
-        //         extra,
-        //         mix_digest,
-        //         nonce,
-        //         ..
-        //     }
-        //     | Header::Apricot4 {
-        //         parent_hash,
-        //         uncle_hash,
-        //         coinbase,
-        //         state_root,
-        //         tx_root,
-        //         receipt_hash,
-        //         bloom,
-        //         difficulty,
-        //         number,
-        //         gas_limit,
-        //         gas_used,
-        //         time,
-        //         extra,
-        //         mix_digest,
-        //         nonce,
-        //         ..
-        //     }
-        //     | Header::EIP4844 {
-        //         parent_hash,
-        //         uncle_hash,
-        //         coinbase,
-        //         state_root,
-        //         tx_root,
-        //         receipt_hash,
-        //         bloom,
-        //         difficulty,
-        //         number,
-        //         gas_limit,
-        //         gas_used,
-        //         time,
-        //         extra,
-        //         mix_digest,
-        //         nonce,
-        //         ..
-        //     }
-        //     | Header::EIP4788 {
-        //         parent_hash,
-        //         uncle_hash,
-        //         coinbase,
-        //         state_root,
-        //         tx_root,
-        //         receipt_hash,
-        //         bloom,
-        //         difficulty,
-        //         number,
-        //         gas_limit,
-        //         gas_used,
-        //         time,
-        //         extra,
-        //         mix_digest,
-        //         nonce,
-        //         ..
-        //     }
-        //     | Header::Extra {
-        //         parent_hash,
-        //         uncle_hash,
-        //         coinbase,
-        //         state_root,
-        //         tx_root,
-        //         receipt_hash,
-        //         bloom,
-        //         difficulty,
-        //         number,
-        //         gas_limit,
-        //         gas_used,
-        //         time,
-        //         extra,
-        //         mix_digest,
-        //         nonce,
-        //         ..
-        //     } => {
-        //         Rlp::encode_string(&mut buf, parent_hash)?;
-        //         Rlp::encode_string(&mut buf, uncle_hash)?;
-        //         Rlp::encode_string(&mut buf, coinbase)?;
-        //         Rlp::encode_normalized_string(&mut buf, state_root)?;
-        //         Rlp::encode_normalized_string(&mut buf, tx_root)?;
-        //         Rlp::encode_normalized_string(&mut buf, receipt_hash)?;
-        //         Rlp::encode_normalized_string(&mut buf, bloom)?;
-        //         Rlp::encode_string(&mut buf, difficulty)?;
-        //         Rlp::encode_string(&mut buf, number)?;
-        //         Rlp::encode_string(&mut buf, gas_limit)?;
-        //         Rlp::encode_string(&mut buf, gas_used)?;
-        //         Rlp::encode_string(&mut buf, time)?;
-        //         Rlp::encode_normalized_string(&mut buf, extra)?;
-        //         Rlp::encode_normalized_string(&mut buf, mix_digest)?;
-        //         Rlp::encode_normalized_string(&mut buf, nonce)?;
-        //         match self {
-        //             Header::EIP1559 { base_fee, .. }
-        //             | Header::EIP4895 { base_fee, .. }
-        //             | Header::Apricot4 { base_fee, .. }
-        //             | Header::EIP4844 { base_fee, .. }
-        //             | Header::EIP4788 { base_fee, .. } => {
-        //                 Rlp::encode_string(&mut buf, base_fee)?;
-        //                 match self {
-        //                     Header::EIP4895 {
-        //                         withdrawal_root, ..
-        //                     }
-        //                     | Header::EIP4844 {
-        //                         withdrawal_root, ..
-        //                     }
-        //                     | Header::EIP4788 {
-        //                         withdrawal_root, ..
-        //                     } => {
-        //                         Rlp::encode_string(&mut buf, withdrawal_root)?;
-        //                         match self {
-        //                             Header::EIP4844 {
-        //                                 blob_gas_used,
-        //                                 excess_blob_gas,
-        //                                 ..
-        //                             }
-        //                             | Header::EIP4788 {
-        //                                 blob_gas_used,
-        //                                 excess_blob_gas,
-        //                                 ..
-        //                             } => {
-        //                                 Rlp::encode_string(&mut buf, blob_gas_used)?;
-        //                                 Rlp::encode_string(&mut buf, excess_blob_gas)?;
-        //                                 if let Header::EIP4788 {
-        //                                     parent_beacon_block_root,
-        //                                     ..
-        //                                 } = self
-        //                                 {
-        //                                     Rlp::encode_string(&mut buf, parent_beacon_block_root)?;
-        //                                 }
-        //                             }
-        //                             _ => (),
-        //                         }
-        //                     }
-        //                     Header::Apricot4 {
-        //                         ext_data_gas_used,
-        //                         block_gas_cost,
-        //                         ..
-        //                     } => {
-        //                         Rlp::encode_normalized_string(&mut buf, ext_data_gas_used)?;
-        //                         Rlp::encode_string(&mut buf, block_gas_cost)?;
-        //                     }
-        //                     _ => (),
-        //                 }
-        //             }
-        //             Header::Extra {
-        //                 ext_data_hash,
-        //                 base_fee,
-        //                 ext_data_gas_used,
-        //                 block_gas_cost,
-        //                 blob_gas_used,
-        //                 excess_blob_gas,
-        //                 parent_beacon_block_root,
-        //                 ..
-        //             } => {
-        //                 Rlp::encode_normalized_string(&mut buf, ext_data_hash)?;
-        //                 Rlp::encode_string(&mut buf, base_fee)?;
-        //                 Rlp::encode_string(&mut buf, ext_data_gas_used)?;
-        //                 Rlp::encode_string(&mut buf, block_gas_cost)?;
-        //                 Rlp::encode_string(&mut buf, blob_gas_used)?;
-        //                 Rlp::encode_string(&mut buf, excess_blob_gas)?;
-        //                 Rlp::encode_normalized_string(&mut buf, parent_beacon_block_root)?;
-        //             }
-        //             _ => (),
-        //         }
-        //     }
-        // }
         let Header::Extra {
             parent_hash,
             uncle_hash,
@@ -1147,6 +688,35 @@ impl TransactionLegacy {
             r,
             s,
         })
+    }
+
+    pub fn encode(&self) -> Result<Vec<u8>, RlpError> {
+        let TransactionLegacy {
+            nonce,
+            gas_price,
+            gas_limit,
+            to,
+            value,
+            data,
+            v,
+            r,
+            s,
+        } = self;
+        let mut bytes = Vec::new();
+        Rlp::encode_string(&mut bytes, nonce)?;
+        Rlp::encode_string(&mut bytes, gas_price)?;
+        Rlp::encode_string(&mut bytes, gas_limit)?;
+        if to == &[0; 20] {
+            Rlp::encode_string(&mut bytes, &[])?;
+        } else {
+            Rlp::encode_normalized_string(&mut bytes, to)?;
+        }
+        Rlp::encode_string(&mut bytes, value)?;
+        Rlp::encode_string(&mut bytes, data)?;
+        Rlp::encode_string(&mut bytes, v)?;
+        Rlp::encode_string(&mut bytes, r)?;
+        Rlp::encode_string(&mut bytes, s)?;
+        Ok(bytes)
     }
 }
 
@@ -1287,6 +857,92 @@ impl TransactionEnvelope {
         };
 
         Ok(envelope)
+    }
+
+    pub fn encode(&self) -> Result<Vec<u8>, RlpError> {
+        let mut ret2 = Vec::new();
+        match self {
+            TransactionEnvelope::AccessList(TransactionAccessList {
+                chain_id,
+                nonce,
+                gas_price,
+                gas_limit,
+                to,
+                value,
+                data,
+                access_list,
+                v,
+                r,
+                s,
+            }) => {
+                ret2.push(0x01);
+                {
+                    let mut ret3 = Vec::new();
+                    Rlp::encode_string(&mut ret3, chain_id)?;
+                    Rlp::encode_string(&mut ret3, nonce)?;
+                    Rlp::encode_string(&mut ret3, gas_price)?;
+                    Rlp::encode_string(&mut ret3, gas_limit)?;
+                    if to == &[0; 20] {
+                        Rlp::encode_string(&mut ret3, &[])?;
+                    } else {
+                        Rlp::encode_normalized_string(&mut ret3, to)?;
+                    }
+                    Rlp::encode_string(&mut ret3, value)?;
+                    Rlp::encode_string(&mut ret3, data)?;
+                    {
+                        let mut ret4 = Vec::new();
+                        ret4.append(&mut access_list.encode()?);
+                        Rlp::encode_list(&mut ret3, &ret4)?;
+                    }
+                    Rlp::encode_string(&mut ret3, v)?;
+                    Rlp::encode_string(&mut ret3, r)?;
+                    Rlp::encode_string(&mut ret3, s)?;
+                    Rlp::encode_list(&mut ret2, &ret3)?;
+                }
+            }
+            TransactionEnvelope::DynamicFee(TransactionDynamicFee {
+                chain_id,
+                nonce,
+                max_priority_fee_per_gas,
+                max_fee_per_gas,
+                gas_limit,
+                destination,
+                amount,
+                data,
+                access_list,
+                v,
+                r,
+                s,
+            }) => {
+                ret2.push(0x02);
+                {
+                    let mut ret3 = Vec::new();
+                    Rlp::encode_string(&mut ret3, chain_id)?;
+                    Rlp::encode_string(&mut ret3, nonce)?;
+                    Rlp::encode_string(&mut ret3, max_priority_fee_per_gas)?;
+                    Rlp::encode_string(&mut ret3, max_fee_per_gas)?;
+                    Rlp::encode_string(&mut ret3, gas_limit)?;
+                    if destination == &[0; 20] {
+                        Rlp::encode_string(&mut ret3, &[])?;
+                    } else {
+                        Rlp::encode_normalized_string(&mut ret3, destination)?;
+                    }
+                    Rlp::encode_string(&mut ret3, amount)?;
+                    Rlp::encode_string(&mut ret3, data)?;
+                    {
+                        let mut ret4 = Vec::new();
+                        ret4.append(&mut access_list.encode()?);
+                        Rlp::encode_list(&mut ret3, &ret4)?;
+                    }
+                    Rlp::encode_string(&mut ret3, v)?;
+                    Rlp::encode_string(&mut ret3, r)?;
+                    Rlp::encode_string(&mut ret3, s)?;
+                    Rlp::encode_list(&mut ret2, &ret3)?;
+                }
+            }
+            _ => todo!(),
+        }
+        Ok(ret2)
     }
 }
 
@@ -1635,6 +1291,7 @@ impl AccessList {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::utils::unpacker::StatelessBlock;
     use pretty_assertions::assert_eq;
     use std::fmt::Debug;
@@ -1672,8 +1329,32 @@ mod tests {
         can_parse("blocks", StatelessBlock::unpack, StatelessBlock::pack);
     }
 
-    // #[test]
-    // fn can_parse_transaction() {
-    //     can_parse("txs", Transaction::decode);
-    // }
+    #[test]
+    fn can_parse_transaction() {
+        fn decode(bytes: &[u8]) -> Result<Transaction, RlpError> {
+            if bytes.is_empty() {
+                return Err(RlpError::InputTooShort);
+            }
+            let prefix = bytes.first().unwrap();
+            let transaction = match prefix {
+                0x00..=0x7f => Transaction::EIP2718 {
+                    envelope: TransactionEnvelope::decode(bytes)?,
+                    hash: Default::default(),
+                },
+                0x80.. => Transaction::Legacy {
+                    tx: TransactionLegacy::decode(bytes)?,
+                    hash: Default::default(),
+                },
+            };
+            Ok(transaction)
+        }
+
+        fn encode(transaction: &Transaction) -> Result<Vec<u8>, RlpError> {
+            match transaction {
+                Transaction::Legacy { tx, .. } => tx.encode(),
+                Transaction::EIP2718 { envelope, .. } => envelope.encode(),
+            }
+        }
+        can_parse("txs", decode, encode);
+    }
 }

@@ -69,7 +69,7 @@ impl<DB: LockedMapDb<Bucket, Vec<u8>>> Dht<DB> {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Copy, Clone)]
 #[serde(rename_all = "snake_case")]
 pub enum DhtId {
     Block,

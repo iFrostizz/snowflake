@@ -10,8 +10,6 @@ use crate::net::RwLock;
 use crate::net::{LightError, Network};
 use crate::node::Node;
 use crate::server::peers::PeerInfo;
-use crate::utils::rlp::Block;
-use crate::utils::unpacker::StatelessBlock;
 use crate::Arc;
 use flume::Sender;
 use indexmap::IndexMap;
@@ -105,7 +103,7 @@ impl LightNetwork {
             }
             LightMessage::FindNode(bucket) => {
                 let res = Ok(LightValue::ValueOrNodes(ValueOrNodes::Nodes(
-                    self.find_node(&bucket),
+                    self.kademlia_dht.find_node(&bucket),
                 )));
                 Some(res)
             }
@@ -135,11 +133,6 @@ impl LightNetwork {
         }
     }
 
-    /// Lookup locally for nodes spanning the bucket.
-    pub fn find_node(&self, bucket: &Bucket) -> Vec<ConnectionData> {
-        self.kademlia_dht.find_node(bucket)
-    }
-
     /// Lookup locally for a value or nodes spanning the bucket.
     fn find_value<DB>(&self, db: &DB, bucket: &Bucket) -> LightResult
     where
@@ -147,14 +140,14 @@ impl LightNetwork {
     {
         let value_or_nodes = match db.get(bucket) {
             Some(value) => ValueOrNodes::Value(value),
-            None => ValueOrNodes::Nodes(self.find_node(bucket)),
+            None => ValueOrNodes::Nodes(self.kademlia_dht.find_node(bucket)),
         };
         Ok(LightValue::ValueOrNodes(value_or_nodes))
     }
 
     /// Check if the value is stored locally.
     /// If not, lookup the DHT for it.
-    async fn find_content<DHT, K, V>(&self, dht: &Arc<DHT>, key: K) -> Result<V, LightError>
+    pub async fn find_content<DHT, K, V>(&self, dht: &Arc<DHT>, key: K) -> Result<V, LightError>
     where
         DHT: ConcreteDht<K> + DhtContent<K, V>,
     {
@@ -179,7 +172,7 @@ impl LightNetwork {
         }
     }
 
-    async fn store<DHT, K, V>(
+    pub async fn store<DHT, K, V>(
         &self,
         dht: &Arc<DHT>,
         node_id: NodeId,
@@ -195,21 +188,6 @@ impl LightNetwork {
         } else {
             self.kademlia_dht.store(node_id, &DHT::id(), encoded).await
         }
-    }
-
-    // TODO: those dht-specific functions should be placed outside of this struct.
-    pub async fn find_block(&self, number: u64) -> Result<Block, LightError> {
-        self.find_content(&self.block_dht, number)
-            .await
-            .map(|stateless_block| stateless_block.block)
-    }
-
-    pub async fn store_block(
-        &self,
-        node_id: NodeId,
-        block: StatelessBlock,
-    ) -> Result<(), LightError> {
-        self.store(&self.block_dht, node_id, block).await
     }
 }
 

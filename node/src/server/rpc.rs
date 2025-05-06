@@ -34,10 +34,9 @@ macro_rules! not_implemented {
 mod rpc_impl {
     use super::*;
     use crate::dht::block::DhtBlocks;
-
+    use crate::dht::light_errors;
     use crate::dht::Bucket;
     use crate::dht::DhtId;
-    use crate::dht::{light_errors, LightError};
     use crate::id::NodeId;
     use crate::message::SubscribableMessage;
     use crate::net::light::DhtContent;
@@ -500,8 +499,12 @@ mod rpc_impl {
                 BlockParameter::Number(number) => number,
                 _ => not_implemented!(), // resolve block
             };
-            let block = self.node.light_network.find_block(number).await?;
-            Ok(block.transactions.len() as u64)
+            let block = self
+                .node
+                .light_network
+                .find_content(&self.node.light_network.block_dht, number)
+                .await?;
+            Ok(block.block.transactions.len() as u64)
         }
 
         fn get_uncle_count_by_block_hash(
@@ -587,9 +590,9 @@ mod rpc_impl {
             };
             self.node
                 .light_network
-                .find_block(number)
+                .find_content(&self.node.light_network.block_dht, number)
                 .await
-                .map(|block| block_to_rpc(block, full))
+                .map(|block| block_to_rpc(block.block, full))
                 .map_err(Into::into)
         }
 
@@ -685,13 +688,7 @@ mod rpc_impl {
                 peer_infos
                     .ping(&self.node.light_network.kademlia_dht.mail_tx)
                     .await
-                    .map_err(|_todo_err| {
-                        LightError {
-                            code: 8,
-                            message: "TODO",
-                        }
-                        .into()
-                    })
+                    .map_err(|err| ErrorObject::owned(1000, err.to_string(), None::<()>))
             } else {
                 Err(light_errors::PEER_MISSING.into())
             }
@@ -711,7 +708,10 @@ mod rpc_impl {
             match dht_id {
                 DhtId::Block => {
                     let block = DhtBlocks::decode(&value)?;
-                    self.node.light_network.store_block(node_id, block).await?;
+                    self.node
+                        .light_network
+                        .store(&self.node.light_network.block_dht, node_id, block)
+                        .await?;
                 }
                 DhtId::State => {}
             }
@@ -726,6 +726,7 @@ mod rpc_impl {
             let node_ids = if node_id.is_none() || node_id == Some(self.node.network.node_id) {
                 self.node
                     .light_network
+                    .kademlia_dht
                     .find_node(&bucket)
                     .into_iter()
                     .map(|ConnectionData { node_id, .. }| node_id)
@@ -759,11 +760,12 @@ mod rpc_impl {
                         &self.node.light_network.kademlia_dht.mail_tx,
                         SubscribableMessage::AppRequest(app_request),
                     )
-                    .unwrap(); // TODO: error handling
+                    .map_err(|err| ErrorObject::owned(1000, err.to_string(), None::<()>))?;
 
-                // TODO: error handling
-                // let p2p::message::Message::AppResponse(app_response) = rx.await? else {
-                let p2p::message::Message::AppResponse(app_response) = rx.await.unwrap() else {
+                let p2p::message::Message::AppResponse(app_response) = rx
+                    .await
+                    .map_err(|_| ErrorObject::borrowed(1000, "timeout", None))?
+                else {
                     return Err(light_errors::INVALID_CONTENT.into());
                 };
                 if app_response.chain_id
@@ -821,7 +823,8 @@ mod rpc_impl {
                                 true,
                             ))),
                             None => {
-                                let connections_data = self.node.light_network.find_node(&bucket);
+                                let connections_data =
+                                    self.node.light_network.kademlia_dht.find_node(&bucket);
                                 let node_ids = connections_data
                                     .into_iter()
                                     .map(|ConnectionData { node_id, .. }| node_id)
@@ -850,7 +853,7 @@ mod rpc_impl {
                 let message = AppRequestMessage::encode(
                     &self.node.light_network.kademlia_dht.chain_id,
                     sdk::FindValue {
-                        dht_id: (&dht_id).into(), // TODO: how to implement an auto AsRef?
+                        dht_id: dht_id.into(),
                         bucket: bucket.to_be_bytes_vec(),
                     },
                 );
@@ -862,10 +865,12 @@ mod rpc_impl {
                         &self.node.light_network.kademlia_dht.mail_tx,
                         SubscribableMessage::AppRequest(app_request),
                     )
-                    .unwrap(); // TODO: error handling
+                    .map_err(|err| ErrorObject::owned(1000, err.to_string(), None::<()>))?;
 
-                // TODO: error handling
-                let p2p::message::Message::AppResponse(app_response) = rx.await.unwrap() else {
+                let p2p::message::Message::AppResponse(app_response) = rx
+                    .await
+                    .map_err(|_| ErrorObject::borrowed(1000, "timeout", None))?
+                else {
                     return Err(light_errors::INVALID_CONTENT.into());
                 };
                 if app_response.chain_id

@@ -153,6 +153,7 @@ impl KademliaDht {
         nodes_with_content
     }
 
+    /// Lookup locally for nodes spanning the bucket.
     /// Find up to `n` unique nodes that are the closest to the `bucket`.
     pub fn find_node(&self, bucket: &Bucket) -> Vec<ConnectionData> {
         let nodes = self.light_peers.read().unwrap();
