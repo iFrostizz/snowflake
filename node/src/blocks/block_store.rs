@@ -18,7 +18,7 @@ impl BlockStore {
     }
 
     pub fn push(&mut self, block_id: BlockID, height: u64) {
-        if self.store.insert(block_id.clone(), height).is_none() {
+        if self.store.insert(block_id, height).is_none() {
             if let Some(block_id) = self.cache.push(block_id) {
                 self.store.remove(&block_id);
             }

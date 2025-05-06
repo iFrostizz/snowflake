@@ -11,28 +11,44 @@ use tokio::sync::Semaphore;
 use tokio_rustls::{TlsAcceptor, TlsStream};
 
 pub struct Listener {
-    //
+    config: Arc<ServerConfig>,
+    tcp: TcpListener,
+    max_connections: usize,
+    pub network_port: u16,
 }
 
 impl Listener {
-    pub async fn start(node: &Arc<Node>, config: Arc<ServerConfig>, max_connections: usize) -> ! {
-        log::debug!("starting listening server");
-        // TODO automatically set port by using 0 if None and getting the local_addr
-        // file:///home/francois/snowflake/target/doc/tokio/net/struct.TcpListener.html#method.bind
-        let network_port = node.network.config.socket_addr.port();
+    pub async fn new(
+        mut network_port: u16,
+        config: Arc<ServerConfig>,
+        max_connections: usize,
+    ) -> Self {
         let address = format!("{}:{}", "127.0.0.1", network_port);
         let tcp = TcpListener::bind(address)
             .await
             .expect("failed to start tcp server");
-        log::debug!("tcp listener bound");
-        let tls_acceptor = Arc::new(TlsAcceptor::from(config));
+        network_port = tcp.local_addr().unwrap().port();
 
-        let connections = Arc::new(Semaphore::new(max_connections));
+        Self {
+            config,
+            tcp,
+            max_connections,
+            network_port,
+        }
+    }
+
+    pub async fn start(self, node: Arc<Node>) -> ! {
+        log::debug!("starting listening server");
+        // TODO automatically set port by using 0 if None and getting the local_addr
+        //  file:///home/francois/snowflake/target/doc/tokio/net/struct.TcpListener.html#method.bind
+        log::debug!("tcp listener bound");
+        let tls_acceptor = Arc::new(TlsAcceptor::from(self.config));
+        let connections = Arc::new(Semaphore::new(self.max_connections));
 
         loop {
             let node = node.clone();
             let tls_acceptor = tls_acceptor.clone();
-            match tcp.accept().await {
+            match self.tcp.accept().await {
                 Ok((stream, sock_addr)) => {
                     let handle = connections.try_acquire();
                     if handle.is_ok() {

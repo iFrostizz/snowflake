@@ -18,7 +18,7 @@ pub struct PushGossip {
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct LightRequest {
-    #[prost(oneof = "light_request::Message", tags = "1, 11, 12")]
+    #[prost(oneof = "light_request::Message", tags = "1, 11, 12, 13")]
     pub message: ::core::option::Option<light_request::Message>,
 }
 /// Nested message and enum types in `LightRequest`.
@@ -31,6 +31,8 @@ pub mod light_request {
         FindValue(super::FindValue),
         #[prost(message, tag = "12")]
         FindNode(super::FindNode),
+        #[prost(message, tag = "13")]
+        Store(super::Store),
     }
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -61,6 +63,16 @@ pub struct FindNode {
     #[prost(bytes = "vec", tag = "1")]
     pub bucket: ::prost::alloc::vec::Vec<u8>,
 }
+/// Store is used to store content to a distant peer
+///
+/// Works as defined in the Kademlia DHT paper: <https://pdos.csail.mit.edu/~petar/papers/maymounkov-kademlia-lncs.pdf>
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct Store {
+    #[prost(uint32, tag = "1")]
+    pub dht_id: u32,
+    #[prost(bytes = "vec", tag = "2")]
+    pub value: ::prost::alloc::vec::Vec<u8>,
+}
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct LightResponse {
     #[prost(oneof = "light_response::Message", tags = "1, 2, 3")]
@@ -73,18 +85,13 @@ pub mod light_response {
         #[prost(message, tag = "1")]
         Ack(super::Ack),
         #[prost(message, tag = "2")]
-        Nodes(super::Nodes),
+        Nodes(super::super::p2p::PeerList),
         #[prost(message, tag = "3")]
         Value(super::Value),
     }
 }
 #[derive(Clone, Copy, PartialEq, ::prost::Message)]
 pub struct Ack {}
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct Nodes {
-    #[prost(bytes = "vec", repeated, tag = "1")]
-    pub node_ids: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
-}
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Value {
     #[prost(bytes = "vec", tag = "1")]

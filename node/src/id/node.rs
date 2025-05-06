@@ -1,5 +1,6 @@
 use super::{Id, IdError};
 use ripemd::Ripemd160;
+use serde::{Deserialize, Deserializer, Serialize};
 use sha2::{Digest, Sha256};
 use std::fmt::{Debug, Display, Formatter};
 
@@ -10,9 +11,21 @@ pub struct NodeId {
     id: Id<{ Self::LEN }>,
 }
 
-impl AsRef<[u8]> for NodeId {
+impl AsRef<[u8]> for &NodeId {
     fn as_ref(&self) -> &[u8] {
         self.id.as_slice()
+    }
+}
+
+impl From<&NodeId> for Vec<u8> {
+    fn from(value: &NodeId) -> Self {
+        value.id.inner.to_vec()
+    }
+}
+
+impl From<NodeId> for Vec<u8> {
+    fn from(value: NodeId) -> Self {
+        value.id.inner.to_vec()
     }
 }
 
@@ -51,7 +64,7 @@ impl<'a> From<&'a Vec<NodeId>> for VecNodeIds<'a> {
 }
 
 impl Display for VecNodeIds<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "[")?;
         let mut first = true;
         for node_id in self.0 {
@@ -85,6 +98,27 @@ impl TryFrom<&str> for NodeId {
         } else {
             Err(IdError::MissingPrefix)
         }
+    }
+}
+
+impl<'de> Deserialize<'de> for NodeId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let node_id_string = <String>::deserialize(deserializer)?;
+        let node_id =
+            NodeId::try_from(node_id_string.as_str()).map_err(serde::de::Error::custom)?;
+        Ok(node_id)
+    }
+}
+
+impl Serialize for NodeId {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.to_string())
     }
 }
 

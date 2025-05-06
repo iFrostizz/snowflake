@@ -3,6 +3,7 @@ use crate::dht::DhtBuckets;
 use crate::id::{ChainId, NodeId};
 use crate::message::{pipeline::Pipeline, MiniMessage};
 use crate::net::{ip::UnsignedIp, BackoffParams, Intervals, Network, PeerInfo};
+use crate::node::SinglePickerConfig;
 use crate::server::msg::AppRequestMessage;
 use crate::server::{
     msg::{DecodingError, OutboundMessage},
@@ -18,13 +19,13 @@ use crate::utils::{
 use flume::{Receiver, Sender};
 use futures::future;
 use indexmap::IndexMap;
-use openssl::x509;
 use prost::EncodeError;
 use proto_lib::p2p::{self};
 use proto_lib::sdk;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::RwLockWriteGuard;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
@@ -32,7 +33,7 @@ use tokio::io::WriteHalf;
 use tokio::net::TcpStream;
 use tokio::sync::{broadcast, oneshot, Semaphore};
 use tokio::task::JoinHandle;
-use tokio::time::{self};
+use tokio::time;
 use tokio_rustls::TlsStream;
 
 #[derive(Debug, Error)]
@@ -43,10 +44,8 @@ pub enum NodeError {
     Timeout(#[from] time::error::Elapsed),
     #[error("tcp error: {0}")]
     TcpConnection(#[from] std::io::Error),
-    #[error("send error: all receivers have been dropped")]
-    // TODO
-    //   SendError(#[from] flume::SendError<T>),
-    SendError,
+    #[error(transparent)]
+    SendError(#[from] SendErrorWrapper),
     #[error("recv error: all sender have been dropped")]
     RecvError(#[from] oneshot::error::RecvError),
     #[error("error when decoding inbound message {0}")]
@@ -61,9 +60,28 @@ pub enum NodeError {
     Bloom(#[from] BloomError),
     #[error("unwanted peer: reason: {0}")]
     UnwantedPeer(#[from] AddPeerError),
+    #[error("openssl error: {0}")]
+    OpenSsl(#[from] openssl::error::ErrorStack),
     #[error("unexpected message: {0}")]
     Message(String),
 }
+
+#[derive(Debug)]
+pub struct SendErrorWrapper;
+
+impl<T> From<flume::SendError<T>> for SendErrorWrapper {
+    fn from(_: flume::SendError<T>) -> Self {
+        SendErrorWrapper
+    }
+}
+
+impl std::fmt::Display for SendErrorWrapper {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "send error: all receivers have been dropped")
+    }
+}
+
+impl std::error::Error for SendErrorWrapper {}
 
 #[derive(Debug)]
 pub struct NetworkConfig {
@@ -83,6 +101,7 @@ pub struct NetworkConfig {
     pub bucket_size: usize,
     pub max_concurrent_handshakes: usize,
     pub max_peers: Option<usize>,
+    pub max_light_peers: Option<usize>,
     pub bootstrappers: HashMap<NodeId, Option<DhtBuckets>>,
     pub dht_buckets: DhtBuckets,
 }
@@ -125,15 +144,12 @@ pub enum AddPeerError {
 }
 
 impl Network {
-    pub fn todo_remove_attach_light_peers(
-        &mut self,
-        light_peers: Arc<RwLock<HashMap<NodeId, DhtBuckets>>>,
-    ) {
-        self.light_peers = light_peers;
-    }
-
     /// Initiate the network by specifying this node's IP
-    pub fn new(config: NetworkConfig) -> Result<Self, ()> {
+    pub fn new(
+        config: NetworkConfig,
+        node_id: NodeId,
+        peers_infos: Arc<RwLock<IndexMap<NodeId, PeerInfo>>>,
+    ) -> Result<Self, NodeError> {
         let client_config = Arc::new(config::client_config(
             &config.cert_path,
             &config.pem_key_path,
@@ -152,7 +168,7 @@ impl Network {
             config.socket_addr.port(),
             sig_timestamp,
         );
-        let signed_ip = unsigned_ip.sign_with_key(&bls, &config.pem_key_path);
+        let signed_ip = unsigned_ip.sign_with_key(&bls, &config.pem_key_path)?;
 
         // TODO https://github.com/iFrostizz/snowflake/issues/13
         let client = p2p::Client {
@@ -165,11 +181,6 @@ impl Network {
         let bloom_filter = Filter::new(8, 1000).expect("usage of wrong constants");
         let bloom_filter = RwLock::new(bloom_filter);
 
-        let bytes = std::fs::read(&config.cert_path).expect("failed to read cert");
-        let x509 = x509::X509::from_pem(&bytes).unwrap();
-        let cert = x509.to_der().unwrap();
-        let node_id = NodeId::from_cert(cert);
-
         let out_pipeline = Arc::new(Pipeline::new(
             config.max_throughput,
             config.max_out_queue_size,
@@ -179,9 +190,6 @@ impl Network {
         let handshake_semaphore = Arc::new(Semaphore::new(config.max_concurrent_handshakes));
         let bootstrappers = RwLock::new(config.bootstrappers.clone());
 
-        let peers_infos = Arc::new(RwLock::new(IndexMap::new()));
-        let buckets = config.dht_buckets.clone();
-
         Ok(Self {
             node_id,
             out_pipeline,
@@ -189,14 +197,12 @@ impl Network {
             client,
             client_config,
             peers_infos,
-            light_peers: Default::default(),
             bootstrappers,
             signed_ip,
             bloom_filter,
             public_key,
             node_pop,
             handshake_semaphore,
-            buckets,
         })
     }
 
@@ -268,6 +274,7 @@ impl Network {
         node_id: NodeId,
         x509_certificate: Vec<u8>,
         snp: PeerSender,
+        tx: broadcast::Sender<()>,
     ) {
         let mut peers = self.peers_infos.write().unwrap();
         if peers.get(&node_id).is_none() {
@@ -277,6 +284,7 @@ impl Network {
                     x509_certificate,
                     sender: snp, // TODO issue here, the passed snp won't be used if already here
                     infos: None,
+                    tx,
                 },
             );
             stats::connected_peers::inc();
@@ -291,35 +299,38 @@ impl Network {
         node_id: NodeId,
         mut rx: broadcast::Receiver<()>,
     ) -> Result<JoinHandle<Result<(), NodeError>>, NodeError> {
-        // TODO mistake because it's in nanos
-        // let handshake_deadline = Duration::from_millis(constants::DEFAULT_DEADLINE); // s // TODO configure
-        let handshake_deadline = Duration::from_millis(2000);
         self.handshake(sender)?;
-        let sleep = tokio::time::sleep(handshake_deadline);
-        let network = self.clone();
 
-        // TODO instead of this, have a oneshot channel return back the handshake result.
-        //   This should be sent once the PeerMessage::NewPeer is received.
+        let network = self.clone();
         let sender = sender.clone();
         let hand_peer = tokio::spawn(async move {
-            tokio::select! {
-                _ = sleep => {
-                    // timeout, we might have received the handshake before though
-                    // TODO use a loop to continuously check for faster confirmation.
-                    let peer_infos = network.peers_infos.read().unwrap();
-                    if !peer_infos.get(&node_id).is_some_and(|peer| peer.handshook()) {
-                        return Err(NodeError::Message("handshake expired".to_string()));
+            let mut interval = tokio::time::interval(Duration::from_millis(2000));
+            let mut i = 0;
+
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        let peer_infos = network.peers_infos.read().unwrap();
+                        let is_handshook = peer_infos.get(&node_id).is_some_and(|peer| peer.handshook());
+                        if i < 5 && is_handshook {
+                            break;
+                        } else if i >= 5 {
+                            return Err(NodeError::Message("handshake expired".to_string()));
+                        }
+                        i += 1;
                     }
-                }
-                _ = rx.recv() => {
-                    return Ok(())
+                    _ = rx.recv() => {
+                        return Ok(())
+                    }
                 }
             }
 
             network.light_handshake(&sender)?;
 
             // the handshake was successful, the channel can still stop this thread remotely
-            rx.recv().await.unwrap();
+            rx.recv()
+                .await
+                .map_err(|_| NodeError::Message("recv error".to_string()))?;
             Ok(())
         });
 
@@ -348,13 +359,11 @@ impl Network {
         };
 
         log::trace!("handshaking the peer");
-        sender
-            .send(p2p::message::Message::Handshake(handshake))
-            .map_err(|_| NodeError::SendError)
+        sender.send(p2p::message::Message::Handshake(handshake))
     }
 
     fn light_handshake(&self, sender: &PeerSender) -> Result<(), NodeError> {
-        let block_k = self.buckets.block;
+        let block_k = self.config.dht_buckets.block;
         let buckets = sdk::DhtBuckets {
             block: block_k.to_be_bytes_vec(),
         };
@@ -362,13 +371,14 @@ impl Network {
             buckets: Some(buckets),
         });
         let app_request = AppRequestMessage::encode(&self.config.c_chain_id, message)?;
-        sender
-            .send(app_request)
-            // TODO include this variant in thiserror and watch all the dup lines being deleted!
-            .map_err(|_| NodeError::SendError)
+        sender.send(app_request)
     }
 
-    pub fn remove_peers(self: &Arc<Network>, node_ids_errs: Vec<(&NodeId, Option<&NodeError>)>) {
+    pub fn remove_peers(
+        peers_infos: Arc<RwLock<IndexMap<NodeId, PeerInfo>>>,
+        light_peers: &mut RwLockWriteGuard<IndexMap<NodeId, DhtBuckets>>,
+        node_ids_errs: Vec<(NodeId, Option<NodeError>)>,
+    ) {
         for (node_id, err) in &node_ids_errs {
             if let Some(err) = err {
                 log::debug!("removing peer {}, reason: {}", node_id, err);
@@ -378,10 +388,11 @@ impl Network {
         }
 
         {
-            let mut peers_write = self.peers_infos.write().unwrap();
+            let mut peers_write = peers_infos.write().unwrap();
 
             for (node_id, _) in &node_ids_errs {
-                if let Some(peer) = peers_write.swap_remove(*node_id) {
+                if let Some(peer) = peers_write.swap_remove(node_id) {
+                    let _ = peer.tx.send(());
                     if peer.handshook() {
                         stats::handshook_peers::dec();
                     }
@@ -391,12 +402,19 @@ impl Network {
         }
 
         {
-            let mut peers_write = self.light_peers.write().unwrap();
-
             for (node_id, _) in &node_ids_errs {
-                peers_write.remove(node_id);
+                light_peers.swap_remove(node_id);
             }
         }
+    }
+
+    pub fn disconnect_peer(
+        peers_infos: Arc<RwLock<IndexMap<NodeId, PeerInfo>>>,
+        light_peers: &mut RwLockWriteGuard<IndexMap<NodeId, DhtBuckets>>,
+        node_id: NodeId,
+        err: Option<NodeError>,
+    ) {
+        Self::remove_peers(peers_infos, light_peers, vec![(node_id, err)]);
     }
 
     pub fn has_reached_max_peers(&self, peers_infos: &IndexMap<NodeId, PeerInfo>) -> bool {
@@ -424,5 +442,37 @@ impl Network {
             return Err(AddPeerError::MaxPeersReached.into());
         }
         Ok(())
+    }
+
+    pub fn pick_peer(
+        peers_infos: &Arc<RwLock<IndexMap<NodeId, PeerInfo>>>,
+        bootstrappers: &RwLock<HashMap<NodeId, Option<DhtBuckets>>>,
+        config: SinglePickerConfig,
+    ) -> Option<NodeId> {
+        match config {
+            SinglePickerConfig::Bootstrapper => {
+                let peers = peers_infos.read().unwrap();
+                let available_peers: HashSet<_> = peers.keys().collect();
+                let bootstrappers = bootstrappers.read().unwrap();
+                let bootstrappers: HashSet<_> = bootstrappers
+                    .iter()
+                    .filter_map(|(node_id, buckets)| {
+                        if buckets.is_none() {
+                            Some(node_id)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                let inter: Vec<_> = bootstrappers.intersection(&available_peers).collect();
+                if inter.is_empty() {
+                    None
+                } else {
+                    let i = (rand::random::<u64>() % inter.len() as u64) as usize;
+                    Some(**inter[i])
+                }
+            }
+            _ => todo!(),
+        }
     }
 }

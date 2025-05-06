@@ -1,4 +1,4 @@
-use super::packer::PackerError;
+use super::packer::{Packer, PackerError};
 use crate::id::BlockID;
 use crate::utils::rlp::Block;
 use sha2::Digest;
@@ -43,17 +43,12 @@ impl Unpacker {
 pub struct StatelessBlock {
     #[allow(unused)]
     pub version: Option<Vec<u8>>,
-    #[allow(unused)]
     pub parent_id: BlockID,
-    #[allow(unused)]
     pub timestamp: u64,
-    #[allow(unused)]
     pub p_chain_height: u64,
-    #[allow(unused)]
     pub certificate: Vec<u8>,
     pub block: Block,
-    pub id: BlockID,
-    #[allow(unused)]
+    id: BlockID,
     pub sig: Vec<u8>,
 }
 
@@ -113,5 +108,21 @@ impl StatelessBlock {
             id,
             sig: sig_bytes.to_vec(),
         })
+    }
+
+    pub fn id(&self) -> &BlockID {
+        &self.id
+    }
+
+    pub fn pack(&self) -> Result<Vec<u8>, PackerError> {
+        let mut packer = Packer::new();
+        packer.pack_fixed_bytes(&[0, 0, 0, 0, 0, 0]);
+        packer.pack_fixed_bytes(self.parent_id.as_ref());
+        packer.pack_fixed_bytes(&self.timestamp.to_be_bytes());
+        packer.pack_fixed_bytes(&self.p_chain_height.to_be_bytes());
+        packer.pack_bytes(&self.certificate);
+        packer.pack_bytes(&self.block.encode()?);
+        packer.pack_bytes(&self.sig);
+        Ok(packer.finish())
     }
 }

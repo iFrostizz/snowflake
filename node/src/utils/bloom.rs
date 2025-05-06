@@ -20,9 +20,9 @@ pub enum BloomError {
 }
 
 // TODO the implementation might be wrong, because the filter is not very effective
-// most of the peers got from a PeerList are already known.
-// I'm getting between 0-3 for each PeerList which is really low.
-// TODO reiterate this?
+//  most of the peers got from a PeerList are already known.
+//  I'm getting between 0-3 for each PeerList which is really low.
+//  Is this still valid?
 #[derive(Clone, Debug)]
 pub struct Filter {
     read: ReadFilter,
