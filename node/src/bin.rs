@@ -66,6 +66,7 @@ async fn main() -> Result<(), NodeError> {
         args.max_latency_records,
         args.sync_headers,
     ));
+    node.light_network.block_dht.todo_attach_node(node.clone());
 
     let (node_tx, node_ops, server) = server(node.clone(), listener, &args).await;
 

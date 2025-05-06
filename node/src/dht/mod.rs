@@ -69,7 +69,8 @@ impl<DB: LockedMapDb<Bucket, Vec<u8>>> Dht<DB> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Deserialize, Copy, Clone)]
+#[serde(rename_all = "snake_case")]
 pub enum DhtId {
     Block,
     State,
@@ -95,6 +96,12 @@ impl From<&DhtId> for u32 {
     }
 }
 
+impl From<DhtId> for u32 {
+    fn from(value: DhtId) -> Self {
+        (&value).into()
+    }
+}
+
 #[derive(Debug)]
 pub enum LightMessage {
     NewPeer(DhtBuckets),
@@ -117,21 +124,33 @@ pub mod light_errors {
         code: 1,
         message: "Content not found",
     };
-    pub(crate) const DECODING_FAILED: LightError = LightError {
+    pub(crate) const ENCODING_FAILED: LightError = LightError {
         code: 2,
         message: "Invalid encoded value",
     };
-    pub(crate) const UNDESIRED_BUCKET: LightError = LightError {
+    pub(crate) const DECODING_FAILED: LightError = LightError {
         code: 3,
+        message: "Invalid encoded value",
+    };
+    pub(crate) const UNDESIRED_BUCKET: LightError = LightError {
+        code: 4,
         message: "This bucket is not desired",
     };
     pub(crate) const INVALID_DHT: LightError = LightError {
-        code: 4,
+        code: 5,
         message: "Unimplemented dht",
     };
     pub(crate) const INVALID_CONTENT: LightError = LightError {
-        code: 5,
+        code: 6,
         message: "Content failed verification",
+    };
+    pub(crate) const PEER_MISSING: LightError = LightError {
+        code: 7,
+        message: "The peer is missing",
+    };
+    pub(crate) const SEND_TO_SELF: LightError = LightError {
+        code: 8,
+        message: "Cannot send message to self",
     };
 }
 

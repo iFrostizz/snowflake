@@ -3,7 +3,7 @@ use super::Id;
 #[allow(unused)]
 pub const CHAIN_ID_BYTES_LEN: usize = 32;
 
-#[derive(PartialEq, Debug, Clone)]
+#[derive(PartialEq, Debug, Clone, Copy)]
 pub struct ChainId(pub(crate) Id<{ Self::LEN }>);
 
 impl ChainId {

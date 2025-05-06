@@ -3,6 +3,7 @@ use crate::dht::DhtBuckets;
 use crate::id::{ChainId, NodeId};
 use crate::message::{pipeline::Pipeline, MiniMessage};
 use crate::net::{ip::UnsignedIp, BackoffParams, Intervals, Network, PeerInfo};
+use crate::node::SinglePickerConfig;
 use crate::server::msg::AppRequestMessage;
 use crate::server::{
     msg::{DecodingError, OutboundMessage},
@@ -21,7 +22,7 @@ use indexmap::IndexMap;
 use prost::EncodeError;
 use proto_lib::p2p::{self};
 use proto_lib::sdk;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::RwLockWriteGuard;
@@ -441,5 +442,37 @@ impl Network {
             return Err(AddPeerError::MaxPeersReached.into());
         }
         Ok(())
+    }
+
+    pub fn pick_peer(
+        peers_infos: &Arc<RwLock<IndexMap<NodeId, PeerInfo>>>,
+        bootstrappers: &RwLock<HashMap<NodeId, Option<DhtBuckets>>>,
+        config: SinglePickerConfig,
+    ) -> Option<NodeId> {
+        match config {
+            SinglePickerConfig::Bootstrapper => {
+                let peers = peers_infos.read().unwrap();
+                let available_peers: HashSet<_> = peers.keys().collect();
+                let bootstrappers = bootstrappers.read().unwrap();
+                let bootstrappers: HashSet<_> = bootstrappers
+                    .iter()
+                    .filter_map(|(node_id, buckets)| {
+                        if buckets.is_none() {
+                            Some(node_id)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                let inter: Vec<_> = bootstrappers.intersection(&available_peers).collect();
+                if inter.is_empty() {
+                    None
+                } else {
+                    let i = (rand::random::<u64>() % inter.len() as u64) as usize;
+                    Some(**inter[i])
+                }
+            }
+            _ => todo!(),
+        }
     }
 }
