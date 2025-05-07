@@ -4,6 +4,7 @@ pub mod kademlia;
 use crate::dht::kademlia::{LockedMapDb, ValueOrNodes};
 use crate::id::NodeId;
 use crate::net::queue::ConnectionData;
+use alloy::primitives::keccak256;
 use jsonrpsee::types::ErrorObject;
 use ruint::Uint;
 use serde::Deserialize;
@@ -16,9 +17,15 @@ pub struct DhtBuckets {
 
 pub type Bucket = Uint<160, 3>;
 
-pub trait ConcreteDht<K> {
-    fn id() -> DhtId;
-    fn key_to_bucket(val: K) -> Bucket;
+pub trait ConcreteDht {
+    fn to_bucket(&self) -> Bucket;
+}
+
+impl ConcreteDht for u64 {
+    fn to_bucket(&self) -> Bucket {
+        let arr: [u8; 20] = keccak256(self.to_be_bytes())[0..20].try_into().unwrap();
+        <Bucket>::from_be_bytes(arr)
+    }
 }
 
 #[derive(Debug)]
@@ -53,12 +60,12 @@ impl BucketDht {
 }
 
 #[derive(Debug)]
-pub struct Dht<DB: LockedMapDb<Bucket, Vec<u8>>> {
+pub struct Dht<DB: LockedMapDb<Vec<u8>>> {
     bucket_dht: BucketDht,
     pub store: DB,
 }
 
-impl<DB: LockedMapDb<Bucket, Vec<u8>>> Dht<DB> {
+impl<DB: LockedMapDb<Vec<u8>>> Dht<DB> {
     pub(crate) fn new(node_id: NodeId, k: Bucket, store: DB) -> Self {
         let bucket_dht = BucketDht::new(node_id, k);
         Self { bucket_dht, store }

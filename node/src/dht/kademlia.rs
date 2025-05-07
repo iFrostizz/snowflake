@@ -1,4 +1,4 @@
-use crate::dht::{light_errors, Bucket, BucketDht, DhtBuckets, DhtId, LightError};
+use crate::dht::{light_errors, Bucket, BucketDht, ConcreteDht, DhtBuckets, DhtId, LightError};
 use crate::id::{ChainId, NodeId};
 use crate::message::mail_box::Mail;
 use crate::message::SubscribableMessage;
@@ -7,30 +7,89 @@ use crate::net::queue::ConnectionData;
 use crate::server::msg::AppRequestMessage;
 use crate::server::peers::{PeerInfo, PeerSender};
 use crate::utils::constants;
+use crate::utils::twokhashmap::{CompositeKey, DoubleKeyedHashMap};
+use alloy::primitives::FixedBytes;
 use flume::Sender;
 use indexmap::IndexMap;
 use proto_lib::{p2p, sdk};
 use std::collections::{HashMap, HashSet};
-use std::hash::Hash;
 use std::sync::{Arc, RwLock, RwLockReadGuard};
 use tokio::task::JoinSet;
 
-pub trait LockedMapDb<K, V> {
-    fn get(&self, key: &K) -> Option<V>;
-    fn insert(&self, key: K, value: V) -> Option<V>;
+pub trait LockedMapDb<V> {
+    type Key;
+    fn get(&self, key: &Self::Key) -> Option<V>;
+    fn get_bucket(&self, bucket: &Bucket) -> Option<V>;
+    fn insert(&self, key: Self::Key, value: V) -> Option<V>;
 }
 
-impl<K, V> LockedMapDb<K, V> for RwLock<HashMap<K, V>>
+impl ConcreteDht for CompositeKey<u64, FixedBytes<32>> {
+    fn to_bucket(&self) -> Bucket {
+        match self {
+            CompositeKey::First(k1) => k1.to_bucket(),
+            CompositeKey::Second(k2) => k2.to_bucket(),
+            CompositeKey::Both(..) => panic!("invalid key"),
+        }
+    }
+}
+
+impl<V> LockedMapDb<V> for RwLock<HashMap<Bucket, V>>
 where
-    K: Eq + Hash,
     V: Clone,
 {
-    fn get(&self, key: &K) -> Option<V> {
-        self.read().unwrap().get(key).cloned()
+    type Key = u64;
+
+    fn get(&self, key: &Self::Key) -> Option<V> {
+        self.get_bucket(&key.to_bucket())
     }
 
-    fn insert(&self, key: K, value: V) -> Option<V> {
-        self.write().unwrap().insert(key, value)
+    fn get_bucket(&self, bucket: &Bucket) -> Option<V> {
+        self.read().unwrap().get(bucket).cloned()
+    }
+
+    fn insert(&self, key: Self::Key, value: V) -> Option<V> {
+        self.write().unwrap().insert(key.to_bucket(), value)
+    }
+}
+
+impl<V> LockedMapDb<V> for RwLock<DoubleKeyedHashMap<Bucket, Bucket, V>>
+where
+    V: Clone,
+{
+    type Key = CompositeKey<u64, FixedBytes<32>>;
+
+    fn get(&self, key: &Self::Key) -> Option<V> {
+        let read = self.read().unwrap();
+        let value = match key {
+            CompositeKey::First(k1) => read.get1(&k1.to_bucket()),
+            CompositeKey::Second(k2) => read.get2(&k2.to_bucket()),
+            CompositeKey::Both(k1, k2) =>
+            {
+                #[allow(clippy::manual_map)]
+                if let Some(v) = read.get1(&k1.to_bucket()) {
+                    Some(v)
+                } else if let Some(v) = read.get2(&k2.to_bucket()) {
+                    Some(v)
+                } else {
+                    None
+                }
+            }
+        };
+        value.cloned()
+    }
+
+    fn get_bucket(&self, key: &Bucket) -> Option<V> {
+        let read = self.read().unwrap();
+        read.get1(key).or_else(|| read.get2(key)).cloned()
+    }
+
+    fn insert(&self, key: Self::Key, value: V) -> Option<V> {
+        let CompositeKey::Both(k1, k2) = key else {
+            panic!("invalid key")
+        };
+        self.write()
+            .unwrap()
+            .insert(k1.to_bucket(), k2.to_bucket(), value)
     }
 }
 

@@ -7,15 +7,15 @@ use crate::net::light::{DhtCodex, DhtContent};
 use crate::net::Network;
 use crate::node::{MessageOrSubscribable, Node, SinglePickerConfig};
 use crate::utils::constants::DEFAULT_DEADLINE;
+use crate::utils::twokhashmap::{CompositeKey, DoubleKeyedHashMap};
 use crate::utils::unpacker::StatelessBlock;
 use crate::utils::FIFOSet;
 use crate::Arc;
-use alloy::primitives::keccak256;
+use alloy::primitives::{keccak256, FixedBytes};
 use proto_lib::p2p::message::Message;
 use proto_lib::p2p::GetAcceptedFrontier;
 use proto_lib::p2p::{Accepted, GetAccepted};
 use proto_lib::p2p::{EngineType, GetAncestors};
-use std::collections::HashMap;
 use std::sync::{Mutex, RwLock};
 use std::time::Duration;
 use tokio::sync::broadcast;
@@ -23,15 +23,22 @@ use tokio::sync::broadcast;
 #[derive(Debug)]
 pub struct DhtBlocks {
     node: Mutex<Option<Arc<Node>>>,
-    pub number_dht: Dht<RwLock<HashMap<Bucket, Vec<u8>>>>,
-    pub hash_dht: Dht<RwLock<HashMap<Bucket, Vec<u8>>>>,
+    pub dht: Dht<RwLock<DoubleKeyedHashMap<Bucket, Bucket, Vec<u8>>>>,
     pub verified_blocks: RwLock<FIFOSet<BlockID>>,
 }
 
 impl DhtCodex<StatelessBlock> for DhtBlocks {
+    fn id() -> DhtId {
+        DhtId::Block
+    }
+
     async fn verify(&self, block: &StatelessBlock) -> Result<bool, LightError> {
         let number = u64::from_be_bytes(*block.block.header.number());
-        if self.get_from_store(number)?.is_some() || self.get_from_store(*block.id())?.is_some() {
+        let block_id = block.block.hash;
+        if self
+            .get_from_store(CompositeKey::Both(number, block_id))?
+            .is_some()
+        {
             return Ok(true);
         }
         if self.verified_blocks.read().unwrap().contains(block.id()) {
@@ -80,83 +87,62 @@ impl DhtCodex<StatelessBlock> for DhtBlocks {
     }
 }
 
-impl ConcreteDht<u64> for DhtBlocks {
-    fn id() -> DhtId {
-        DhtId::Block
-    }
-
-    fn key_to_bucket(block_number: u64) -> Bucket {
-        let arr: [u8; 20] = keccak256(block_number.to_be_bytes())[0..20]
-            .try_into()
-            .unwrap();
+impl ConcreteDht for FixedBytes<32> {
+    fn to_bucket(&self) -> Bucket {
+        let arr: [u8; 20] = keccak256(self)[0..20].try_into().unwrap();
         <Bucket>::from_be_bytes(arr)
     }
 }
 
-impl DhtContent<u64, StatelessBlock> for DhtBlocks {
-    fn get_from_store(&self, number: u64) -> Result<Option<StatelessBlock>, LightError> {
-        let bucket = Self::key_to_bucket(number);
-        match self.number_dht.store.get(&bucket) {
-            Some(block_bytes) => {
-                let block = Self::decode(&block_bytes)?;
-                Ok(Some(block))
+impl DhtContent<CompositeKey<u64, FixedBytes<32>>, StatelessBlock> for DhtBlocks {
+    fn get_from_store(
+        &self,
+        key: CompositeKey<u64, FixedBytes<32>>,
+    ) -> Result<Option<StatelessBlock>, LightError> {
+        match key {
+            CompositeKey::Both(k1, k2) => {
+                if let Some(block_bytes) = self.dht.store.get_bucket(&k1.to_bucket()) {
+                    let block = Self::decode(&block_bytes)?;
+                    return Ok(Some(block));
+                }
+                match self.dht.store.get_bucket(&k2.to_bucket()) {
+                    Some(block_bytes) => {
+                        let block = Self::decode(&block_bytes)?;
+                        Ok(Some(block))
+                    }
+                    None => Ok(None),
+                }
             }
-            None => Ok(None),
+            key => match self.dht.store.get(&key) {
+                Some(block_bytes) => {
+                    let block = Self::decode(&block_bytes)?;
+                    Ok(Some(block))
+                }
+                None => Ok(None),
+            },
         }
     }
 
     async fn insert_to_store(&self, bytes: Vec<u8>) -> Result<Option<StatelessBlock>, LightError> {
         let decoded = Self::decode(&bytes)?;
         let number = u64::from_be_bytes(*decoded.block.header.number());
-        let bucket = Self::key_to_bucket(number);
-        if !self.number_dht.is_desired_bucket(&bucket) {
-            return Err(light_errors::UNDESIRED_BUCKET);
-        }
-        if !self.verify(&decoded).await? {
-            return Err(light_errors::INVALID_CONTENT);
-        }
-        match self.number_dht.store.insert(bucket, bytes) {
-            Some(ret_bytes) => Ok(Some(Self::decode(&ret_bytes)?)),
-            None => Ok(None),
-        }
-    }
-}
-
-impl ConcreteDht<BlockID> for DhtBlocks {
-    fn id() -> DhtId {
-        DhtId::Block
-    }
-
-    fn key_to_bucket(block_hash: BlockID) -> Bucket {
-        let arr: [u8; 20] = keccak256(block_hash)[0..20].try_into().unwrap();
-        <Bucket>::from_be_bytes(arr)
-    }
-}
-
-impl DhtContent<BlockID, StatelessBlock> for DhtBlocks {
-    fn get_from_store(&self, block_id: BlockID) -> Result<Option<StatelessBlock>, LightError> {
-        let bucket = Self::key_to_bucket(block_id);
-        match self.hash_dht.store.get(&bucket) {
-            Some(block_bytes) => {
-                let block = Self::decode(&block_bytes)?;
-                Ok(Some(block))
+        let block_id = decoded.block.hash;
+        if self.dht.is_desired_bucket(&number.to_bucket())
+            || self.dht.is_desired_bucket(&block_id.to_bucket())
+        {
+            if !self.verify(&decoded).await? {
+                return Err(light_errors::INVALID_CONTENT);
             }
-            None => Ok(None),
-        }
-    }
-
-    async fn insert_to_store(&self, bytes: Vec<u8>) -> Result<Option<StatelessBlock>, LightError> {
-        let decoded = Self::decode(&bytes)?;
-        let bucket = Self::key_to_bucket(*decoded.id());
-        if !self.hash_dht.is_desired_bucket(&bucket) {
-            return Err(light_errors::UNDESIRED_BUCKET);
-        }
-        if !self.verify(&decoded).await? {
-            return Err(light_errors::INVALID_CONTENT);
-        }
-        match self.hash_dht.store.insert(bucket, bytes) {
-            Some(ret_bytes) => Ok(Some(Self::decode(&ret_bytes)?)),
-            None => Ok(None),
+            match self
+                .dht
+                .store
+                .insert(CompositeKey::Both(number, block_id), bytes)
+            {
+                Some(ret_bytes) => Ok(Some(Self::decode(&ret_bytes)?)),
+                None => Ok(None),
+            }
+        } else {
+            Err(light_errors::UNDESIRED_BUCKET)
         }
     }
 }
@@ -165,8 +151,11 @@ impl DhtBlocks {
     pub(crate) fn new(node_id: NodeId) -> Self {
         Self {
             node: Mutex::new(None),
-            number_dht: Dht::new(node_id, Bucket::from(10), RwLock::new(HashMap::new())),
-            hash_dht: Dht::new(node_id, Bucket::from(10), RwLock::new(HashMap::new())),
+            dht: Dht::new(
+                node_id,
+                Bucket::from(10),
+                RwLock::new(DoubleKeyedHashMap::new()),
+            ),
             verified_blocks: RwLock::new(FIFOSet::new(10000)),
         }
     }
@@ -228,12 +217,10 @@ impl DhtBlocks {
                     last_container_id = block.id().as_ref().to_vec();
                 }
                 let number = u64::from_be_bytes(*block.block.header.number());
-                self.number_dht
+                let hash = block.block.hash;
+                self.dht
                     .store
-                    .insert(Self::key_to_bucket(number), container.clone());
-                self.hash_dht
-                    .store
-                    .insert(Self::key_to_bucket(*block.id()), container);
+                    .insert(CompositeKey::Both(number, hash), container);
                 bootstrapper = Self::pick_random_bootstrapper(&node.network).await;
             }
         }
@@ -269,21 +256,16 @@ impl DhtBlocks {
         let decoded = Self::decode(&bytes)?;
 
         let number = u64::from_be_bytes(*decoded.block.header.number());
-        let number_bucket = Self::key_to_bucket(number);
-        let id = *decoded.id();
-        let id_bucket = Self::key_to_bucket(id);
-
-        if self.number_dht.is_desired_bucket(&number_bucket) {
+        let hash = decoded.block.hash;
+        if self.dht.is_desired_bucket(&number.to_bucket())
+            || self.dht.is_desired_bucket(&hash.to_bucket())
+        {
             if !self.verify(&decoded).await? {
                 return Err(light_errors::INVALID_CONTENT);
             }
-            self.number_dht.store.insert(number_bucket, bytes);
-            Ok(())
-        } else if self.hash_dht.is_desired_bucket(&id_bucket) {
-            if !self.verify(&decoded).await? {
-                return Err(light_errors::INVALID_CONTENT);
-            }
-            self.hash_dht.store.insert(id_bucket, bytes);
+            self.dht
+                .store
+                .insert(CompositeKey::Both(number, hash), bytes);
             Ok(())
         } else {
             Err(light_errors::UNDESIRED_BUCKET)

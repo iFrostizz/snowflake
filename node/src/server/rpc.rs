@@ -34,10 +34,11 @@ macro_rules! not_implemented {
 mod rpc_impl {
     use super::*;
     use crate::dht::block::DhtBlocks;
+    use crate::dht::kademlia::LockedMapDb;
     use crate::dht::light_errors;
     use crate::dht::Bucket;
     use crate::dht::DhtId;
-    use crate::id::{BlockID, NodeId};
+    use crate::id::NodeId;
     use crate::message::SubscribableMessage;
     use crate::net::light::DhtCodex;
     use crate::net::queue::ConnectionData;
@@ -47,6 +48,7 @@ mod rpc_impl {
     use crate::server::msg::InboundMessageExt;
     use crate::utils::constants;
     use crate::utils::rlp::{Block, Header, Transaction};
+    use crate::utils::twokhashmap::CompositeKey;
     use crate::utils::unpacker::StatelessBlock;
     use crate::Arc;
     use alloy::primitives::{keccak256, Address, Bytes, FixedBytes, U256, U64};
@@ -449,7 +451,10 @@ mod rpc_impl {
             Ok(self
                 .node
                 .light_network
-                .find_content(&self.node.light_network.block_dht, number)
+                .find_content(
+                    &self.node.light_network.block_dht,
+                    CompositeKey::First(number),
+                )
                 .await?)
         }
 
@@ -457,7 +462,10 @@ mod rpc_impl {
             Ok(self
                 .node
                 .light_network
-                .find_content(&self.node.light_network.block_dht, BlockID::from(*hash))
+                .find_content(
+                    &self.node.light_network.block_dht,
+                    CompositeKey::Second(hash),
+                )
                 .await?)
         }
 
@@ -780,11 +788,7 @@ mod rpc_impl {
                     let block = DhtBlocks::decode(&value)?;
                     self.node
                         .light_network
-                        .store::<DhtBlocks, BlockID, StatelessBlock>(
-                            &self.node.light_network.block_dht,
-                            node_id,
-                            block,
-                        )
+                        .store(&self.node.light_network.block_dht, node_id, block)
                         .await?;
                 }
                 DhtId::State => {}
@@ -865,17 +869,16 @@ mod rpc_impl {
             {
                 match dht_id {
                     DhtId::Block => {
-                        let store = self
+                        match self
                             .node
                             .light_network
                             .block_dht
-                            .number_dht
+                            .dht
                             .store
-                            .read()
-                            .unwrap();
-                        match store.get(&bucket) {
+                            .get_bucket(&bucket)
+                        {
                             Some(value) => RpcValueOrNodes::Value(Value::Block(block_to_rpc(
-                                DhtBlocks::decode(value)?.block,
+                                DhtBlocks::decode(&value)?.block,
                                 true,
                             ))),
                             None => {

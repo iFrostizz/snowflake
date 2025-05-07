@@ -109,7 +109,7 @@ impl LightNetwork {
             }
             LightMessage::FindValue(dht_id, bucket) => {
                 let res = match dht_id {
-                    DhtId::Block => self.find_value(&self.block_dht.number_dht.store, &bucket),
+                    DhtId::Block => self.find_value(&self.block_dht.dht.store, &bucket),
                     _ => Err(light_errors::INVALID_DHT),
                 };
                 Some(res)
@@ -136,9 +136,9 @@ impl LightNetwork {
     /// Lookup locally for a value or nodes spanning the bucket.
     fn find_value<DB>(&self, db: &DB, bucket: &Bucket) -> LightResult
     where
-        DB: LockedMapDb<Bucket, Vec<u8>>,
+        DB: LockedMapDb<Vec<u8>>,
     {
-        let value_or_nodes = match db.get(bucket) {
+        let value_or_nodes = match db.get_bucket(bucket) {
             Some(value) => ValueOrNodes::Value(value),
             None => ValueOrNodes::Nodes(self.kademlia_dht.find_node(bucket)),
         };
@@ -149,8 +149,8 @@ impl LightNetwork {
     /// If not, lookup the DHT for it.
     pub async fn find_content<DHT, K, V>(&self, dht: &Arc<DHT>, key: K) -> Result<V, LightError>
     where
-        DHT: ConcreteDht<K> + DhtContent<K, V>,
-        K: Copy,
+        DHT: DhtContent<K, V>,
+        K: ConcreteDht + Copy,
     {
         match dht
             .get_from_store(key)
@@ -158,7 +158,7 @@ impl LightNetwork {
         {
             Some(value) => Ok(value),
             None => {
-                let bucket = DHT::key_to_bucket(key);
+                let bucket = key.to_bucket();
                 let value = self
                     .kademlia_dht
                     .search_value(
@@ -180,7 +180,7 @@ impl LightNetwork {
         value: V,
     ) -> Result<(), LightError>
     where
-        DHT: ConcreteDht<K> + DhtContent<K, V>,
+        DHT: DhtContent<K, V>,
     {
         let encoded = DHT::encode(value)?;
         if node_id == self.light_peers.node_id {
@@ -193,6 +193,7 @@ impl LightNetwork {
 }
 
 pub trait DhtCodex<V> {
+    fn id() -> DhtId;
     /// Verification of the validity of the content.
     /// It is used to check if the content is well-formed.
     /// If the content is ill-formed, it should not be stored.
@@ -203,9 +204,9 @@ pub trait DhtCodex<V> {
     fn decode(bytes: &[u8]) -> Result<V, LightError>;
 }
 
-pub trait DhtContent<K, V>: ConcreteDht<K> + DhtCodex<V> {
+pub trait DhtContent<K, V>: DhtCodex<V> {
     /// Get a typed value from the store.
-    fn get_from_store(&self, bucket: K) -> Result<Option<V>, LightError>;
+    fn get_from_store(&self, key: K) -> Result<Option<V>, LightError>;
     /// Insert an encoded value into the store.
     /// If the value is ill-formed, it should not be stored.
     async fn insert_to_store(&self, bytes: Vec<u8>) -> Result<Option<V>, LightError>;

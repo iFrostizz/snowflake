@@ -6,6 +6,7 @@ mod fifo_set;
 pub mod ip;
 pub mod packer;
 pub mod rlp;
+pub mod twokhashmap;
 pub mod unpacker;
 pub mod windower;
 
