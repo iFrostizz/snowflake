@@ -14,15 +14,15 @@
 
 | Method                                  | Supported |
 |-----------------------------------------|-----------|
-| web3_clientVersion                      | ❌         |
-| web3_sha3                               | ❌         |
-| net_version                             | ❌         |
+| web3_clientVersion                      | ✅         |
+| web3_sha3                               | ✅         |
+| net_version                             | ✅         |
 | net_listening                           | ❌         |
-| net_peerCount                           | ❌         |
+| net_peerCount                           | ✅         |
 | eth_protocolVersion                     | ❌         |
 | eth_syncing                             | ❌         |
 | eth_coinbase                            | ❌         |
-| eth_chainId                             | ❌         |
+| eth_chainId                             | ✅         |
 | eth_mining                              | ❌         |
 | eth_hashrate                            | ❌         |
 | eth_gasPrice                            | ❌         |
@@ -31,10 +31,10 @@
 | eth_getBalance                          | ❌         |
 | eth_getStorageAt                        | ❌         |
 | eth_getTransactionCount                 | ❌         |
-| eth_getBlockTransactionCountByHash      | ❌         |
-| eth_getBlockTransactionCountByNumber    | ❌         |
-| eth_getUncleCountByBlockHash            | ❌         |
-| eth_getUncleCountByBlockNumber          | ❌         |
+| eth_getBlockTransactionCountByHash      | ✅         |
+| eth_getBlockTransactionCountByNumber    | ✅         |
+| eth_getUncleCountByBlockHash            | ✅         |
+| eth_getUncleCountByBlockNumber          | ✅         |
 | eth_getCode                             | ❌         |
 | eth_sign                                | ❌         |
 | eth_signTransaction                     | ❌         |
@@ -42,14 +42,14 @@
 | eth_sendRawTransaction                  | ❌         |
 | eth_call                                | ❌         |
 | eth_estimateGas                         | ❌         |
-| eth_getBlockByHash                      | ❌         |
-| eth_getBlockByNumber                    | ❌         |
+| eth_getBlockByHash                      | ✅         |
+| eth_getBlockByNumber                    | ✅         |
 | eth_getTransactionByHash                | ❌         |
-| eth_getTransactionByBlockHashAndIndex   | ❌         |
-| eth_getTransactionByBlockNumberAndIndex | ❌         |
+| eth_getTransactionByBlockHashAndIndex   | ✅         |
+| eth_getTransactionByBlockNumberAndIndex | ✅         |
 | eth_getTransactionReceipt               | ❌         |
-| eth_getUncleByBlockHashAndIndex         | ❌         |
-| eth_getUncleByBlockNumberAndIndex       | ❌         |
+| eth_getUncleByBlockHashAndIndex         | ✅         |
+| eth_getUncleByBlockNumberAndIndex       | ✅         |
 | eth_newFilter                           | ❌         |
 | eth_newBlockFilter                      | ❌         |
 | eth_newPendingTransactionFilter         | ❌         |

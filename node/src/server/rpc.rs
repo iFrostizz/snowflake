@@ -24,7 +24,7 @@ mod jsonrpc_errors {
 macro_rules! not_implemented {
     () => {
         return jsonrpsee::core::RpcResult::Err(jsonrpsee::types::ErrorObject::borrowed(
-            METHOD_NOT_FOUND,
+            jsonrpc_errors::METHOD_NOT_FOUND,
             "unimplemented method",
             None,
         ))
@@ -34,24 +34,25 @@ macro_rules! not_implemented {
 mod rpc_impl {
     use super::*;
     use crate::dht::block::DhtBlocks;
+    use crate::dht::kademlia::LockedMapDb;
     use crate::dht::light_errors;
     use crate::dht::Bucket;
     use crate::dht::DhtId;
     use crate::id::NodeId;
     use crate::message::SubscribableMessage;
-    use crate::net::light::DhtContent;
+    use crate::net::light::DhtCodex;
     use crate::net::queue::ConnectionData;
     use crate::node::Node;
     use crate::server::msg::AppRequestMessage;
     use crate::server::msg::InboundMessage;
     use crate::server::msg::InboundMessageExt;
     use crate::utils::constants;
-    use crate::utils::rlp::{Block, Transaction};
+    use crate::utils::rlp::{Block, Header, Transaction};
+    use crate::utils::twokhashmap::CompositeKey;
+    use crate::utils::unpacker::StatelessBlock;
     use crate::Arc;
-    use alloy::consensus::{EthereumTxEnvelope, TxEip4844};
     use alloy::primitives::{keccak256, Address, Bytes, FixedBytes, U256, U64};
     use flume::Sender;
-    use jsonrpc_errors::*;
     use jsonrpsee::core::{async_trait, RpcResult};
     use jsonrpsee::proc_macros::rpc;
     use jsonrpsee::types::ErrorObject;
@@ -127,13 +128,25 @@ mod rpc_impl {
         }
     }
 
-    fn block_to_rpc(block: Block, full: bool) -> alloy::rpc::types::Block {
-        let header = alloy::rpc::types::Header {
-            hash: block.hash,
-            inner: block.header.into(),
+    fn header_to_rpc(
+        header: Header,
+        hash: alloy::primitives::B256,
+        size: Option<U256>,
+    ) -> alloy::rpc::types::Header {
+        alloy::rpc::types::Header {
+            hash,
+            inner: header.into(),
             total_difficulty: None,
-            size: Some(U256::try_from(block.size).unwrap()),
-        };
+            size,
+        }
+    }
+
+    fn block_to_rpc(block: Block, full: bool) -> alloy::rpc::types::Block {
+        let header = header_to_rpc(
+            block.header,
+            block.hash,
+            Some(U256::try_from(block.size).unwrap()),
+        );
 
         let transactions = if full {
             alloy::rpc::types::BlockTransactions::Full(
@@ -264,7 +277,7 @@ mod rpc_impl {
         fn get_transaction_count(&self, block_parameter: BlockParameter) -> RpcResult<u64>;
 
         #[method(name = "getBlockTransactionCountByHash")]
-        fn get_block_transaction_count_by_hash(&self, hash: Bytes32) -> RpcResult<u64>;
+        async fn get_block_transaction_count_by_hash(&self, hash: Bytes32) -> RpcResult<u64>;
 
         #[method(name = "getBlockTransactionCountByNumber")]
         async fn get_block_transaction_count_by_number(
@@ -273,10 +286,10 @@ mod rpc_impl {
         ) -> RpcResult<u64>;
 
         #[method(name = "getUncleCountByBlockHash")]
-        fn get_uncle_count_by_block_hash(&self, block_parameter: BlockParameter) -> RpcResult<u64>;
+        async fn get_uncle_count_by_block_hash(&self, hash: Bytes32) -> RpcResult<u64>;
 
         #[method(name = "getUncleCountByBlockNumber")]
-        fn get_uncle_count_by_block_number(
+        async fn get_uncle_count_by_block_number(
             &self,
             block_parameter: BlockParameter,
         ) -> RpcResult<u64>;
@@ -308,7 +321,7 @@ mod rpc_impl {
         ) -> RpcResult<Vec<u8>>;
 
         #[method(name = "getBlockByHash")]
-        fn get_block_by_hash(
+        async fn get_block_by_hash(
             &self,
             hash: Bytes32,
             full: bool,
@@ -325,38 +338,38 @@ mod rpc_impl {
         fn get_transaction_by_hash(
             &self,
             hash: Bytes32,
-        ) -> RpcResult<alloy::rpc::types::Transaction<EthereumTxEnvelope<TxEip4844>>>;
+        ) -> RpcResult<alloy::rpc::types::Transaction>;
 
         #[method(name = "getTransactionByBlockHashAndIndex")]
-        fn get_transaction_by_block_hash_and_index(
+        async fn get_transaction_by_block_hash_and_index(
             &self,
             hash: Bytes32,
             position: u64,
-        ) -> RpcResult<alloy::rpc::types::Transaction<EthereumTxEnvelope<TxEip4844>>>;
+        ) -> RpcResult<alloy::rpc::types::Transaction>;
 
         #[method(name = "getTransactionByBlockNumberAndIndex")]
-        fn get_transaction_by_block_number_and_index(
+        async fn get_transaction_by_block_number_and_index(
             &self,
             block_parameter: BlockParameter,
             position: u64,
-        ) -> RpcResult<alloy::rpc::types::Transaction<EthereumTxEnvelope<TxEip4844>>>;
+        ) -> RpcResult<alloy::rpc::types::Transaction>;
 
         #[method(name = "getTransactionReceipt")]
         fn get_transaction_receipt(&self, hash: Bytes32) -> RpcResult<TransactionReceiptObject>;
 
         #[method(name = "getUncleByBlockHashAndIndex")]
-        fn get_uncle_by_block_hash_and_index(
+        async fn get_uncle_by_block_hash_and_index(
             &self,
             hash: Bytes32,
             index: u64,
-        ) -> RpcResult<alloy::rpc::types::Block>;
+        ) -> RpcResult<alloy::rpc::types::Header>;
 
         #[method(name = "getUncleByBlockNumberAndIndex")]
-        fn get_uncle_by_block_number_and_index(
+        async fn get_uncle_by_block_number_and_index(
             &self,
             block_parameter: BlockParameter,
             index: u64,
-        ) -> RpcResult<alloy::rpc::types::Block>;
+        ) -> RpcResult<alloy::rpc::types::Header>;
 
         #[method(name = "newFilter")]
         fn new_filter(&self, block_parameter: BlockParameter) -> RpcResult<FilterObject>;
@@ -426,6 +439,58 @@ mod rpc_impl {
         pub(crate) tx: Sender<(Vec<u8>, Instant)>,
     }
 
+    impl RpcServerImpl {
+        async fn get_block_by_parameter(
+            &self,
+            block_parameter: BlockParameter,
+        ) -> RpcResult<StatelessBlock> {
+            let number = match block_parameter {
+                BlockParameter::Number(number) => number,
+                _ => not_implemented!(), // TODO resolve block https://github.com/iFrostizz/snowflake/issues/50
+            };
+            Ok(self
+                .node
+                .light_network
+                .find_content(
+                    &self.node.light_network.block_dht,
+                    CompositeKey::First(number),
+                )
+                .await?)
+        }
+
+        async fn get_block_by_hash(&self, hash: Bytes32) -> RpcResult<StatelessBlock> {
+            Ok(self
+                .node
+                .light_network
+                .find_content(
+                    &self.node.light_network.block_dht,
+                    CompositeKey::Second(hash),
+                )
+                .await?)
+        }
+
+        fn transaction_at_position(
+            block: alloy::rpc::types::Block,
+            position: u64,
+        ) -> RpcResult<alloy::rpc::types::Transaction> {
+            block
+                .transactions
+                .as_transactions()
+                .ok_or(ErrorObject::borrowed(
+                    jsonrpc_errors::INTERNAL_ERROR,
+                    "block has no transaction",
+                    None,
+                ))?
+                .get(position as usize)
+                .ok_or(ErrorObject::borrowed(
+                    jsonrpc_errors::INTERNAL_ERROR,
+                    "missing transaction at position",
+                    None,
+                ))
+                .cloned()
+        }
+    }
+
     impl Web3Server for RpcServerImpl {
         fn client_version(&self) -> RpcResult<String> {
             const CLIENT: &str = constants::CLIENT;
@@ -487,38 +552,30 @@ mod rpc_impl {
             not_implemented!()
         }
 
-        fn get_block_transaction_count_by_hash(&self, _hash: Bytes32) -> RpcResult<u64> {
-            not_implemented!()
+        async fn get_block_transaction_count_by_hash(&self, hash: Bytes32) -> RpcResult<u64> {
+            let block = self.get_block_by_hash(hash).await?;
+            Ok(block.block.transactions.len() as u64)
         }
 
         async fn get_block_transaction_count_by_number(
             &self,
             block_parameter: BlockParameter,
         ) -> RpcResult<u64> {
-            let number = match block_parameter {
-                BlockParameter::Number(number) => number,
-                _ => not_implemented!(), // resolve block
-            };
-            let block = self
-                .node
-                .light_network
-                .find_content(&self.node.light_network.block_dht, number)
-                .await?;
+            let block = self.get_block_by_parameter(block_parameter).await?;
             Ok(block.block.transactions.len() as u64)
         }
 
-        fn get_uncle_count_by_block_hash(
-            &self,
-            _block_parameter: BlockParameter,
-        ) -> RpcResult<u64> {
-            not_implemented!()
+        async fn get_uncle_count_by_block_hash(&self, hash: Bytes32) -> RpcResult<u64> {
+            let block = self.get_block_by_hash(hash).await?;
+            Ok(block.block.uncles.len() as u64)
         }
 
-        fn get_uncle_count_by_block_number(
+        async fn get_uncle_count_by_block_number(
             &self,
-            _block_parameter: BlockParameter,
+            block_parameter: BlockParameter,
         ) -> RpcResult<u64> {
-            not_implemented!()
+            let block = self.get_block_by_parameter(block_parameter).await?;
+            Ok(block.block.uncles.len() as u64)
         }
 
         fn get_code(
@@ -546,7 +603,7 @@ mod rpc_impl {
                 .strip_prefix("0x")
                 .and_then(|stripped| hex::decode(stripped).ok())
                 .ok_or(ErrorObject::borrowed(
-                    PARSE_ERROR,
+                    jsonrpc_errors::PARSE_ERROR,
                     "invalid hex string",
                     None,
                 ))?;
@@ -571,12 +628,14 @@ mod rpc_impl {
             not_implemented!()
         }
 
-        fn get_block_by_hash(
+        async fn get_block_by_hash(
             &self,
-            _hash: Bytes32,
-            _full: bool,
+            hash: Bytes32,
+            full: bool,
         ) -> RpcResult<alloy::rpc::types::Block> {
-            not_implemented!()
+            self.get_block_by_hash(hash)
+                .await
+                .map(|block| block_to_rpc(block.block, full))
         }
 
         async fn get_block_by_number(
@@ -584,59 +643,78 @@ mod rpc_impl {
             block_parameter: BlockParameter,
             full: bool,
         ) -> RpcResult<alloy::rpc::types::Block> {
-            let number = match block_parameter {
-                BlockParameter::Number(number) => number,
-                _ => not_implemented!(), // resolve block
-            };
-            self.node
-                .light_network
-                .find_content(&self.node.light_network.block_dht, number)
+            self.get_block_by_parameter(block_parameter)
                 .await
                 .map(|block| block_to_rpc(block.block, full))
-                .map_err(Into::into)
         }
 
         fn get_transaction_by_hash(
             &self,
             _hash: Bytes32,
-        ) -> RpcResult<alloy::rpc::types::Transaction<EthereumTxEnvelope<TxEip4844>>> {
+        ) -> RpcResult<alloy::rpc::types::Transaction> {
             not_implemented!()
         }
 
-        fn get_transaction_by_block_hash_and_index(
+        async fn get_transaction_by_block_hash_and_index(
             &self,
-            _hash: Bytes32,
-            _position: u64,
-        ) -> RpcResult<alloy::rpc::types::Transaction<EthereumTxEnvelope<TxEip4844>>> {
-            not_implemented!()
+            hash: Bytes32,
+            position: u64,
+        ) -> RpcResult<alloy::rpc::types::Transaction> {
+            let block: alloy::rpc::types::Block = self
+                .get_block_by_hash(hash)
+                .await
+                .map(|block| block_to_rpc(block.block, true))?;
+            Self::transaction_at_position(block, position)
         }
 
-        fn get_transaction_by_block_number_and_index(
+        async fn get_transaction_by_block_number_and_index(
             &self,
-            _block_parameter: BlockParameter,
-            _position: u64,
-        ) -> RpcResult<alloy::rpc::types::Transaction<EthereumTxEnvelope<TxEip4844>>> {
-            not_implemented!()
+            block_parameter: BlockParameter,
+            position: u64,
+        ) -> RpcResult<alloy::rpc::types::Transaction> {
+            let block = self
+                .get_block_by_parameter(block_parameter)
+                .await
+                .map(|block| block_to_rpc(block.block, true))?;
+            Self::transaction_at_position(block, position)
         }
 
         fn get_transaction_receipt(&self, _hash: Bytes32) -> RpcResult<TransactionReceiptObject> {
             not_implemented!()
         }
 
-        fn get_uncle_by_block_hash_and_index(
+        async fn get_uncle_by_block_hash_and_index(
             &self,
-            _hash: Bytes32,
-            _index: u64,
-        ) -> RpcResult<alloy::rpc::types::Block> {
-            not_implemented!()
+            hash: Bytes32,
+            index: u64,
+        ) -> RpcResult<alloy::rpc::types::Header> {
+            let mut block = self.get_block_by_hash(hash).await?;
+            if block.block.uncles.get(index as usize).is_none() {
+                return Err(ErrorObject::borrowed(1000, "missing uncle at index", None));
+            }
+            let uncle = block.block.uncles.swap_remove(index as usize);
+            Ok(header_to_rpc(
+                uncle,
+                block.block.hash,
+                Some(U256::try_from(block.block.size).unwrap()),
+            ))
         }
 
-        fn get_uncle_by_block_number_and_index(
+        async fn get_uncle_by_block_number_and_index(
             &self,
-            _block_parameter: BlockParameter,
-            _index: u64,
-        ) -> RpcResult<alloy::rpc::types::Block> {
-            not_implemented!()
+            block_parameter: BlockParameter,
+            index: u64,
+        ) -> RpcResult<alloy::rpc::types::Header> {
+            let mut block = self.get_block_by_parameter(block_parameter).await?;
+            if block.block.uncles.get(index as usize).is_none() {
+                return Err(ErrorObject::borrowed(1000, "missing uncle at index", None));
+            }
+            let uncle = block.block.uncles.swap_remove(index as usize);
+            Ok(header_to_rpc(
+                uncle,
+                block.block.hash,
+                Some(U256::try_from(block.block.size).unwrap()),
+            ))
         }
 
         fn new_filter(&self, _block_parameter: BlockParameter) -> RpcResult<FilterObject> {
@@ -791,10 +869,16 @@ mod rpc_impl {
             {
                 match dht_id {
                     DhtId::Block => {
-                        let store = self.node.light_network.block_dht.dht.store.read().unwrap();
-                        match store.get(&bucket) {
+                        match self
+                            .node
+                            .light_network
+                            .block_dht
+                            .dht
+                            .store
+                            .get_bucket(&bucket)
+                        {
                             Some(value) => RpcValueOrNodes::Value(Value::Block(block_to_rpc(
-                                DhtBlocks::decode(value)?.block,
+                                DhtBlocks::decode(&value)?.block,
                                 true,
                             ))),
                             None => {
