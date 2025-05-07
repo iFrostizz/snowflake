@@ -437,6 +437,52 @@ mod rpc_impl {
         pub(crate) tx: Sender<(Vec<u8>, Instant)>,
     }
 
+    impl RpcServerImpl {
+        async fn get_block_by_parameter(
+            &self,
+            block_parameter: BlockParameter,
+        ) -> RpcResult<StatelessBlock> {
+            let number = match block_parameter {
+                BlockParameter::Number(number) => number,
+                _ => not_implemented!(), // TODO resolve block https://github.com/iFrostizz/snowflake/issues/50
+            };
+            Ok(self
+                .node
+                .light_network
+                .find_content(&self.node.light_network.block_dht, number)
+                .await?)
+        }
+
+        async fn get_block_by_hash(&self, hash: Bytes32) -> RpcResult<StatelessBlock> {
+            Ok(self
+                .node
+                .light_network
+                .find_content(&self.node.light_network.block_dht, BlockID::from(*hash))
+                .await?)
+        }
+
+        fn transaction_at_position(
+            block: alloy::rpc::types::Block,
+            position: u64,
+        ) -> RpcResult<alloy::rpc::types::Transaction> {
+            block
+                .transactions
+                .as_transactions()
+                .ok_or(ErrorObject::borrowed(
+                    jsonrpc_errors::INTERNAL_ERROR,
+                    "block has no transaction",
+                    None,
+                ))?
+                .get(position as usize)
+                .ok_or(ErrorObject::borrowed(
+                    jsonrpc_errors::INTERNAL_ERROR,
+                    "missing transaction at position",
+                    None,
+                ))
+                .cloned()
+        }
+    }
+
     impl Web3Server for RpcServerImpl {
         fn client_version(&self) -> RpcResult<String> {
             const CLIENT: &str = constants::CLIENT;
@@ -499,11 +545,7 @@ mod rpc_impl {
         }
 
         async fn get_block_transaction_count_by_hash(&self, hash: Bytes32) -> RpcResult<u64> {
-            let block = self
-                .node
-                .light_network
-                .find_content(&self.node.light_network.block_dht, BlockID::from(*hash))
-                .await?;
+            let block = self.get_block_by_hash(hash).await?;
             Ok(block.block.transactions.len() as u64)
         }
 
@@ -511,24 +553,12 @@ mod rpc_impl {
             &self,
             block_parameter: BlockParameter,
         ) -> RpcResult<u64> {
-            let number = match block_parameter {
-                BlockParameter::Number(number) => number,
-                _ => not_implemented!(), // TODO resolve block https://github.com/iFrostizz/snowflake/issues/50
-            };
-            let block = self
-                .node
-                .light_network
-                .find_content(&self.node.light_network.block_dht, number)
-                .await?;
+            let block = self.get_block_by_parameter(block_parameter).await?;
             Ok(block.block.transactions.len() as u64)
         }
 
         async fn get_uncle_count_by_block_hash(&self, hash: Bytes32) -> RpcResult<u64> {
-            let block = self
-                .node
-                .light_network
-                .find_content(&self.node.light_network.block_dht, BlockID::from(*hash))
-                .await?;
+            let block = self.get_block_by_hash(hash).await?;
             Ok(block.block.uncles.len() as u64)
         }
 
@@ -536,15 +566,7 @@ mod rpc_impl {
             &self,
             block_parameter: BlockParameter,
         ) -> RpcResult<u64> {
-            let number = match block_parameter {
-                BlockParameter::Number(number) => number,
-                _ => not_implemented!(), // TODO resolve block https://github.com/iFrostizz/snowflake/issues/50
-            };
-            let block = self
-                .node
-                .light_network
-                .find_content(&self.node.light_network.block_dht, number)
-                .await?;
+            let block = self.get_block_by_parameter(block_parameter).await?;
             Ok(block.block.uncles.len() as u64)
         }
 
@@ -603,13 +625,9 @@ mod rpc_impl {
             hash: Bytes32,
             full: bool,
         ) -> RpcResult<alloy::rpc::types::Block> {
-            // TODO helper function because this is repeated.
-            self.node
-                .light_network
-                .find_content(&self.node.light_network.block_dht, BlockID::from(*hash))
+            self.get_block_by_hash(hash)
                 .await
                 .map(|block| block_to_rpc(block.block, full))
-                .map_err(Into::into)
         }
 
         async fn get_block_by_number(
@@ -617,16 +635,9 @@ mod rpc_impl {
             block_parameter: BlockParameter,
             full: bool,
         ) -> RpcResult<alloy::rpc::types::Block> {
-            let number = match block_parameter {
-                BlockParameter::Number(number) => number,
-                _ => not_implemented!(), // resolve block
-            };
-            self.node
-                .light_network
-                .find_content(&self.node.light_network.block_dht, number)
+            self.get_block_by_parameter(block_parameter)
                 .await
                 .map(|block| block_to_rpc(block.block, full))
-                .map_err(Into::into)
         }
 
         fn get_transaction_by_hash(
@@ -642,34 +653,22 @@ mod rpc_impl {
             position: u64,
         ) -> RpcResult<alloy::rpc::types::Transaction> {
             let block: alloy::rpc::types::Block = self
-                .node
-                .light_network
-                .find_content(&self.node.light_network.block_dht, BlockID::from(*hash))
+                .get_block_by_hash(hash)
                 .await
                 .map(|block| block_to_rpc(block.block, true))?;
-            block
-                .transactions
-                .as_transactions()
-                .ok_or(ErrorObject::borrowed(
-                    jsonrpc_errors::INTERNAL_ERROR,
-                    "block has no transaction",
-                    None,
-                ))?
-                .get(position as usize)
-                .ok_or(ErrorObject::borrowed(
-                    jsonrpc_errors::INTERNAL_ERROR,
-                    "missing transaction at position",
-                    None,
-                ))
-                .cloned()
+            Self::transaction_at_position(block, position)
         }
 
         async fn get_transaction_by_block_number_and_index(
             &self,
-            _block_parameter: BlockParameter,
-            _position: u64,
+            block_parameter: BlockParameter,
+            position: u64,
         ) -> RpcResult<alloy::rpc::types::Transaction> {
-            not_implemented!()
+            let block = self
+                .get_block_by_parameter(block_parameter)
+                .await
+                .map(|block| block_to_rpc(block.block, true))?;
+            Self::transaction_at_position(block, position)
         }
 
         fn get_transaction_receipt(&self, _hash: Bytes32) -> RpcResult<TransactionReceiptObject> {
@@ -681,11 +680,7 @@ mod rpc_impl {
             hash: Bytes32,
             index: u64,
         ) -> RpcResult<alloy::rpc::types::Header> {
-            let mut block = self
-                .node
-                .light_network
-                .find_content(&self.node.light_network.block_dht, BlockID::from(*hash))
-                .await?;
+            let mut block = self.get_block_by_hash(hash).await?;
             if block.block.uncles.get(index as usize).is_none() {
                 return Err(ErrorObject::borrowed(1000, "missing uncle at index", None));
             }
@@ -702,15 +697,7 @@ mod rpc_impl {
             block_parameter: BlockParameter,
             index: u64,
         ) -> RpcResult<alloy::rpc::types::Header> {
-            let number = match block_parameter {
-                BlockParameter::Number(number) => number,
-                _ => not_implemented!(), // resolve block
-            };
-            let mut block = self
-                .node
-                .light_network
-                .find_content(&self.node.light_network.block_dht, number)
-                .await?;
+            let mut block = self.get_block_by_parameter(block_parameter).await?;
             if block.block.uncles.get(index as usize).is_none() {
                 return Err(ErrorObject::borrowed(1000, "missing uncle at index", None));
             }
