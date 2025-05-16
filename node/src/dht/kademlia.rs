@@ -17,6 +17,7 @@ use indexmap::IndexMap;
 use proto_lib::{p2p, sdk};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock, RwLockReadGuard};
+use std::time::Duration;
 use tokio::sync::oneshot;
 use tokio::task::JoinSet;
 
@@ -384,11 +385,12 @@ impl KademliaDht {
                         // disconnect and decrease reputation
                         continue;
                     }
-                    let node_ids: HashSet<_> = claimed_ip_ports
+                    let cds = claimed_ip_ports
                         .into_iter()
                         .filter_map(|claimed_ip_port| claimed_ip_port.try_into().ok())
                         .collect();
-                    nodes.extend(node_ids);
+                    let cds = self.connect_to_light_nodes(cds).await;
+                    nodes.extend(cds);
                 }
                 sdk::light_response::Message::Ack(_) => {
                     // unexpected response
@@ -403,6 +405,33 @@ impl KademliaDht {
         } else {
             Err(light_errors::CONTENT_NOT_FOUND)
         }
+    }
+
+    async fn connect_to_light_nodes(
+        &self,
+        cds: HashSet<ConnectionData>,
+    ) -> HashSet<ConnectionData> {
+        tokio::time::timeout(Duration::from_secs(5), async move {
+            let mut set = JoinSet::new();
+            for cd in cds {
+                let connection_queue = self.light_peers.connection_queue.clone();
+                set.spawn(async move {
+                    (
+                        cd.clone(),
+                        connection_queue.wait_for_connection(cd, 0).await,
+                    )
+                });
+            }
+            let mut res = HashSet::new();
+            while let Some(Ok((cd, connected))) = set.join_next().await {
+                if connected {
+                    res.insert(cd);
+                }
+            }
+            res
+        })
+        .await
+        .unwrap_or_else(|_| HashSet::new())
     }
 
     fn map_to_connection_data(&self, node_ids: Vec<NodeId>) -> Vec<ConnectionData> {

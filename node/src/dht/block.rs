@@ -147,7 +147,7 @@ impl DhtBlocks {
         n.try_into().unwrap()
     }
 
-    pub(crate) fn bucket_to_number_iter2(&self, max_block: u64) -> impl Iterator<Item = u64> {
+    pub(crate) fn bucket_to_number_iter(&self, max_block: u64) -> impl Iterator<Item = u64> {
         struct BlockIter {
             bucket_range_iter: BucketRangeIter,
             last_range: RangeInclusive<u64>,
@@ -279,8 +279,21 @@ mod tests {
         let dht = DhtBlocks::new(NodeId::default(), Bucket::MAX);
         let blocks = 1000;
         let max_block = blocks - 1;
-        let blocks_iter = dht.bucket_to_number_iter2(max_block);
+        let blocks_iter = dht.bucket_to_number_iter(max_block);
         let count = blocks_iter.count() as u64;
         assert_eq!(count, blocks);
     }
+
+    // use test::Bencher;
+    // #[bench]
+    // fn bench_block_iter(b: &mut Bencher) {
+    //     let dht = DhtBlocks::new(NodeId::default(), Bucket::MAX);
+    //     let blocks = 100_000_000;
+    //     let max_block = blocks - 1;
+    //     b.iter(|| {
+    //         let blocks_iter = dht.bucket_to_number_iter(max_block);
+    //         let count = blocks_iter.count() as u64;
+    //         assert_eq!(count, blocks);
+    //     });
+    // }
 }

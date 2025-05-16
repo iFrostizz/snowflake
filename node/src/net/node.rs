@@ -590,7 +590,7 @@ impl Network {
         loop {
             if let Ok(last_block) = self.latest_block().await {
                 let light_network = &self.light_network;
-                let blocks = light_network.block_dht.bucket_to_number_iter2(last_block);
+                let blocks = light_network.block_dht.bucket_to_number_iter(last_block);
                 for number in blocks {
                     log::debug!("Syncing block {}", number);
                     // TODO remove this once we have working e2e testing

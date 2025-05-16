@@ -9,6 +9,7 @@ use std::fmt::{Debug, Formatter};
 use std::net::SocketAddr;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
+use tokio::sync::oneshot;
 use tokio::sync::{broadcast, Semaphore};
 use tokio::task::JoinHandle;
 
@@ -16,9 +17,7 @@ use tokio::task::JoinHandle;
 pub struct ConnectionData {
     pub node_id: NodeId,
     pub socket_addr: SocketAddr,
-    #[allow(unused)]
     pub timestamp: u64,
-    #[allow(unused)]
     pub x509_certificate: Vec<u8>,
 }
 
@@ -80,8 +79,8 @@ impl From<ConnectionData> for ClaimedIpPort {
 pub struct ConnectionQueue {
     semaphore: Arc<Semaphore>,
     connections: RwLock<HashMap<NodeId, usize>>,
-    rcd: Receiver<ConnectionData>,
-    scd: Sender<ConnectionData>,
+    rcd: Receiver<(ConnectionData, Option<oneshot::Sender<bool>>)>,
+    scd: Sender<(ConnectionData, Option<oneshot::Sender<bool>>)>,
 }
 
 impl ConnectionQueue {
@@ -109,8 +108,8 @@ impl ConnectionQueue {
         loop {
             tokio::select! {
                 res = self.rcd.recv_async() => {
-                    if let Ok(data) = res {
-                        let _ = self.connect_peer(node.clone(), data);
+                    if let Ok((data, connected_tx)) = res {
+                        let _ = self.connect_peer(node.clone(), data, connected_tx);
                     } else {
                         return;
                     }
@@ -126,13 +125,14 @@ impl ConnectionQueue {
         &self,
         node: Arc<Node>,
         data: ConnectionData,
+        connected_tx: Option<oneshot::Sender<bool>>,
     ) -> Option<JoinHandle<Result<(), NodeError>>> {
         let node = node.clone();
         let semaphore = self.semaphore.clone();
         match node.network.check_add_peer(&data.node_id) {
             Ok(()) => {
                 let handle = tokio::spawn(async move {
-                    let res = node.create_connection(semaphore, data).await;
+                    let res = node.create_connection(semaphore, data, connected_tx).await;
                     if let Err(err) = &res {
                         log::debug!("err when creating connection {err}");
                     }
@@ -157,7 +157,7 @@ impl ConnectionQueue {
         let maybe_retries = self.connections.read().unwrap().get(&data.node_id).cloned();
         match maybe_retries {
             None => {
-                self._add_connection(data, 0);
+                self._add_connection(data, 0, None);
                 true
             }
             Some(retries) => {
@@ -165,7 +165,7 @@ impl ConnectionQueue {
                     self.connections.write().unwrap().remove(&data.node_id);
                     false
                 } else {
-                    self._add_connection(data, retries + 1);
+                    self._add_connection(data, retries + 1, None);
                     true
                 }
             }
@@ -174,17 +174,41 @@ impl ConnectionQueue {
 
     /// Bypasses the connection queue and tries to connect to the node.
     /// Returns true if it was added.
-    pub fn add_connection_without_retries(&self, data: ConnectionData) -> bool {
+    pub fn add_connection_without_retries(
+        &self,
+        data: ConnectionData,
+        connection_tx: Option<oneshot::Sender<bool>>,
+    ) -> bool {
         self.connections.write().unwrap().remove(&data.node_id);
-        self.scd.send(data).expect("receivers dropped");
+        self.scd
+            .send((data, connection_tx))
+            .expect("receivers dropped");
         true
     }
 
-    fn _add_connection(&self, data: ConnectionData, retries: usize) {
+    fn _add_connection(
+        &self,
+        data: ConnectionData,
+        retries: usize,
+        connection_tx: Option<oneshot::Sender<bool>>,
+    ) {
         self.connections
             .write()
             .unwrap()
             .insert(data.node_id, retries);
-        self.scd.send(data).expect("receivers dropped");
+        self.scd
+            .send((data, connection_tx))
+            .expect("receivers dropped");
+    }
+
+    pub async fn wait_for_connection(&self, data: ConnectionData, retries: usize) -> bool {
+        let (tx, rx) = oneshot::channel();
+        match retries {
+            0 => {
+                self.add_connection_without_retries(data, Some(tx));
+            }
+            n => self._add_connection(data, n, Some(tx)),
+        };
+        rx.await.unwrap_or(false)
     }
 }

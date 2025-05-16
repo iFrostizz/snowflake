@@ -1,3 +1,7 @@
+// #![feature(test)]
+
+// extern crate test;
+
 use crate::node::Node;
 use crate::server::listener::Listener;
 use crate::server::{config, Server};

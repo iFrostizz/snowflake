@@ -93,7 +93,7 @@ impl Listener {
 
                         let hs_permit = node.hs_permit().await;
 
-                        if let Err(err) = node.loop_peer(hs_permit, peer).await {
+                        if let Err(err) = node.loop_peer(hs_permit, peer, None).await {
                             log::debug!("{err}");
                         }
                     } else {

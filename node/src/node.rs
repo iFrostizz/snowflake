@@ -156,6 +156,7 @@ impl Node {
         self: &Arc<Node>,
         semaphore: Arc<Semaphore>,
         data: ConnectionData,
+        connected_tx: Option<oneshot::Sender<bool>>,
     ) -> Result<(), NodeError> {
         let socket_addr = data.socket_addr;
         if self.is_my_socket(&socket_addr) {
@@ -164,7 +165,7 @@ impl Node {
         }
         log::debug!("adding a new peer at {socket_addr:?}");
 
-        self.connect_new_peer(semaphore, data).await?;
+        self.connect_new_peer(semaphore, data, connected_tx).await?;
 
         log::debug!("added {socket_addr:?}");
 
@@ -177,6 +178,7 @@ impl Node {
         self: &Arc<Node>,
         semaphore: Arc<Semaphore>,
         data: ConnectionData,
+        connected_tx: Option<oneshot::Sender<bool>>,
     ) -> Result<(), NodeError> {
         self.network.check_add_peer(&data.node_id)?;
 
@@ -207,7 +209,7 @@ impl Node {
         let light_peers = self.network.light_network.light_peers.clone();
         tokio::spawn(async move {
             let node_id = *peer.node_id();
-            let err = match node.loop_peer(hs_permit, peer).await {
+            let err = match node.loop_peer(hs_permit, peer, connected_tx).await {
                 Err(NodeError::UnwantedPeer(AddPeerError::AlreadyConnected)) => {
                     // timing issue; should not disconnect in this case.
                     return;
@@ -219,6 +221,7 @@ impl Node {
                 _ => None,
             };
 
+            // remove peer and try to reconnect
             Network::remove_peers(
                 peers_infos,
                 &mut light_peers.write().map,
@@ -238,20 +241,28 @@ impl Node {
         self: &Arc<Node>,
         hs_permit: OwnedSemaphorePermit,
         peer: Peer,
+        connected_tx: Option<oneshot::Sender<bool>>,
     ) -> Result<(), NodeError> {
         log::trace!("looping a new peer");
 
         self.network.check_add_peer(peer.node_id())?;
 
-        let (tasks, tx) = self.spawn_peer(peer, hs_permit).await?;
+        match self.spawn_peer(peer, hs_permit).await {
+            Ok((tasks, tx)) => {
+                connected_tx.map(|tx| tx.send(true));
+                let (res, ..) = future::select_all(tasks).await;
+                log::trace!("one of the peer tasks finished");
+                let res = res.unwrap();
 
-        let (res, ..) = future::select_all(tasks).await;
-        log::trace!("one of the peer tasks finished");
-        let res = res.unwrap();
+                let _ = tx.send(());
 
-        let _ = tx.send(());
-
-        res
+                res
+            }
+            Err(err) => {
+                connected_tx.map(|tx| tx.send(false));
+                Err(err)
+            }
+        }
     }
 
     async fn spawn_peer(
@@ -752,7 +763,7 @@ impl Node {
                 Ok(()) => {
                     self.network
                         .connection_queue
-                        .add_connection_without_retries(connection_data);
+                        .add_connection_without_retries(connection_data, None);
                 }
                 Err(err) => log::debug!("{err} {node_id}"),
             }

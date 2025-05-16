@@ -153,11 +153,10 @@ pub struct LightPeers {
     node_id: NodeId,
     light_peers: Arc<RwLock<IndexMap<NodeId, DhtBuckets>>>,
     peers_infos: Arc<RwLock<IndexMap<NodeId, PeerInfo>>>,
-    connection_queue: Arc<ConnectionQueue>,
+    pub connection_queue: Arc<ConnectionQueue>,
     max_light_peers: Option<usize>,
 }
 
-// TODO: this structure weirdly looks like the LightPeers one.
 #[derive(Debug)]
 pub struct WriteLockGuardPeers<'a> {
     node_id: NodeId,
@@ -179,30 +178,28 @@ impl WriteLockGuardPeers<'_> {
 
 pub fn closest_peer(node_id: NodeId, peers: &IndexMap<NodeId, DhtBuckets>) -> Option<NodeId> {
     let bucket = Bucket::from_be_bytes(node_id.into());
-    let node_ids = peers.keys().cloned().collect::<Vec<_>>();
-    node_ids
-        .iter()
+    peers
+        .keys()
         .map(|node_id| {
             let bucket_b = Bucket::from_be_bytes((*node_id).into());
             KademliaDht::distance(&bucket, bucket_b)
         })
         .enumerate()
         .min_by_key(|(_, distance)| *distance)
-        .map(|(i, _)| node_ids[i])
+        .map(|(i, _)| *peers.keys().nth(i).unwrap())
 }
 
 pub fn furthest_peer(node_id: NodeId, peers: &IndexMap<NodeId, DhtBuckets>) -> Option<NodeId> {
     let bucket = Bucket::from_be_bytes(node_id.into());
-    let node_ids = peers.keys().cloned().collect::<Vec<_>>();
-    node_ids
-        .iter()
+    peers
+        .keys()
         .map(|node_id| {
             let bucket_b = Bucket::from_be_bytes((*node_id).into());
             KademliaDht::distance(&bucket, bucket_b)
         })
         .enumerate()
         .max_by_key(|(_, distance)| *distance)
-        .map(|(i, _)| node_ids[i])
+        .map(|(i, _)| *peers.keys().nth(i).unwrap())
 }
 
 impl Drop for WriteLockGuardPeers<'_> {

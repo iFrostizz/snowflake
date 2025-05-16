@@ -129,6 +129,7 @@ impl<'a> Bootstrappers<'a> {
                         timestamp: 0,
                         x509_certificate: vec![],
                     },
+                    None,
                 ),
             ));
         }
