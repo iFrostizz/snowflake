@@ -625,19 +625,24 @@ impl Network {
             let len = message.containers.len();
             log::debug!("Syncing {} containers", len);
             for (i, container) in message.containers.into_iter().enumerate() {
-                // TODO unlikely but should handle.
-                let block = StatelessBlock::unpack(&container).unwrap();
-                if i == len - 1 {
-                    last_container_id = block.id().as_ref().to_vec();
+                match StatelessBlock::unpack(&container) {
+                    Ok(block) => {
+                        if i == len - 1 {
+                            last_container_id = block.id().as_ref().to_vec();
+                        }
+                        let block_dht = &self.light_network.block_dht;
+                        block_dht
+                            .verified_blocks
+                            .write()
+                            .unwrap()
+                            .insert(*block.id());
+                        if let Err(err) = block_dht.store_block_if_desired(block) {
+                            log::error!("Failed to store block: {:?}", err);
+                        }
+                        bootstrapper = self.pick_random_bootstrapper().await;
+                    }
+                    Err(err) => log::error!("error deserializing block: {:?}", err),
                 }
-                let block_dht = &self.light_network.block_dht;
-                block_dht
-                    .verified_blocks
-                    .write()
-                    .unwrap()
-                    .insert(*block.id());
-                block_dht.store_block(block).unwrap(); // TODO!
-                bootstrapper = self.pick_random_bootstrapper().await;
             }
         }
     }
@@ -657,8 +662,10 @@ impl Network {
                             .await
                         {
                             log::debug!("Found block {}", number);
-                            light_network.block_dht.store_block(block).unwrap();
-                            // TODO !
+                            if let Err(err) = light_network.block_dht.store_block_if_desired(block)
+                            {
+                                log::error!("Failed to store block: {}", err);
+                            }
                         }
                     }
                 }

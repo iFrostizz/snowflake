@@ -25,7 +25,7 @@ pub trait LockedMapDb<V> {
     type Key;
     fn get(&self, key: &Self::Key) -> Option<V>;
     fn get_bucket(&self, bucket: &Bucket) -> Option<V>;
-    fn insert(&self, key: Self::Key, value: V) -> Option<V>;
+    fn insert(&self, key: Self::Key, value: V);
 }
 
 impl ConcreteDht for CompositeKey<u64, FixedBytes<32>> {
@@ -52,8 +52,8 @@ where
         self.read().unwrap().get(bucket).cloned()
     }
 
-    fn insert(&self, key: Self::Key, value: V) -> Option<V> {
-        self.write().unwrap().insert(key.to_bucket(), value)
+    fn insert(&self, key: Self::Key, value: V) {
+        self.write().unwrap().insert(key.to_bucket(), value);
     }
 }
 
@@ -88,7 +88,7 @@ where
         read.get1(key).or_else(|| read.get2(key)).cloned()
     }
 
-    fn insert(&self, key: Self::Key, value: V) -> Option<V> {
+    fn insert(&self, key: Self::Key, value: V) {
         let CompositeKey::Both(k1, k2) = key else {
             panic!("invalid key")
         };

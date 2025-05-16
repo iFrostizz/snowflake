@@ -5,6 +5,7 @@ use crate::dht::{DhtBuckets, LightValue};
 use crate::id::{ChainId, NodeId};
 use crate::message::mail_box::Mail;
 use crate::message::{mail_box::MailBox, pipeline::Pipeline, MiniMessage, SubscribableMessage};
+use crate::net::ip::UnsignedIp;
 use crate::net::light::LightNetwork;
 use crate::net::node::SendErrorWrapper;
 use crate::net::queue::ConnectionQueue;
@@ -27,6 +28,7 @@ use crate::utils::{bloom::Filter, constants, ip::ip_from_octets, packer::Packer}
 use async_recursion::async_recursion;
 use flume::{Receiver, Sender};
 use indexmap::IndexMap;
+use openssl::rsa::Rsa;
 use proto_lib::p2p::{
     self, message::Message, AppError, BloomFilter, Client, GetPeerList, Handshake,
 };
@@ -39,8 +41,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::{BufReader, ErrorKind};
 use std::net::SocketAddr;
 use std::sync::{Arc, RwLock};
-use std::time::{Duration, Instant, SystemTime};
-use openssl::rsa::Rsa;
+use std::time::{Duration, SystemTime};
 use tokio::io::{split, ReadHalf, WriteHalf};
 use tokio::net::TcpStream;
 use tokio::sync::broadcast;
@@ -48,7 +49,6 @@ use tokio::sync::oneshot;
 use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
 use tokio_rustls::{TlsConnector, TlsStream};
-use crate::net::ip::UnsignedIp;
 
 pub mod ip;
 pub mod latency;
@@ -529,14 +529,17 @@ impl Peer {
                 let port = ip_port
                     .try_into()
                     .map_err(|_| NodeError::Message("failed to convert port".to_string()))?;
-                
+
                 let unsigned_ip = UnsignedIp::new(ip, port, ip_signing_time);
                 let public_key = Rsa::public_key_from_der(&self.identity.x509_certificate)?;
                 if !unsigned_ip.verify(&ip_node_id_sig, public_key)? {
                     return Err(NodeError::Message("invalid node certificate".to_string()));
                 }
 
-                let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs();
+                let now = SystemTime::now()
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs();
                 if now.abs_diff(my_time) > constants::MAX_CLOCK_DIFF {
                     return Err(NodeError::Message("timestamp is too skewed".to_string()));
                 }

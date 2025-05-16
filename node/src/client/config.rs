@@ -23,7 +23,6 @@ pub fn client_config(cert_path: &Path, key_path: &Path) -> ClientConfig {
         .with_client_auth_cert(certs, private_key)
         .expect("invalid client auth certs/key");
 
-    // config.key_log = Arc::new(rustls::KeyLogFile::new());
     // disable client certificate verification
     config
         .dangerous()

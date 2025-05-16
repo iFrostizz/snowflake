@@ -9,6 +9,7 @@ use proto_lib::sdk;
 use ruint::Uint;
 use serde::Deserialize;
 use std::cmp::Ordering;
+use std::fmt::{Display, Formatter};
 
 #[derive(Debug, Clone, Eq, Deserialize, PartialEq)]
 pub struct DhtBuckets {
@@ -128,6 +129,12 @@ pub enum LightMessage {
 pub struct LightError {
     pub code: i32,
     pub message: &'static str,
+}
+
+impl Display for LightError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self)
+    }
 }
 
 pub mod light_errors {

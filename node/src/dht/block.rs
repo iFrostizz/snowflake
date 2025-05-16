@@ -23,18 +23,6 @@ impl DhtCodex<StatelessBlock> for DhtBlocks {
         DhtId::Block
     }
 
-    fn verify(&self, block: &StatelessBlock) -> Result<bool, LightError> {
-        let number = u64::from_be_bytes(*block.block.header.number());
-        let hash = block.block.hash;
-        if self
-            .get_from_store(CompositeKey::Both(number, hash))?
-            .is_some()
-        {
-            return Ok(true);
-        }
-        Ok(self.verified_blocks.read().unwrap().contains(block.id()))
-    }
-
     fn encode(value: StatelessBlock) -> Result<Vec<u8>, LightError> {
         value.pack().map_err(|_| light_errors::ENCODING_FAILED)
     }
@@ -70,6 +58,18 @@ impl ConcreteDht for u64 {
 }
 
 impl DhtContent<CompositeKey<u64, FixedBytes<32>>, StatelessBlock> for DhtBlocks {
+    fn verify(&self, block: &StatelessBlock) -> Result<bool, LightError> {
+        let number = u64::from_be_bytes(*block.block.header.number());
+        let hash = block.block.hash;
+        if self
+            .get_from_store(CompositeKey::Both(number, hash))?
+            .is_some()
+        {
+            return Ok(true);
+        }
+        Ok(self.verified_blocks.read().unwrap().contains(block.id()))
+    }
+
     fn get_from_store(
         &self,
         key: CompositeKey<u64, FixedBytes<32>>,
@@ -83,7 +83,7 @@ impl DhtContent<CompositeKey<u64, FixedBytes<32>>, StatelessBlock> for DhtBlocks
         }
     }
 
-    async fn insert_to_store(&self, bytes: Vec<u8>) -> Result<Option<StatelessBlock>, LightError> {
+    async fn insert_to_store(&self, bytes: Vec<u8>) -> Result<(), LightError> {
         let decoded = Self::decode(&bytes)?;
         let number = u64::from_be_bytes(*decoded.block.header.number());
         let hash = decoded.block.hash;
@@ -91,14 +91,10 @@ impl DhtContent<CompositeKey<u64, FixedBytes<32>>, StatelessBlock> for DhtBlocks
             if !self.verify(&decoded)? {
                 return Err(light_errors::INVALID_CONTENT);
             }
-            match self
-                .dht
+            self.dht
                 .store
-                .insert(CompositeKey::Both(number, hash), bytes)
-            {
-                Some(ret_bytes) => Ok(Some(Self::decode(&ret_bytes)?)),
-                None => Ok(None),
-            }
+                .insert(CompositeKey::Both(number, hash), bytes);
+            Ok(())
         } else {
             Err(light_errors::UNDESIRED_BUCKET)
         }
@@ -118,12 +114,10 @@ impl DhtBlocks {
             || self.dht.is_desired_bucket(&hash.to_bucket())
     }
 
-    pub(crate) fn store_block(&self, block: StatelessBlock) -> Result<(), LightError> {
+    pub(crate) fn store_block_if_desired(&self, block: StatelessBlock) -> Result<(), LightError> {
         let number = u64::from_be_bytes(*block.block.header.number());
         let hash = block.block.hash;
-        if self.dht.is_desired_bucket(&number.to_bucket())
-            || self.dht.is_desired_bucket(&hash.to_bucket())
-        {
+        if self.is_desired_bucket(number, hash) {
             self.dht
                 .store
                 .insert(CompositeKey::Both(number, hash), Self::encode(block)?);
@@ -180,52 +174,80 @@ impl DhtBlocks {
             }
         }
 
+        struct BucketRange {
+            bucket_lo: Bucket,
+            bucket_hi: Bucket,
+        }
+
         struct BucketRangeIter {
-            range1: bool,
-            bucket_lo1: Bucket,
-            bucket_hi1: Bucket,
-            bucket_lo2: Option<Bucket>,
-            bucket_hi2: Option<Bucket>,
+            check_range1: bool,
+            range1: BucketRange,
+            range2: Option<BucketRange>,
             last_k: u32,
             max_block: u64,
         }
 
         impl BucketRangeIter {
             fn new(bucket_lo: Bucket, bucket_hi: Bucket, max_block: u64) -> Self {
-                let (bucket_lo1, bucket_hi1, bucket_lo2, bucket_hi2) =
-                    match bucket_lo.cmp(&bucket_hi) {
-                        Ordering::Less => (bucket_lo, bucket_hi, None, None),
-                        Ordering::Equal => (Bucket::ZERO, Bucket::MAX, None, None),
-                        Ordering::Greater => {
-                            (Bucket::ZERO, bucket_hi, Some(bucket_lo), Some(Bucket::MAX))
-                        }
-                    };
+                let (range1, range2) = match bucket_lo.cmp(&bucket_hi) {
+                    Ordering::Less => (
+                        BucketRange {
+                            bucket_lo,
+                            bucket_hi,
+                        },
+                        None,
+                    ),
+                    Ordering::Equal => (
+                        BucketRange {
+                            bucket_lo: Bucket::ZERO,
+                            bucket_hi: Bucket::MAX,
+                        },
+                        None,
+                    ),
+                    Ordering::Greater => (
+                        BucketRange {
+                            bucket_lo: Bucket::ZERO,
+                            bucket_hi,
+                        },
+                        Some(BucketRange {
+                            bucket_lo,
+                            bucket_hi: Bucket::MAX,
+                        }),
+                    ),
+                };
 
                 Self {
-                    range1: true,
-                    bucket_lo1,
-                    bucket_hi1,
-                    bucket_lo2,
-                    bucket_hi2,
+                    check_range1: true,
+                    range1,
+                    range2,
                     last_k: 0,
                     max_block,
                 }
             }
 
             fn block_range1(&self) -> RangeInclusive<u64> {
-                let block_lo = DhtBlocks::bucket_to_number(&self.bucket_lo1, self.last_k);
-                let block_hi = DhtBlocks::bucket_to_number(&self.bucket_hi1, self.last_k);
+                let BucketRange {
+                    bucket_lo,
+                    bucket_hi,
+                } = &self.range1;
+                let block_lo = DhtBlocks::bucket_to_number(bucket_lo, self.last_k);
+                let block_hi = DhtBlocks::bucket_to_number(bucket_hi, self.last_k);
                 let block_hi = std::cmp::min(block_hi, self.max_block);
                 block_lo..=block_hi
             }
 
             fn block_range2(&self) -> Option<RangeInclusive<u64>> {
-                let block_lo = self
-                    .bucket_lo2
-                    .map(|bucket| DhtBlocks::bucket_to_number(&bucket, self.last_k))?;
-                let block_hi = self
-                    .bucket_hi2
-                    .map(|bucket| DhtBlocks::bucket_to_number(&bucket, self.last_k))?;
+                let range = self.range2.as_ref();
+                let (block_lo, block_hi) = range.map(|range| {
+                    let BucketRange {
+                        bucket_lo,
+                        bucket_hi,
+                    } = range;
+                    (
+                        DhtBlocks::bucket_to_number(bucket_lo, self.last_k),
+                        DhtBlocks::bucket_to_number(bucket_hi, self.last_k),
+                    )
+                })?;
                 Some(block_lo..=block_hi)
             }
         }
@@ -234,11 +256,11 @@ impl DhtBlocks {
             type Item = RangeInclusive<u64>;
 
             fn next(&mut self) -> Option<Self::Item> {
-                let range = if self.range1 {
-                    self.range1 = false;
+                let range = if self.check_range1 {
+                    self.check_range1 = false;
                     self.block_range1()
                 } else {
-                    self.range1 = true;
+                    self.check_range1 = true;
                     self.block_range2().unwrap_or(self.block_range1())
                 };
                 if *range.start() > self.max_block {

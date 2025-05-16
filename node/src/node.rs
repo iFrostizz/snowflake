@@ -512,7 +512,7 @@ impl Node {
                                 let res = network.verify_block(&block).await.is_ok_and(|res| res);
                                 let _ = tx.send(res);
                                 if res {
-                                    let _ = network.light_network.block_dht.store_block(block);
+                                    let _ = network.light_network.block_dht.store_block_if_desired(block);
                                 }
                             });
                         });

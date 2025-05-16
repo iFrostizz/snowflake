@@ -129,11 +129,6 @@ impl LightNetwork {
 
 pub trait DhtCodex<V> {
     fn id() -> DhtId;
-    /// Verification of the validity of the content.
-    /// It is used to check if the content is well-formed.
-    /// If the content is ill-formed, it should not be stored.
-    // TODO this function should not be part of the codex but instead something higher-level.
-    fn verify(&self, value: &V) -> Result<bool, LightError>;
     /// Typed to encoded value
     fn encode(value: V) -> Result<Vec<u8>, LightError>;
     /// Encoded to typed value
@@ -141,11 +136,15 @@ pub trait DhtCodex<V> {
 }
 
 pub trait DhtContent<K, V>: DhtCodex<V> {
+    /// Verification of the validity of the content.
+    /// It is used to check if the content is well-formed.
+    /// If the content is ill-formed, it should not be stored.
+    fn verify(&self, value: &V) -> Result<bool, LightError>;
     /// Get a typed value from the store.
     fn get_from_store(&self, key: K) -> Result<Option<V>, LightError>;
     /// Insert an encoded value into the store.
     /// If the value is ill-formed, it should not be stored.
-    async fn insert_to_store(&self, bytes: Vec<u8>) -> Result<Option<V>, LightError>;
+    async fn insert_to_store(&self, bytes: Vec<u8>) -> Result<(), LightError>;
 }
 
 #[derive(Debug, Clone)]
