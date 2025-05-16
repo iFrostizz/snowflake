@@ -8,7 +8,6 @@ use crate::net::node::NodeError;
 use crate::net::queue::{ConnectionData, ConnectionQueue};
 use crate::net::RwLock;
 use crate::net::{LightError, Network};
-use crate::node::Node;
 use crate::server::peers::PeerInfo;
 use crate::Arc;
 use flume::Sender;
@@ -73,16 +72,16 @@ impl LightNetwork {
 
     pub async fn start(
         &self,
-        node: Arc<Node>,
+        network: Arc<Network>,
         mut rx: broadcast::Receiver<()>,
     ) -> Result<(), NodeError> {
         let block_dht = self.block_dht.clone();
-        let kademlia_dht = node.light_network.kademlia_dht.clone();
+        let kademlia_dht = self.kademlia_dht.clone();
         let peer_bootstrap_process = tokio::spawn(block_dht.sync_blocks(kademlia_dht));
 
         if self.config.sync_headers {
             let block_dht = self.block_dht.clone();
-            let sync_handle = tokio::spawn(block_dht.sync_headers(node, rx.resubscribe()));
+            let sync_handle = tokio::spawn(block_dht.sync_headers(network, rx.resubscribe()));
 
             tokio::select! {
                 _ = sync_handle => {},

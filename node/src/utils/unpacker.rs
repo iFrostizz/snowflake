@@ -48,8 +48,8 @@ pub struct StatelessBlock {
     pub p_chain_height: u64,
     pub certificate: Vec<u8>,
     pub block: Block,
-    id: BlockID,
     pub sig: Vec<u8>,
+    id: BlockID,
 }
 
 impl StatelessBlock {
@@ -105,8 +105,8 @@ impl StatelessBlock {
             p_chain_height,
             certificate: cert_bytes.to_vec(), // TODO (optional) verify proposer if not empty
             block,
-            id,
             sig: sig_bytes.to_vec(),
+            id,
         })
     }
 

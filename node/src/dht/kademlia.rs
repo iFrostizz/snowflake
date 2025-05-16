@@ -205,7 +205,7 @@ impl KademliaDht {
             .collect();
         if nodes_with_content.len() < max {
             let closest = self
-                .find_closest_nodes(nodes, &bucket, excluding, max * 2)
+                .find_closest_nodes(nodes, bucket, excluding, max * 2)
                 .into_iter()
                 .take(max - nodes_with_content.len());
             nodes_with_content.extend(closest);
@@ -263,7 +263,7 @@ impl KademliaDht {
                     })
                     .collect()
             };
-            if let Ok(value_or_nodes) = self.iterative_lookup(dht_id, senders, &bucket).await {
+            if let Ok(value_or_nodes) = self.iterative_lookup(dht_id, senders, bucket).await {
                 match value_or_nodes {
                     ValueOrNodes::Value(value) => return Ok(value),
                     ValueOrNodes::Nodes(connections_data) => {

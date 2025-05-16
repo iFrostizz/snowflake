@@ -1,9 +1,12 @@
 use crate::client::config;
 use crate::dht::DhtBuckets;
 use crate::id::{ChainId, NodeId};
+use crate::message::mail_box::MailBox;
 use crate::message::{pipeline::Pipeline, MiniMessage};
+use crate::net::light::{LightNetwork, LightNetworkConfig};
+use crate::net::queue::ConnectionQueue;
 use crate::net::{ip::UnsignedIp, BackoffParams, Intervals, Network, PeerInfo};
-use crate::node::SinglePickerConfig;
+use crate::node::{MessageOrSubscribable, SinglePickerConfig};
 use crate::server::msg::AppRequestMessage;
 use crate::server::{
     msg::{DecodingError, OutboundMessage},
@@ -20,6 +23,7 @@ use flume::{Receiver, Sender};
 use futures::future;
 use indexmap::IndexMap;
 use prost::EncodeError;
+use proto_lib::p2p::message::Message;
 use proto_lib::p2p::{self};
 use proto_lib::sdk;
 use std::collections::{HashMap, HashSet};
@@ -104,6 +108,9 @@ pub struct NetworkConfig {
     pub max_light_peers: Option<usize>,
     pub bootstrappers: HashMap<NodeId, Option<DhtBuckets>>,
     pub dht_buckets: DhtBuckets,
+    pub max_latency_records: usize,
+    pub max_out_connections: usize,
+    pub sync_headers: bool,
 }
 
 #[derive(Debug)]
@@ -187,12 +194,31 @@ impl Network {
             config.bucket_size,
         ));
 
+        let mail_box = Arc::new(MailBox::new(config.max_latency_records));
+
         let handshake_semaphore = Arc::new(Semaphore::new(config.max_concurrent_handshakes));
         let bootstrappers = RwLock::new(config.bootstrappers.clone());
+
+        let connection_queue = Arc::new(ConnectionQueue::new(config.max_out_connections));
+        let light_network = LightNetwork::new(
+            node_id,
+            peers_infos.clone(),
+            connection_queue.clone(),
+            mail_box.tx().clone(),
+            config.c_chain_id,
+            LightNetworkConfig {
+                sync_headers: config.sync_headers,
+                max_lookups: 10,
+                alpha: 3,
+                dht_buckets: config.dht_buckets.clone(),
+            },
+            config.max_light_peers,
+        );
 
         Ok(Self {
             node_id,
             out_pipeline,
+            connection_queue,
             config,
             client,
             client_config,
@@ -203,6 +229,8 @@ impl Network {
             public_key,
             node_pop,
             handshake_semaphore,
+            mail_box,
+            light_network,
         })
     }
 
@@ -380,11 +408,9 @@ impl Network {
         light_peers: &mut RwLockWriteGuard<IndexMap<NodeId, DhtBuckets>>,
         node_ids_errs: Vec<(NodeId, Option<NodeError>)>,
     ) {
-        for (node_id, err) in &node_ids_errs {
-            if let Some(err) = err {
-                log::debug!("removing peer {}, reason: {}", node_id, err);
-            } else {
-                log::debug!("removing peer {} for an unknown reason", node_id);
+        {
+            for (node_id, _) in &node_ids_errs {
+                light_peers.swap_remove(node_id);
             }
         }
 
@@ -402,9 +428,11 @@ impl Network {
             }
         }
 
-        {
-            for (node_id, _) in &node_ids_errs {
-                light_peers.swap_remove(node_id);
+        for (node_id, err) in &node_ids_errs {
+            if let Some(err) = err {
+                log::debug!("removing peer {}, reason: {}", node_id, err);
+            } else {
+                log::debug!("removing peer {} for an unknown reason", node_id);
             }
         }
     }
@@ -435,7 +463,7 @@ impl Network {
             return Err(AddPeerError::AlreadyConnected.into());
         }
 
-        if self.bootstrappers.read().unwrap().contains_key(node_id) {
+        if self.is_bootstrapper(node_id) {
             return Ok(());
         }
 
@@ -443,6 +471,74 @@ impl Network {
             return Err(AddPeerError::MaxPeersReached.into());
         }
         Ok(())
+    }
+
+    pub async fn send_to_peer(
+        &self,
+        message: &MessageOrSubscribable,
+        node_id: NodeId,
+    ) -> Option<Message> {
+        let peer_opt = {
+            let peers = self.peers_infos.read().unwrap();
+            if peers.is_empty() {
+                log::debug!("the set of peers is empty, cannot send to any");
+                return None;
+            }
+            peers.get(&node_id).cloned()
+        };
+
+        let (remove_peer, err) = if let Some(peer) = peer_opt {
+            if peer.handshook() {
+                match self
+                    .send_this_message_to_rename(&peer.sender, message)
+                    .await
+                {
+                    Ok(maybe_message) => return maybe_message,
+                    Err((remove_peer, err)) => (remove_peer, Some(err)),
+                }
+            } else {
+                (true, None)
+            }
+        } else {
+            (true, None)
+        };
+
+        let is_bootstrapper = self.is_bootstrapper(&node_id);
+        if !is_bootstrapper && remove_peer {
+            Network::remove_peers(
+                self.peers_infos.clone(),
+                &mut self.light_network.light_peers.write().map,
+                vec![(node_id, err)],
+            );
+        }
+
+        None
+    }
+
+    async fn send_this_message_to_rename(
+        &self,
+        sender: &PeerSender,
+        message: &MessageOrSubscribable,
+    ) -> Result<Option<Message>, (bool, NodeError)> {
+        match message {
+            MessageOrSubscribable::Subscribable(message) => {
+                match sender.send_and_response(self.mail_box.tx(), message.clone()) {
+                    Ok(handle) => handle
+                        .await
+                        .map(Some)
+                        .map_err(|_| (true, SendErrorWrapper.into())),
+                    Err(_err) => Err((true, _err)),
+                }
+            }
+            MessageOrSubscribable::Message(message) => sender
+                .send(message.clone())
+                .map(|_| None)
+                .map_err(|_err| (true, _err)),
+        }
+    }
+
+    pub fn is_bootstrapper(&self, node_id: &NodeId) -> bool {
+        self.bootstrappers.read().unwrap().contains_key(node_id)
     }
 
     pub fn pick_peer(

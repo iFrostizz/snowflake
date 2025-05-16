@@ -191,6 +191,9 @@ impl Args {
             dht_buckets: DhtBuckets {
                 block: self.block_dht_buckets,
             },
+            max_latency_records: self.max_latency_records,
+            max_out_connections: self.max_out_connections,
+            sync_headers: self.sync_headers,
         }
     }
 }

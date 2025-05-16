@@ -5,7 +5,9 @@ use crate::dht::{DhtBuckets, LightValue};
 use crate::id::{ChainId, NodeId};
 use crate::message::mail_box::Mail;
 use crate::message::{mail_box::MailBox, pipeline::Pipeline, MiniMessage, SubscribableMessage};
+use crate::net::light::LightNetwork;
 use crate::net::node::SendErrorWrapper;
+use crate::net::queue::ConnectionQueue;
 use crate::net::sdk::Store;
 use crate::net::sdk::{FindNode, FindValue, LightHandshake};
 use crate::net::{
@@ -76,6 +78,7 @@ pub struct HandshakeInfos {
 pub struct Network {
     pub config: NetworkConfig,
     pub node_id: NodeId,
+    pub connection_queue: Arc<ConnectionQueue>,
     pub signed_ip: SignedIp,
     pub client: Client,
     pub client_config: Arc<ClientConfig>,
@@ -88,6 +91,8 @@ pub struct Network {
     pub public_key: [u8; Bls::PUBLIC_KEY_BYTES],
     pub node_pop: Vec<u8>,
     pub handshake_semaphore: Arc<Semaphore>,
+    pub mail_box: Arc<MailBox>,
+    pub light_network: LightNetwork,
 }
 
 /// Intervals of operations in milliseconds

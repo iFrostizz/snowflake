@@ -56,6 +56,7 @@ impl DhtCodex<StatelessBlock> for DhtBlocks {
             container_ids: vec![block.id().as_ref().to_vec()],
         });
         let res = node
+            .network
             .send_to_peer(
                 &MessageOrSubscribable::Subscribable(message.clone()),
                 bootstrapper,
@@ -120,27 +121,12 @@ impl DhtContent<CompositeKey<u64, FixedBytes<32>>, StatelessBlock> for DhtBlocks
         &self,
         key: CompositeKey<u64, FixedBytes<32>>,
     ) -> Result<Option<StatelessBlock>, LightError> {
-        match key {
-            CompositeKey::Both(k1, k2) => {
-                if let Some(block_bytes) = self.dht.store.get_bucket(&k1.to_bucket()) {
-                    let block = Self::decode(&block_bytes)?;
-                    return Ok(Some(block));
-                }
-                match self.dht.store.get_bucket(&k2.to_bucket()) {
-                    Some(block_bytes) => {
-                        let block = Self::decode(&block_bytes)?;
-                        Ok(Some(block))
-                    }
-                    None => Ok(None),
-                }
+        match self.dht.store.get(&key) {
+            Some(block_bytes) => {
+                let block = Self::decode(&block_bytes)?;
+                Ok(Some(block))
             }
-            key => match self.dht.store.get(&key) {
-                Some(block_bytes) => {
-                    let block = Self::decode(&block_bytes)?;
-                    Ok(Some(block))
-                }
-                None => Ok(None),
-            },
+            None => Ok(None),
         }
     }
 
@@ -182,9 +168,9 @@ impl DhtBlocks {
     }
 
     // TODO here we mostly need the network. Rewrite this function.
-    async fn sync_process(self: Arc<Self>, node: Arc<Node>) {
-        let chain_id = node.network.config.c_chain_id.as_ref().to_vec();
-        let mut bootstrapper = Self::pick_random_bootstrapper(&node.network).await;
+    async fn sync_process(self: Arc<Self>, network: Arc<Network>) {
+        let chain_id = network.config.c_chain_id.as_ref().to_vec();
+        let mut bootstrapper = Self::pick_random_bootstrapper(&network).await;
 
         let message = SubscribableMessage::GetAcceptedFrontier(GetAcceptedFrontier {
             chain_id: chain_id.clone(),
@@ -192,7 +178,7 @@ impl DhtBlocks {
             deadline: DEFAULT_DEADLINE,
         });
         let message = loop {
-            if let Some(Message::AcceptedFrontier(res)) = node
+            if let Some(Message::AcceptedFrontier(res)) = network
                 .send_to_peer(
                     &MessageOrSubscribable::Subscribable(message.clone()),
                     bootstrapper,
@@ -214,7 +200,7 @@ impl DhtBlocks {
                 engine_type: EngineType::Snowman.into(),
             });
             let message = loop {
-                if let Some(Message::Ancestors(res)) = node
+                if let Some(Message::Ancestors(res)) = network
                     .send_to_peer(
                         &MessageOrSubscribable::Subscribable(message.clone()),
                         bootstrapper,
@@ -229,12 +215,14 @@ impl DhtBlocks {
             let len = message.containers.len();
             log::debug!("Syncing {} containers", len);
             for (i, container) in message.containers.into_iter().enumerate() {
+                // TODO unlikely but should handle.
                 let block = StatelessBlock::unpack(&container).unwrap();
                 if i == len - 1 {
                     last_container_id = block.id().as_ref().to_vec();
                 }
+                self.verified_blocks.write().unwrap().insert(*block.id());
                 self.store_block(block);
-                bootstrapper = Self::pick_random_bootstrapper(&node.network).await;
+                bootstrapper = Self::pick_random_bootstrapper(&network).await;
             }
         }
     }
@@ -245,7 +233,7 @@ impl DhtBlocks {
         if self.dht.is_desired_bucket(&number.to_bucket()) {
             self.dht.store.insert(
                 CompositeKey::Both(number, hash),
-                Self::encode(block).unwrap(),
+                Self::encode(block).unwrap(), // TODO unlikely but should handle.
             );
         }
     }
@@ -391,9 +379,13 @@ impl DhtBlocks {
         BlockIter::new(*bucket_lo, *bucket_hi, max_block)
     }
 
-    pub async fn sync_headers(self: Arc<Self>, node: Arc<Node>, mut rx: broadcast::Receiver<()>) {
+    pub async fn sync_headers(
+        self: Arc<Self>,
+        network: Arc<Network>,
+        mut rx: broadcast::Receiver<()>,
+    ) {
         let dht = self.clone();
-        let bootstrap_process = tokio::spawn(dht.sync_process(node));
+        let bootstrap_process = tokio::spawn(dht.sync_process(network));
         tokio::select! {
             _ = bootstrap_process => {},
             _ = rx.recv() => {},

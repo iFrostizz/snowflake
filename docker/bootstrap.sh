@@ -45,12 +45,34 @@ NODE_ID3=$(get_node_id 9654)
 NODE_ID4=$(get_node_id 9656)
 NODE_ID5=$(get_node_id 9658)
 
-echo "{\"mainnet\":[
-{\"id\":\"$NODE_ID1\",\"ip\":\"127.0.0.1:9650\"},
-{\"id\":\"$NODE_ID2\",\"ip\":\"127.0.0.1:9652\"},
-{\"id\":\"$NODE_ID3\",\"ip\":\"127.0.0.1:9654\"},
-{\"id\":\"$NODE_ID4\",\"ip\":\"127.0.0.1:9656\"},
-{\"id\":\"$NODE_ID5\",\"ip\":\"127.0.0.1:9658\"}
-],\"fuji\":[]}" > "$BOOTSTRAPPERS_FILE"
+json_content="{
+  \"mainnet\":[
+    {
+      \"id\":\"$NODE_ID1\",
+      \"ip\":\"127.0.0.1:9650\"
+    },
+    {
+      \"id\":\"$NODE_ID2\",
+      \"ip\":\"127.0.0.1:9652\"
+    },
+    {
+      \"id\":\"$NODE_ID3\",
+      \"ip\":\"127.0.0.1:9654\"
+    },
+    {
+      \"id\":\"$NODE_ID4\",
+      \"ip\":\"127.0.0.1:9656\"
+    },
+    {
+      \"id\":\"$NODE_ID5\",
+      \"ip\":\"127.0.0.1:9658\"
+    }
+  ],
+  \"fuji\":[
+    # Add more nodes here if needed
+  ]
+}"
+
+echo "${json_content}" > "$BOOTSTRAPPERS_FILE"
 
 echo "peers.json created with $(find "$PEER_DIR" -maxdepth 1 -type f | wc -l) peers."

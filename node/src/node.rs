@@ -1,16 +1,12 @@
 use crate::dht::{LightMessage, LightResult};
 use crate::id::{Id, NodeId};
-use crate::message::{mail_box::MailBox, SubscribableMessage};
-use crate::net::light::{LightNetwork, LightNetworkConfig};
-use crate::net::node::{AddPeerError, NetworkConfig, SendErrorWrapper};
+use crate::message::SubscribableMessage;
+use crate::net::node::{AddPeerError, NetworkConfig};
 use crate::net::{
-    light,
-    node::NodeError,
-    queue::{ConnectionData, ConnectionQueue},
-    HandshakeInfos, Network, Peer, PeerMessage,
+    light, node::NodeError, queue::ConnectionData, HandshakeInfos, Network, Peer, PeerMessage,
 };
 use crate::server::msg::AppRequestMessage;
-use crate::server::peers::{PeerInfo, PeerSender};
+use crate::server::peers::PeerInfo;
 use crate::stats::{self, Metrics};
 use crate::utils::{
     bloom::{Filter, ReadFilter, ViewFilter},
@@ -38,9 +34,6 @@ use tokio::time::{self};
 #[derive(Debug)]
 pub struct Node {
     pub(crate) network: Arc<Network>,
-    pub(crate) light_network: LightNetwork,
-    pub(crate) connection_queue: Arc<ConnectionQueue>,
-    pub(crate) mail_box: Arc<MailBox>,
 }
 
 #[derive(Debug, Clone)]
@@ -64,43 +57,16 @@ pub enum SinglePickerConfig {
 }
 
 impl Node {
-    pub fn new(
-        network_config: NetworkConfig,
-        max_concurrent: usize,
-        max_latency_records: usize,
-        sync_headers: bool,
-    ) -> Self {
+    pub fn new(network_config: NetworkConfig) -> Self {
         let bytes = std::fs::read(&network_config.cert_path).expect("failed to read cert");
         let x509 = x509::X509::from_pem(&bytes).unwrap();
         let cert = x509.to_der().unwrap();
         let node_id = NodeId::from_cert(cert);
 
-        let connection_queue = Arc::new(ConnectionQueue::new(max_concurrent));
         let peers_infos = Arc::new(RwLock::new(IndexMap::new()));
-        let dht_buckets = network_config.dht_buckets.clone();
         let network = Arc::new(Network::new(network_config, node_id, peers_infos.clone()).unwrap());
-        let mail_box = MailBox::new(max_latency_records);
-        let light_network = LightNetwork::new(
-            network.node_id,
-            peers_infos,
-            connection_queue.clone(),
-            mail_box.tx().clone(),
-            network.config.c_chain_id,
-            LightNetworkConfig {
-                sync_headers,
-                max_lookups: 10,
-                alpha: 3,
-                dht_buckets,
-            },
-            network.config.max_light_peers,
-        );
 
-        Self {
-            network,
-            light_network,
-            connection_queue,
-            mail_box: Arc::new(mail_box),
-        }
+        Self { network }
     }
 
     /// Start a node which manages in/out connections
@@ -134,7 +100,10 @@ impl Node {
         let node = self.clone();
         let rx2 = rx.resubscribe();
         let conn = tokio::spawn(async move {
-            node.connection_queue.watch_connections(&node, rx2).await;
+            node.network
+                .connection_queue
+                .watch_connections(&node, rx2)
+                .await;
             Ok(())
         });
 
@@ -147,16 +116,17 @@ impl Node {
         let watch =
             tokio::spawn(async move { node.watch_sent_transactions(transaction_rx, rx2).await });
 
-        let node = self.clone();
+        let network = self.network.clone();
         let rx2 = rx.resubscribe();
-        // TODO this is probably bad design to have the node being passed twice here.
+        // TODO this is probably bad design to have the network being passed twice here.
         // TODO The light network may be independent.
-        let light = tokio::spawn(async move { node.light_network.start(node.clone(), rx2).await });
+        let light =
+            tokio::spawn(async move { network.light_network.start(network.clone(), rx2).await });
 
         let node = self.clone();
         let rx2 = rx.resubscribe();
         let mbox = tokio::spawn(async move {
-            node.mail_box.start(rx2).await;
+            node.network.mail_box.start(rx2).await;
             Ok(())
         });
 
@@ -213,7 +183,7 @@ impl Node {
         {
             Ok(peer) => {
                 log::debug!("peer {} at {:?} connected!", data.node_id, data.socket_addr);
-                self.connection_queue.mark_connected(&data.node_id);
+                self.network.connection_queue.mark_connected(&data.node_id);
                 peer
             }
             Err(err) => {
@@ -224,7 +194,7 @@ impl Node {
 
         let node = self.clone();
         let peers_infos = self.network.peers_infos.clone();
-        let light_peers = self.light_network.light_peers.clone();
+        let light_peers = self.network.light_network.light_peers.clone();
         tokio::spawn(async move {
             let node_id = *peer.node_id();
             let err = match node.loop_peer(hs_permit, peer).await {
@@ -244,7 +214,7 @@ impl Node {
                 &mut light_peers.write().map,
                 vec![(node_id, err)],
             );
-            node.connection_queue.add_connection(data);
+            node.network.connection_queue.add_connection(data);
         });
 
         Ok(())
@@ -310,7 +280,7 @@ impl Node {
             self.network.peers_infos.clone(),
             self.network.config.intervals.clone(),
             self.network.out_pipeline.clone(),
-            self.mail_box.clone(),
+            self.network.mail_box.clone(),
             c_chain_id,
             tx.subscribe(),
         );
@@ -371,7 +341,7 @@ impl Node {
                 }
                 res = rpl.recv_async() => {
                     if let Ok((msg, resp)) = res {
-                        self.light_network.manage_message(node_id, msg, resp).await;
+                        self.network.light_network.manage_message(node_id, msg, resp).await;
                     }
                 }
                 _ = rx.recv() => {
@@ -528,14 +498,14 @@ impl Node {
         })) {
             Network::remove_peers(
                 self.network.peers_infos.clone(),
-                &mut self.light_network.light_peers.write().map,
+                &mut self.network.light_network.light_peers.write().map,
                 vec![(*node_id, Some(err))],
             );
         }
     }
 
     fn find_nodes(self: &Arc<Node>) {
-        let light_peers = self.light_network.light_peers.read().unwrap();
+        let light_peers = self.network.light_network.light_peers.read().unwrap();
         let Some(node_id) = light::closest_peer(self.network.node_id, &light_peers) else {
             return;
         };
@@ -554,14 +524,14 @@ impl Node {
         ) {
             Network::remove_peers(
                 self.network.peers_infos.clone(),
-                &mut self.light_network.light_peers.write().map,
+                &mut self.network.light_network.light_peers.write().map,
                 vec![(node_id, Some(err))],
             );
         }
     }
 
     fn fastest_peers(&self, n: usize) -> Vec<NodeId> {
-        let peers_lat = self.mail_box.peers_latency().read().unwrap();
+        let peers_lat = self.network.mail_box.peers_latency().read().unwrap();
         peers_lat.fastest_n(n).copied().collect::<Vec<_>>()
     }
 
@@ -616,7 +586,8 @@ impl Node {
             let node_id = &connection_data.node_id;
             match self.network.check_add_peer(node_id) {
                 Ok(()) => {
-                    self.connection_queue
+                    self.network
+                        .connection_queue
                         .add_connection_without_retries(connection_data);
                 }
                 Err(err) => log::debug!("{err} {node_id}"),
@@ -703,9 +674,10 @@ impl Node {
                             let sender = &peer.sender;
                             let res = match message {
                                 MessageOrSubscribable::Subscribable(message) => {
-                                    match sender
-                                        .send_and_response(self.mail_box.tx(), message.clone())
-                                    {
+                                    match sender.send_and_response(
+                                        self.network.mail_box.tx(),
+                                        message.clone(),
+                                    ) {
                                         Ok(handle) => {
                                             handles.push(handle);
                                             Ok(())
@@ -741,7 +713,7 @@ impl Node {
         if !to_remove.is_empty() {
             Network::remove_peers(
                 self.network.peers_infos.clone(),
-                &mut self.light_network.light_peers.write().map,
+                &mut self.network.light_network.light_peers.write().map,
                 to_remove,
             );
         }
@@ -753,75 +725,6 @@ impl Node {
             }
         }
         messages
-    }
-
-    pub async fn send_to_peer(
-        &self,
-        message: &MessageOrSubscribable,
-        node_id: NodeId,
-    ) -> Option<Message> {
-        let peer_opt = {
-            let peers = self.network.peers_infos.read().unwrap();
-            if peers.is_empty() {
-                log::debug!("the set of peers is empty, cannot send to any");
-                return None;
-            }
-            peers.get(&node_id).cloned()
-        };
-
-        let (remove_peer, err) = if let Some(peer) = peer_opt {
-            if peer.handshook() {
-                match self
-                    .send_this_message_to_rename(&peer.sender, message)
-                    .await
-                {
-                    Ok(maybe_message) => return maybe_message,
-                    Err((_remove_peer, _err)) => (_remove_peer, Some(_err)),
-                }
-            } else {
-                (true, None)
-            }
-        } else {
-            (true, None)
-        };
-
-        let is_bootstrapper = self
-            .network
-            .bootstrappers
-            .read()
-            .unwrap()
-            .contains_key(&node_id);
-        if !is_bootstrapper && remove_peer {
-            Network::remove_peers(
-                self.network.peers_infos.clone(),
-                &mut self.light_network.light_peers.write().map,
-                vec![(node_id, err)],
-            );
-        }
-
-        None
-    }
-
-    async fn send_this_message_to_rename(
-        &self,
-        sender: &PeerSender,
-        message: &MessageOrSubscribable,
-    ) -> Result<Option<Message>, (bool, NodeError)> {
-        match message {
-            MessageOrSubscribable::Subscribable(message) => {
-                match sender.send_and_response(self.mail_box.tx(), message.clone()) {
-                    Ok(handle) => handle
-                        .await
-                        .map(Some)
-                        .map_err(|_| (true, SendErrorWrapper.into())),
-                    Err(_err) => Err((true, _err)),
-                }
-            }
-            MessageOrSubscribable::Message(message) => sender
-                .send(message.clone())
-                .map(|_| None)
-                .map_err(|_err| (true, _err)),
-        }
     }
 
     pub async fn hs_permit(&self) -> OwnedSemaphorePermit {

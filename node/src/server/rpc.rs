@@ -450,9 +450,10 @@ mod rpc_impl {
             };
             Ok(self
                 .node
+                .network
                 .light_network
                 .find_content(
-                    &self.node.light_network.block_dht,
+                    &self.node.network.light_network.block_dht,
                     CompositeKey::First(number),
                 )
                 .await?)
@@ -461,9 +462,10 @@ mod rpc_impl {
         async fn get_block_by_hash(&self, hash: Bytes32) -> RpcResult<StatelessBlock> {
             Ok(self
                 .node
+                .network
                 .light_network
                 .find_content(
-                    &self.node.light_network.block_dht,
+                    &self.node.network.light_network.block_dht,
                     CompositeKey::Second(hash),
                 )
                 .await?)
@@ -755,6 +757,7 @@ mod rpc_impl {
             let maybe_peer_infos = {
                 let peers_infos = self
                     .node
+                    .network
                     .light_network
                     .kademlia_dht
                     .peers_infos
@@ -764,7 +767,7 @@ mod rpc_impl {
             };
             if let Some(peer_infos) = maybe_peer_infos {
                 peer_infos
-                    .ping(&self.node.light_network.kademlia_dht.mail_tx)
+                    .ping(&self.node.network.light_network.kademlia_dht.mail_tx)
                     .await
                     .map_err(|err| ErrorObject::owned(1000, err.to_string(), None::<()>))
             } else {
@@ -787,8 +790,9 @@ mod rpc_impl {
                 DhtId::Block => {
                     let block = DhtBlocks::decode(&value)?;
                     self.node
+                        .network
                         .light_network
-                        .store(&self.node.light_network.block_dht, node_id, block)
+                        .store(&self.node.network.light_network.block_dht, node_id, block)
                         .await?;
                 }
                 DhtId::State => {}
@@ -803,6 +807,7 @@ mod rpc_impl {
         ) -> RpcResult<Vec<NodeId>> {
             let node_ids = if node_id.is_none() || node_id == Some(self.node.network.node_id) {
                 self.node
+                    .network
                     .light_network
                     .kademlia_dht
                     .find_node(&bucket)
@@ -814,6 +819,7 @@ mod rpc_impl {
                 let sender = {
                     let peers_infos = self
                         .node
+                        .network
                         .light_network
                         .kademlia_dht
                         .peers_infos
@@ -825,7 +831,7 @@ mod rpc_impl {
                     peer_infos.sender.clone()
                 };
                 let message = AppRequestMessage::encode(
-                    &self.node.light_network.kademlia_dht.chain_id,
+                    &self.node.network.light_network.kademlia_dht.chain_id,
                     sdk::FindNode {
                         bucket: bucket.to_be_bytes_vec(),
                     },
@@ -835,9 +841,9 @@ mod rpc_impl {
                 };
                 let light_message: sdk::light_response::Message = sender
                     .send_and_app_response(
-                        self.node.light_network.kademlia_dht.chain_id,
+                        self.node.network.light_network.kademlia_dht.chain_id,
                         constants::SNOWFLAKE_HANDLER_ID,
-                        &self.node.light_network.kademlia_dht.mail_tx,
+                        &self.node.network.light_network.kademlia_dht.mail_tx,
                         SubscribableMessage::AppRequest(app_request),
                     )
                     .await
@@ -871,6 +877,7 @@ mod rpc_impl {
                     DhtId::Block => {
                         match self
                             .node
+                            .network
                             .light_network
                             .block_dht
                             .dht
@@ -882,8 +889,12 @@ mod rpc_impl {
                                 true,
                             ))),
                             None => {
-                                let connections_data =
-                                    self.node.light_network.kademlia_dht.find_node(&bucket);
+                                let connections_data = self
+                                    .node
+                                    .network
+                                    .light_network
+                                    .kademlia_dht
+                                    .find_node(&bucket);
                                 let node_ids = connections_data
                                     .into_iter()
                                     .map(|ConnectionData { node_id, .. }| node_id)
@@ -899,6 +910,7 @@ mod rpc_impl {
                 let sender = {
                     let peers_infos = self
                         .node
+                        .network
                         .light_network
                         .kademlia_dht
                         .peers_infos
@@ -910,7 +922,7 @@ mod rpc_impl {
                     peer_infos.sender.clone()
                 };
                 let message = AppRequestMessage::encode(
-                    &self.node.light_network.kademlia_dht.chain_id,
+                    &self.node.network.light_network.kademlia_dht.chain_id,
                     sdk::FindValue {
                         dht_id: dht_id.into(),
                         bucket: bucket.to_be_bytes_vec(),
@@ -921,7 +933,7 @@ mod rpc_impl {
                 };
                 let rx = sender
                     .send_and_response(
-                        &self.node.light_network.kademlia_dht.mail_tx,
+                        &self.node.network.light_network.kademlia_dht.mail_tx,
                         SubscribableMessage::AppRequest(app_request),
                     )
                     .map_err(|err| ErrorObject::owned(1000, err.to_string(), None::<()>))?;
@@ -935,6 +947,7 @@ mod rpc_impl {
                 if app_response.chain_id
                     != self
                         .node
+                        .network
                         .light_network
                         .kademlia_dht
                         .chain_id
@@ -1094,8 +1107,11 @@ mod tests {
             dht_buckets: DhtBuckets {
                 block: Default::default(),
             },
+            max_latency_records: 1,
+            max_out_connections: 1,
+            sync_headers: false,
         };
-        let node = Node::new(config, 1, 1, false);
+        let node = Node::new(config);
 
         let rpc = Rpc::new(Arc::from(node), 0, tx).await.unwrap();
         let addr = rpc.local_addr();

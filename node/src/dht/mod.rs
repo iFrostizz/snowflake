@@ -48,7 +48,7 @@ impl BucketDht {
 
     pub fn is_desired_bucket(&self, bucket: &Bucket) -> bool {
         let (bucket_lo, bucket_hi) = self.bucket_range();
-        match bucket_lo.cmp(&bucket_hi) {
+        match bucket_lo.cmp(bucket_hi) {
             Ordering::Less => bucket_lo <= bucket && bucket < bucket_hi,
             Ordering::Equal => false,
             Ordering::Greater => bucket_lo <= bucket || bucket < bucket_hi,
@@ -189,7 +189,7 @@ mod tests {
             arr
         };
 
-        let dht = BucketDht::new(NodeId::default(), num_to_bucket(8));
+        let dht = BucketDht::new(NodeId::default(), num_to_bucket(16));
         let (lo, hi) = dht.bucket_range();
         assert_eq!(lo, &Bucket::from_be_bytes(bytes_with_last(0xff, 0xf8)));
         assert_eq!(hi, &Bucket::from_be_bytes(bytes_with_last(0, 8)));
@@ -203,11 +203,11 @@ mod tests {
         let (lo, hi) = dht.bucket_range();
         assert_eq!(lo, &Bucket::from_be_bytes([0; 20]));
         assert_eq!(lo, hi);
-        assert!(dht.is_desired_bucket(&num_to_bucket(0)));
+        assert!(!dht.is_desired_bucket(&num_to_bucket(0)));
         assert!(!dht.is_desired_bucket(&Bucket::from_be_bytes([0xff; 20])));
         assert!(!dht.is_desired_bucket(&num_to_bucket(1)));
 
-        let dht = BucketDht::new(NodeId::from(bytes_with_last(0, 8)), num_to_bucket(8));
+        let dht = BucketDht::new(NodeId::from(bytes_with_last(0, 8)), num_to_bucket(16));
         let (lo, hi) = dht.bucket_range();
         assert_eq!(lo, &Bucket::from_be_bytes([0; 20]));
         assert_eq!(hi, &Bucket::from_be_bytes(bytes_with_last(0, 16)));
