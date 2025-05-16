@@ -1,9 +1,9 @@
 use crate::client::config;
-use crate::dht::DhtBuckets;
+use crate::dht::{light_errors, DhtBuckets, LightError};
 use crate::id::{ChainId, NodeId};
 use crate::message::mail_box::MailBox;
 use crate::message::{pipeline::Pipeline, MiniMessage, SubscribableMessage};
-use crate::net::light::{LightNetwork, LightNetworkConfig};
+use crate::net::light::{DhtContent, LightNetwork, LightNetworkConfig};
 use crate::net::queue::ConnectionQueue;
 use crate::net::{ip::UnsignedIp, BackoffParams, Intervals, Network, PeerInfo};
 use crate::node::{MessageOrSubscribable, SinglePickerConfig};
@@ -27,7 +27,9 @@ use futures::future;
 use indexmap::IndexMap;
 use prost::EncodeError;
 use proto_lib::p2p::message::Message;
-use proto_lib::p2p::{self, EngineType, Get, GetAcceptedFrontier, GetAncestors};
+use proto_lib::p2p::{
+    self, Accepted, EngineType, Get, GetAccepted, GetAcceptedFrontier, GetAncestors,
+};
 use proto_lib::sdk;
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
@@ -244,7 +246,7 @@ impl Network {
     pub async fn schedule_write_messages(
         out_pipeline: Arc<Pipeline>,
         mut write: WriteHalf<TlsStream<TcpStream>>,
-        rnp: Receiver<p2p::message::Message>,
+        rnp: Receiver<Message>,
         mut disconnection_rx: broadcast::Receiver<()>,
     ) -> Result<(), NodeError> {
         let (ptx, prx) = flume::unbounded();
@@ -393,15 +395,11 @@ impl Network {
         };
 
         log::trace!("handshaking the peer");
-        sender.send(p2p::message::Message::Handshake(handshake))
+        sender.send(Message::Handshake(handshake))
     }
 
     fn light_handshake(&self, sender: &PeerSender) -> Result<(), NodeError> {
-        // TODO provide From implementation
-        let block_k = self.config.dht_buckets.block;
-        let buckets = sdk::DhtBuckets {
-            block: block_k.to_be_bytes_vec(),
-        };
+        let buckets = (&self.config.dht_buckets).into();
         let message = sdk::light_request::Message::LightHandshake(sdk::LightHandshake {
             buckets: Some(buckets),
         });
@@ -450,6 +448,65 @@ impl Network {
         err: Option<NodeError>,
     ) {
         Self::remove_peers(peers_infos, light_peers, vec![(node_id, err)]);
+    }
+
+    pub async fn verify_block(
+        self: &Arc<Network>,
+        block: &StatelessBlock,
+    ) -> Result<bool, LightError> {
+        let number = u64::from_be_bytes(*block.block.header.number());
+        let hash = block.block.hash;
+        if self
+            .light_network
+            .block_dht
+            .get_from_store(CompositeKey::Both(number, hash))?
+            .is_some()
+        {
+            return Ok(true);
+        }
+        if self
+            .light_network
+            .block_dht
+            .verified_blocks
+            .read()
+            .unwrap()
+            .contains(block.id())
+        {
+            return Ok(true);
+        }
+        let bootstrapper = self.pick_random_bootstrapper().await;
+        let message = SubscribableMessage::GetAccepted(GetAccepted {
+            chain_id: self.config.c_chain_id.as_ref().to_vec(),
+            request_id: rand::random(),
+            deadline: DEFAULT_DEADLINE,
+            container_ids: vec![block.id().as_ref().to_vec()],
+        });
+        let res = self
+            .send_to_peer(&MessageOrSubscribable::Subscribable(message), bootstrapper)
+            .await;
+        if let Some(Message::Accepted(Accepted {
+            chain_id,
+            container_ids,
+            ..
+        })) = res
+        {
+            if chain_id != self.config.c_chain_id.as_ref().to_vec() {
+                return Err(light_errors::INVALID_CONTENT);
+            }
+            if container_ids == vec![block.id().as_ref().to_vec()] {
+                self.light_network
+                    .block_dht
+                    .verified_blocks
+                    .write()
+                    .unwrap()
+                    .insert(*block.id());
+                Ok(true)
+            } else {
+                Ok(false)
+            }
+        } else {
+            Err(light_errors::INVALID_CONTENT)
+        }
     }
 
     pub fn has_reached_max_peers(&self, peers_infos: &IndexMap<NodeId, PeerInfo>) -> bool {

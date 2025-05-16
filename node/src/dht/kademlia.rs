@@ -103,7 +103,7 @@ pub struct KademliaDht {
     pub peers_infos: Arc<RwLock<IndexMap<NodeId, PeerInfo>>>,
     light_peers: LightPeers,
     pub mail_tx: Sender<Mail>,
-    verification_tx: Sender<(StatelessBlock, oneshot::Sender<bool>)>,
+    pub verification_tx: Sender<(StatelessBlock, oneshot::Sender<bool>)>,
     pub chain_id: ChainId,
     /// Maximum number of nodes to return in a `find_node` request.
     max_nodes: usize,

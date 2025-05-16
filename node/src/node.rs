@@ -1,9 +1,9 @@
 use crate::dht::block::DhtBlocks;
 use crate::dht::kademlia::ValueOrNodes;
-use crate::dht::{light_errors, DhtId, LightError, LightMessage, LightResult, LightValue};
+use crate::dht::{light_errors, DhtId, LightMessage, LightResult, LightValue};
 use crate::id::{Id, NodeId};
 use crate::message::SubscribableMessage;
-use crate::net::light::{DhtCodex, DhtContent};
+use crate::net::light::DhtCodex;
 use crate::net::node::{AddPeerError, NetworkConfig};
 use crate::net::{
     light, node::NodeError, queue::ConnectionData, HandshakeInfos, Network, Peer, PeerMessage,
@@ -11,9 +11,6 @@ use crate::net::{
 use crate::server::msg::AppRequestMessage;
 use crate::server::peers::PeerInfo;
 use crate::stats::{self, Metrics};
-use crate::utils::constants::DEFAULT_DEADLINE;
-use crate::utils::twokhashmap::CompositeKey;
-use crate::utils::unpacker::StatelessBlock;
 use crate::utils::{
     bloom::{Filter, ReadFilter, ViewFilter},
     constants,
@@ -25,8 +22,7 @@ use indexmap::IndexMap;
 use openssl::x509;
 use prost::Message as _;
 use proto_lib::p2p::{
-    message::Message, Accepted, AppGossip, BloomFilter, ClaimedIpPort, GetAccepted, GetPeerList,
-    PeerList,
+    message::Message, AppGossip, BloomFilter, ClaimedIpPort, GetPeerList, PeerList,
 };
 use proto_lib::sdk;
 use std::collections::HashSet;
@@ -349,9 +345,6 @@ impl Node {
     ) {
         let mut maybe_hs_permit = Some(hs_permit);
 
-        // TODO: this is single-threaded and the verification in the light_network.manage_message
-        //  function is asynchronous and may take some time, which will bloat message processing.
-        //  We should make it multi-threaded.
         loop {
             log::trace!("execute");
             tokio::select! {
@@ -362,7 +355,7 @@ impl Node {
                 }
                 res = rpl.recv_async() => {
                     if let Ok((msg, resp)) = res {
-                        self.manage_light_message(node_id, msg, resp).await;
+                        self.manage_light_message(node_id, msg, resp);
                     }
                 }
                 _ = rx.recv() => {
@@ -426,7 +419,7 @@ impl Node {
         }
     }
 
-    pub async fn manage_light_message(
+    pub fn manage_light_message(
         &self,
         node_id: NodeId,
         message: LightMessage,
@@ -445,15 +438,18 @@ impl Node {
                 let res = match dht_id {
                     DhtId::Block => match DhtBlocks::decode(&value) {
                         Ok(block) => {
-                            if self.verify_block(&block).await.is_ok_and(|res| res) {
-                                self.network
-                                    .light_network
-                                    .block_dht
-                                    .store_block(block)
-                                    .map(|_| LightValue::Ok)
-                            } else {
-                                Err(light_errors::INVALID_CONTENT)
+                            let (tx, _) = oneshot::channel();
+                            if self
+                                .network
+                                .light_network
+                                .kademlia_dht
+                                .verification_tx
+                                .send((block, tx))
+                                .is_err()
+                            {
+                                return;
                             }
+                            Ok(LightValue::Ok)
                         }
                         Err(err) => Err(err),
                     },
@@ -507,76 +503,25 @@ impl Node {
 
     pub async fn start_verification_channel(&self, mut rx: broadcast::Receiver<()>) {
         let verification_rx = self.network.verification_rx.clone();
+        let pool = threadpool::ThreadPool::new(10);
         loop {
             tokio::select! {
                 maybe_block = verification_rx.recv_async() => {
                     if let Ok((block, tx)) = maybe_block {
-                        let res = self.verify_block(&block).await;
-                        let _ = tx.send(res.is_ok_and(|res| res));
+                        let network = self.network.clone();
+                        pool.execute(move || {
+                            tokio::spawn(async move {
+                                let res = network.verify_block(&block).await.is_ok_and(|res| res);
+                                let _ = tx.send(res);
+                                if res {
+                                    let _ = network.light_network.block_dht.store_block(block);
+                                }
+                            });
+                        });
                     }
                 },
                 _ = rx.recv() => return
             }
-        }
-    }
-
-    async fn verify_block(&self, block: &StatelessBlock) -> Result<bool, LightError> {
-        let number = u64::from_be_bytes(*block.block.header.number());
-        let hash = block.block.hash;
-        if self
-            .network
-            .light_network
-            .block_dht
-            .get_from_store(CompositeKey::Both(number, hash))?
-            .is_some()
-        {
-            return Ok(true);
-        }
-        if self
-            .network
-            .light_network
-            .block_dht
-            .verified_blocks
-            .read()
-            .unwrap()
-            .contains(block.id())
-        {
-            return Ok(true);
-        }
-        let bootstrapper = self.network.pick_random_bootstrapper().await;
-        let message = SubscribableMessage::GetAccepted(GetAccepted {
-            chain_id: self.network.config.c_chain_id.as_ref().to_vec(),
-            request_id: rand::random(),
-            deadline: DEFAULT_DEADLINE,
-            container_ids: vec![block.id().as_ref().to_vec()],
-        });
-        let res = self
-            .network
-            .send_to_peer(&MessageOrSubscribable::Subscribable(message), bootstrapper)
-            .await;
-        if let Some(Message::Accepted(Accepted {
-            chain_id,
-            container_ids,
-            ..
-        })) = res
-        {
-            if chain_id != self.network.config.c_chain_id.as_ref().to_vec() {
-                return Err(light_errors::INVALID_CONTENT);
-            }
-            if container_ids == vec![block.id().as_ref().to_vec()] {
-                self.network
-                    .light_network
-                    .block_dht
-                    .verified_blocks
-                    .write()
-                    .unwrap()
-                    .insert(*block.id());
-                Ok(true)
-            } else {
-                Ok(false)
-            }
-        } else {
-            Err(light_errors::INVALID_CONTENT)
         }
     }
 

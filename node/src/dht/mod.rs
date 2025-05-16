@@ -5,6 +5,7 @@ use crate::dht::kademlia::{LockedMapDb, ValueOrNodes};
 use crate::id::NodeId;
 use crate::net::queue::ConnectionData;
 use jsonrpsee::types::ErrorObject;
+use proto_lib::sdk;
 use ruint::Uint;
 use serde::Deserialize;
 use std::cmp::Ordering;
@@ -12,6 +13,14 @@ use std::cmp::Ordering;
 #[derive(Debug, Clone, Eq, Deserialize, PartialEq)]
 pub struct DhtBuckets {
     pub block: Bucket,
+}
+
+impl From<&DhtBuckets> for sdk::DhtBuckets {
+    fn from(buckets: &DhtBuckets) -> Self {
+        sdk::DhtBuckets {
+            block: buckets.block.to_be_bytes_vec(),
+        }
+    }
 }
 
 pub type Bucket = Uint<160, 3>;

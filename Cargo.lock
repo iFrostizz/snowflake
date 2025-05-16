@@ -3239,6 +3239,7 @@ dependencies = [
  "sha2",
  "sha256",
  "thiserror 2.0.12",
+ "threadpool",
  "tokio",
  "tokio-rustls",
  "tracing-subscriber",
