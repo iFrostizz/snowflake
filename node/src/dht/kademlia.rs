@@ -351,7 +351,7 @@ impl KademliaDht {
                             )
                             .await
                     });
-                    *lookups_remaining += 1;
+                    *lookups_remaining -= 1;
                 }
             } else {
                 break;
@@ -388,6 +388,13 @@ impl KademliaDht {
                         .into_iter()
                         .filter_map(|claimed_ip_port| claimed_ip_port.try_into().ok())
                         .collect();
+                    // TODO this will be ineffective if the peer max is reached.
+                    //  We should allow either going over the limit for a short time and disconnect
+                    //  right away or replace other peers while making sure that we are not
+                    //  in the middle of a conversation. We can achieve this by attaching some
+                    //  kind of mutex on peers. If we do this, it will play well with the timeout
+                    //  because it could wait for ending the conversation with the first furthest
+                    //  peers before disconnecting from it.
                     let cds = self.connect_to_light_nodes(cds).await;
                     nodes.extend(cds);
                 }
@@ -410,7 +417,8 @@ impl KademliaDht {
         &self,
         cds: HashSet<ConnectionData>,
     ) -> HashSet<ConnectionData> {
-        tokio::time::timeout(Duration::from_secs(5), async move {
+        let timeout = Duration::from_secs(5);
+        tokio::time::timeout(timeout, async move {
             let mut set = JoinSet::new();
             for cd in cds {
                 let connection_queue = self.light_peers.connection_queue.clone();
@@ -422,9 +430,11 @@ impl KademliaDht {
                 });
             }
             let mut res = HashSet::new();
-            while let Some(Ok((cd, connected))) = set.join_next().await {
-                if connected {
-                    res.insert(cd);
+            while let Some(data) = set.join_next().await {
+                if let Ok((cd, connected)) = data {
+                    if connected {
+                        res.insert(cd);
+                    }
                 }
             }
             res

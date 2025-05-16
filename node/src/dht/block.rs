@@ -141,6 +141,7 @@ impl DhtBlocks {
         n.try_into().unwrap()
     }
 
+    /// Compute an Iterator that lists all desired blocks until `max_block`.
     pub(crate) fn bucket_to_number_iter(&self, max_block: u64) -> impl Iterator<Item = u64> {
         struct BlockIter {
             bucket_range_iter: BucketRangeIter,

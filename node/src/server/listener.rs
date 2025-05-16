@@ -18,6 +18,7 @@ pub struct Listener {
 }
 
 impl Listener {
+    /// Instantiates the `Listener`. If the `network_port` is 0, it will be automatically set.
     pub async fn new(
         mut network_port: u16,
         config: Arc<ServerConfig>,
@@ -39,8 +40,6 @@ impl Listener {
 
     pub async fn start(self, node: Arc<Node>) -> ! {
         log::debug!("starting listening server");
-        // TODO automatically set port by using 0 if None and getting the local_addr
-        //  file:///home/francois/snowflake/target/doc/tokio/net/struct.TcpListener.html#method.bind
         log::debug!("tcp listener bound");
         let tls_acceptor = Arc::new(TlsAcceptor::from(self.config));
         let connections = Arc::new(Semaphore::new(self.max_connections));
@@ -55,10 +54,8 @@ impl Listener {
                         tokio::spawn(async move {
                             Self::manage_tls_incoming(node, tls_acceptor, stream, sock_addr).await;
                         });
-                        drop(handle);
                     } else {
                         log::debug!("rejecting before accepting more concurrent connections");
-                        drop(handle);
                         continue;
                     }
                 }
@@ -77,30 +74,31 @@ impl Listener {
             Ok(tls_stream) => {
                 let server_connection = tls_stream.get_ref().1;
                 let certs = server_connection.peer_certificates();
-                if let Some(certs) = certs {
-                    if let Some(cert) = certs.iter().next() {
-                        let x509_certificate = cert.as_ref().to_vec();
-                        let node_id = NodeId::from_cert(x509_certificate.clone());
-
-                        // TODO support peer replacements
-                        if let Err(err) = node.network.check_add_peer(&node_id) {
-                            log::debug!("{node_id}, {err}");
-                            return;
-                        }
-
-                        let tls = TlsStream::Server(tls_stream);
-                        let peer = Peer::new(node_id, x509_certificate, sock_addr, 0, tls);
-
-                        let hs_permit = node.hs_permit().await;
-
-                        if let Err(err) = node.loop_peer(hs_permit, peer, None).await {
-                            log::debug!("{err}");
-                        }
-                    } else {
-                        log::debug!("no certificate from listened connection");
-                    }
-                } else {
+                let Some(certs) = certs else {
                     log::debug!("no peer certs");
+                    return;
+                };
+                let Some(cert) = certs.iter().next() else {
+                    log::debug!("no certificate from listened connection");
+                    return;
+                };
+                
+                let x509_certificate = cert.as_ref().to_vec();
+                let node_id = NodeId::from_cert(x509_certificate.clone());
+
+                // TODO support peer replacements
+                if let Err(err) = node.network.check_add_peer(&node_id) {
+                    log::debug!("{node_id}, {err}");
+                    return;
+                }
+
+                let tls = TlsStream::Server(tls_stream);
+                let peer = Peer::new(node_id, x509_certificate, sock_addr, 0, tls);
+
+                let hs_permit = node.hs_permit().await;
+
+                if let Err(err) = node.loop_peer(hs_permit, peer, None).await {
+                    log::debug!("{err}");
                 }
             }
             Err(err) => log::debug!("on accepting TLS stream {err:?}"),
