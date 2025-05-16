@@ -239,8 +239,8 @@ impl KademliaDht {
         log::debug!("searching for value in dht {dht_id:?} at bucket {bucket}");
         let mut excluding = Vec::new();
         let mut worklist = Vec::new();
-        // TODO instead of a max_lookup, we should have a max nodes to query.
-        for _ in 0..max_lookups {
+        let mut lookups_remaining = max_lookups;
+        while lookups_remaining > 0 {
             let senders = {
                 let reserved = loop {
                     let mut reserved = Vec::new();
@@ -270,7 +270,10 @@ impl KademliaDht {
                     })
                     .collect()
             };
-            if let Ok(value_or_nodes) = self.iterative_lookup(dht_id, senders, bucket).await {
+            if let Ok(value_or_nodes) = self
+                .iterative_lookup(dht_id, senders, bucket, &mut lookups_remaining)
+                .await
+            {
                 match value_or_nodes {
                     ValueOrNodes::Value(value) => return Ok(value),
                     ValueOrNodes::Nodes(connections_data) => {
@@ -325,28 +328,34 @@ impl KademliaDht {
         dht_id: &DhtId,
         senders: Vec<(NodeId, PeerSender)>,
         bucket: &Bucket,
+        lookups_remaining: &mut usize,
     ) -> Result<ValueOrNodes<Vec<u8>>, LightError> {
         let mut set = JoinSet::new();
         let dht_id: u32 = dht_id.into();
         let bucket = bucket.to_be_bytes::<20>();
 
         for (_, sender) in senders {
-            let bucket = bucket.to_vec();
-            if let Ok(p2p::message::Message::AppRequest(app_request)) =
-                AppRequestMessage::encode(&self.chain_id, sdk::FindValue { dht_id, bucket })
-            {
-                let mail_tx = self.mail_tx.clone();
-                let chain_id = self.chain_id;
-                set.spawn(async move {
-                    sender
-                        .send_and_app_response(
-                            chain_id,
-                            constants::SNOWFLAKE_HANDLER_ID,
-                            &mail_tx,
-                            SubscribableMessage::AppRequest(app_request),
-                        )
-                        .await
-                });
+            if *lookups_remaining > 0 {
+                let bucket = bucket.to_vec();
+                if let Ok(p2p::message::Message::AppRequest(app_request)) =
+                    AppRequestMessage::encode(&self.chain_id, sdk::FindValue { dht_id, bucket })
+                {
+                    let mail_tx = self.mail_tx.clone();
+                    let chain_id = self.chain_id;
+                    set.spawn(async move {
+                        sender
+                            .send_and_app_response(
+                                chain_id,
+                                constants::SNOWFLAKE_HANDLER_ID,
+                                &mail_tx,
+                                SubscribableMessage::AppRequest(app_request),
+                            )
+                            .await
+                    });
+                    *lookups_remaining += 1;
+                }
+            } else {
+                break;
             }
         }
 

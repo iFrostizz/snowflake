@@ -15,6 +15,7 @@ use crate::server::{
 };
 use crate::stats;
 use crate::utils::constants::DEFAULT_DEADLINE;
+use crate::utils::twokhashmap::CompositeKey;
 use crate::utils::unpacker::StatelessBlock;
 use crate::utils::{
     bloom::{BloomError, Filter},
@@ -26,7 +27,7 @@ use futures::future;
 use indexmap::IndexMap;
 use prost::EncodeError;
 use proto_lib::p2p::message::Message;
-use proto_lib::p2p::{self, EngineType, GetAcceptedFrontier, GetAncestors};
+use proto_lib::p2p::{self, EngineType, Get, GetAcceptedFrontier, GetAncestors};
 use proto_lib::sdk;
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
@@ -499,8 +500,8 @@ impl Network {
         self: Arc<Network>,
         mut rx: broadcast::Receiver<()>,
     ) -> Result<(), NodeError> {
-        let light_network = self.light_network.clone();
-        let peer_bootstrap_process = tokio::spawn(light_network.sync_blocks());
+        let network = self.clone();
+        let peer_bootstrap_process = tokio::spawn(network.sync_blocks());
 
         if self.config.sync_headers {
             let sync_handle = tokio::spawn(self.bootstrap_headers());
@@ -582,6 +583,68 @@ impl Network {
                 bootstrapper = self.pick_random_bootstrapper().await;
             }
         }
+    }
+
+    /// Sync headers from peers using the Kademlia DHT
+    pub(crate) async fn sync_blocks(self: Arc<Self>) {
+        loop {
+            if let Ok(last_block) = self.latest_block().await {
+                let light_network = &self.light_network;
+                let blocks = light_network.block_dht.bucket_to_number_iter2(last_block);
+                for number in blocks {
+                    log::debug!("Syncing block {}", number);
+                    // TODO remove this once we have working e2e testing
+                    if number > 61000000 {
+                        if let Ok(block) = light_network
+                            .find_content(&light_network.block_dht, CompositeKey::First(number))
+                            .await
+                        {
+                            log::debug!("Found block {}", number);
+                            light_network.block_dht.store_block(block).unwrap();
+                            // TODO !
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    pub async fn latest_block(self: &Arc<Self>) -> Result<u64, NodeError> {
+        let chain_id = self.config.c_chain_id.as_ref().to_vec();
+        let bootstrapper = self.pick_random_bootstrapper().await;
+        let message = SubscribableMessage::GetAcceptedFrontier(GetAcceptedFrontier {
+            chain_id: chain_id.clone(),
+            request_id: rand::random(),
+            deadline: DEFAULT_DEADLINE,
+        });
+        let Some(Message::AcceptedFrontier(res)) = self
+            .send_to_peer(
+                &MessageOrSubscribable::Subscribable(message.clone()),
+                bootstrapper,
+            )
+            .await
+        else {
+            return Err(NodeError::Message("invalid message received".to_string()));
+        };
+
+        let message = SubscribableMessage::Get(Get {
+            chain_id,
+            request_id: rand::random(),
+            deadline: DEFAULT_DEADLINE,
+            container_id: res.container_id,
+        });
+        let Some(Message::Put(res)) = self
+            .send_to_peer(
+                &MessageOrSubscribable::Subscribable(message.clone()),
+                bootstrapper,
+            )
+            .await
+        else {
+            return Err(NodeError::Message("invalid message received".to_string()));
+        };
+        let block = StatelessBlock::unpack(&res.container)
+            .map_err(|_| NodeError::Message("invalid container received".to_string()))?;
+        Ok(u64::from_be_bytes(*block.block.header.number()))
     }
 
     pub async fn send_to_peer(

@@ -446,7 +446,13 @@ mod rpc_impl {
         ) -> RpcResult<StatelessBlock> {
             let number = match block_parameter {
                 BlockParameter::Number(number) => number,
-                _ => not_implemented!(), // TODO resolve block https://github.com/iFrostizz/snowflake/issues/50
+                BlockParameter::Earliest => 0,
+                BlockParameter::Latest
+                | BlockParameter::Finalized
+                | BlockParameter::Pending
+                | BlockParameter::Safe => self.node.network.latest_block().await.map_err(|_| {
+                    ErrorObject::borrowed(jsonrpc_errors::INTERNAL_ERROR, "block not found", None)
+                })?,
             };
             Ok(self
                 .node

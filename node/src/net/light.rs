@@ -8,7 +8,6 @@ use crate::net::queue::{ConnectionData, ConnectionQueue};
 use crate::net::RwLock;
 use crate::net::{LightError, Network};
 use crate::server::peers::PeerInfo;
-use crate::utils::twokhashmap::CompositeKey;
 use crate::utils::unpacker::StatelessBlock;
 use crate::Arc;
 use flume::Sender;
@@ -66,25 +65,6 @@ impl LightNetwork {
             block_dht,
             light_peers,
             config,
-        }
-    }
-
-    /// Sync headers from peers using the Kademlia DHT
-    pub(crate) async fn sync_blocks(self: Arc<Self>) {
-        let last_block = 62000000; // TODO request from bootstrap node
-        let blocks = self.block_dht.bucket_to_number_iter2(last_block);
-        for number in blocks {
-            log::debug!("Syncing block {}", number);
-            if number > 61000000 {
-                // TODO should just use the find_content function.
-                if let Ok(block) = self
-                    .find_content(&self.block_dht, CompositeKey::First(number))
-                    .await
-                {
-                    log::debug!("Found block {}", number);
-                    self.block_dht.store_block(block).unwrap(); // TODO !
-                }
-            }
         }
     }
 
