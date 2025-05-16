@@ -10,8 +10,7 @@ pub const ETH_MAINNET_ID: u64 = 43114;
 pub const ETH_FUJI_ID: u64 = 43113;
 
 /// max clock difference from peer in seconds
-#[allow(unused)] // TODO deny connections if their timestamp is too skewed
-pub const MAX_CLOCK_DIFF: u32 = 60;
+pub const MAX_CLOCK_DIFF: u64 = 60;
 
 pub static NETWORK: phf::Map<&'static str, u32> = phf_map! {
     "mainnet" => MAINNET_ID,

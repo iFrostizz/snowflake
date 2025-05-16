@@ -23,7 +23,7 @@ use crate::server::{
 use crate::utils::bls::Bls;
 use crate::utils::constants::SNOWFLAKE_HANDLER_ID;
 use crate::utils::unpacker::StatelessBlock;
-use crate::utils::{bloom::Filter, ip::ip_from_octets, packer::Packer};
+use crate::utils::{bloom::Filter, constants, ip::ip_from_octets, packer::Packer};
 use async_recursion::async_recursion;
 use flume::{Receiver, Sender};
 use indexmap::IndexMap;
@@ -39,7 +39,8 @@ use std::collections::{HashMap, HashSet};
 use std::io::{BufReader, ErrorKind};
 use std::net::SocketAddr;
 use std::sync::{Arc, RwLock};
-use std::time::Duration;
+use std::time::{Duration, Instant, SystemTime};
+use openssl::rsa::Rsa;
 use tokio::io::{split, ReadHalf, WriteHalf};
 use tokio::net::TcpStream;
 use tokio::sync::broadcast;
@@ -47,6 +48,7 @@ use tokio::sync::oneshot;
 use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
 use tokio_rustls::{TlsConnector, TlsStream};
+use crate::net::ip::UnsignedIp;
 
 pub mod ip;
 pub mod latency;
@@ -509,7 +511,7 @@ impl Peer {
             Message::Handshake(handshake) => {
                 let Handshake {
                     network_id,
-                    my_time: _, // TODO reject if too early
+                    my_time,
                     ip_addr,
                     ip_port,
                     ip_signing_time,
@@ -522,6 +524,23 @@ impl Peer {
                     ..
                 } = handshake;
 
+                let ip = ip_from_octets(ip_addr)
+                    .map_err(|_| NodeError::Message("failed to deserialize IP".to_string()))?;
+                let port = ip_port
+                    .try_into()
+                    .map_err(|_| NodeError::Message("failed to convert port".to_string()))?;
+                
+                let unsigned_ip = UnsignedIp::new(ip, port, ip_signing_time);
+                let public_key = Rsa::public_key_from_der(&self.identity.x509_certificate)?;
+                if !unsigned_ip.verify(&ip_node_id_sig, public_key)? {
+                    return Err(NodeError::Message("invalid node certificate".to_string()));
+                }
+
+                let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs();
+                if now.abs_diff(my_time) > constants::MAX_CLOCK_DIFF {
+                    return Err(NodeError::Message("timestamp is too skewed".to_string()));
+                }
+
                 // send a PeerList message according to their filter
                 self.channels
                     .spn
@@ -530,17 +549,8 @@ impl Peer {
                         known_peers,
                     })
                     .map_err(SendErrorWrapper::from)?;
-
-                let ip = ip_from_octets(ip_addr)
-                    .map_err(|_| NodeError::Message("failed to serialize IP".to_string()))?;
-                let port = ip_port
-                    .try_into()
-                    .map_err(|_| NodeError::Message("failed to convert port".to_string()))?;
                 let sock_addr = SocketAddr::new(ip, port);
 
-                // TODO check if the peer is already known because this will lead to message
-                //  amplification if connecting to snowflake clients.
-                //  Also, the PeerList should only be sent in that case.
                 self.channels
                     .spn
                     .send(PeerMessage::NewPeer {

@@ -412,8 +412,6 @@ impl Node {
                     }
 
                     drop(hs_permit);
-                } else {
-                    log::debug!("received NewPeer twice from permit {}", node_id);
                 }
             }
         }

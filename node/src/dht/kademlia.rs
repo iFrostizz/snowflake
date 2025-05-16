@@ -278,8 +278,6 @@ impl KademliaDht {
                 match value_or_nodes {
                     ValueOrNodes::Value(value) => return Ok(value),
                     ValueOrNodes::Nodes(connections_data) => {
-                        // TODO add those nodes, wait for them to be connected,
-                        //  and continue the lookup.
                         let nodes: Vec<_> = connections_data
                             .into_iter()
                             .filter_map(|c| {
@@ -380,7 +378,8 @@ impl KademliaDht {
                     }
                 }
                 sdk::light_response::Message::Nodes(p2p::PeerList { claimed_ip_ports }) => {
-                    // TODO: only pick nodes that are getting us closer to the bucket
+                    // TODO: only pick nodes that are getting us closer to the bucket.
+                    //  For that, don't only wait for the connection but also the light handshake.
                     if claimed_ip_ports.len() > 10 {
                         // disconnect and decrease reputation
                         continue;

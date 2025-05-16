@@ -30,13 +30,11 @@ where
         }
     }
 
-    pub fn insert(&mut self, key1: K1, key2: K2, value: V) -> Option<V> {
-        // TODO: return some value (or discard the return type?)
+    pub fn insert(&mut self, key1: K1, key2: K2, value: V) {
         let i = self.arr.len();
         self.arr.push(value);
         self.map1.insert(key1, i);
         self.map2.insert(key2, i);
-        None
     }
 
     pub fn get1(&self, key: &K1) -> Option<&V> {
