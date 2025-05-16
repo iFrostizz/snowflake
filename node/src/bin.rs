@@ -61,10 +61,6 @@ async fn main() -> Result<(), NodeError> {
     let network_config = args.network_config();
 
     let node = Arc::new(Node::new(network_config));
-    node.network
-        .light_network
-        .block_dht
-        .todo_attach_node(node.clone());
 
     let (node_tx, node_ops, server) = server(node.clone(), listener, &args).await;
 
@@ -120,12 +116,17 @@ async fn server(
 
     let (transaction_tx, transaction_rx) = flume::unbounded();
     let node2 = node.clone();
-    let (node_tx, node_rx) = broadcast::channel(1);
+    let (node_transaction_tx, node_transaction_rx) = broadcast::channel(1);
     let enable_metrics = args.enable_metrics;
     let metrics_port = args.metrics_port;
     let node_ops = tokio::task::spawn(async move {
         node2
-            .start(enable_metrics, metrics_port, transaction_rx, node_rx)
+            .start(
+                enable_metrics,
+                metrics_port,
+                transaction_rx,
+                node_transaction_rx,
+            )
             .await
     });
 
@@ -135,5 +136,5 @@ async fn server(
         Server::start(node2, listener, transaction_tx, rpc_port).await
     });
 
-    (node_tx, node_ops, server)
+    (node_transaction_tx, node_ops, server)
 }

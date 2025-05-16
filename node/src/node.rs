@@ -1,6 +1,9 @@
-use crate::dht::{LightMessage, LightResult};
+use crate::dht::block::DhtBlocks;
+use crate::dht::kademlia::ValueOrNodes;
+use crate::dht::{light_errors, DhtId, LightError, LightMessage, LightResult, LightValue};
 use crate::id::{Id, NodeId};
 use crate::message::SubscribableMessage;
+use crate::net::light::{DhtCodex, DhtContent};
 use crate::net::node::{AddPeerError, NetworkConfig};
 use crate::net::{
     light, node::NodeError, queue::ConnectionData, HandshakeInfos, Network, Peer, PeerMessage,
@@ -8,6 +11,9 @@ use crate::net::{
 use crate::server::msg::AppRequestMessage;
 use crate::server::peers::PeerInfo;
 use crate::stats::{self, Metrics};
+use crate::utils::constants::DEFAULT_DEADLINE;
+use crate::utils::twokhashmap::CompositeKey;
+use crate::utils::unpacker::StatelessBlock;
 use crate::utils::{
     bloom::{Filter, ReadFilter, ViewFilter},
     constants,
@@ -19,7 +25,8 @@ use indexmap::IndexMap;
 use openssl::x509;
 use prost::Message as _;
 use proto_lib::p2p::{
-    message::Message, AppGossip, BloomFilter, ClaimedIpPort, GetPeerList, PeerList,
+    message::Message, Accepted, AppGossip, BloomFilter, ClaimedIpPort, GetAccepted, GetPeerList,
+    PeerList,
 };
 use proto_lib::sdk;
 use std::collections::HashSet;
@@ -109,24 +116,27 @@ impl Node {
 
         let node = self.clone();
         let rx2 = rx.resubscribe();
-        let net = tokio::spawn(async move { node.loop_node_messages(rx2).await });
+        let net = tokio::spawn(node.loop_node_messages(rx2));
 
         let node = self.clone();
         let rx2 = rx.resubscribe();
-        let watch =
-            tokio::spawn(async move { node.watch_sent_transactions(transaction_rx, rx2).await });
+        let watch = tokio::spawn(node.watch_sent_transactions(transaction_rx, rx2));
 
         let network = self.network.clone();
         let rx2 = rx.resubscribe();
-        // TODO this is probably bad design to have the network being passed twice here.
-        // TODO The light network may be independent.
-        let light =
-            tokio::spawn(async move { network.light_network.start(network.clone(), rx2).await });
+        let light = tokio::spawn(network.start_light_network(rx2));
 
         let node = self.clone();
         let rx2 = rx.resubscribe();
         let mbox = tokio::spawn(async move {
             node.network.mail_box.start(rx2).await;
+            Ok(())
+        });
+
+        let node = self.clone();
+        let rx2 = rx.resubscribe();
+        let verif = tokio::spawn(async move {
+            node.start_verification_channel(rx2).await;
             Ok(())
         });
 
@@ -136,7 +146,7 @@ impl Node {
             Ok(())
         });
 
-        vec![conn, net, watch, light, mbox, pip]
+        vec![conn, net, watch, light, mbox, verif, pip]
     }
 
     /// A created connection that may create a new peer.
@@ -336,12 +346,12 @@ impl Node {
             tokio::select! {
                 res = rpn.recv_async() => {
                     if let Ok(msg) = res {
-                        self.manage_inner_message(node_id, msg, &mut maybe_hs_permit);
+                        self.manage_peer_message(node_id, msg, &mut maybe_hs_permit);
                     }
                 }
                 res = rpl.recv_async() => {
                     if let Ok((msg, resp)) = res {
-                        self.network.light_network.manage_message(node_id, msg, resp).await;
+                        self.manage_light_message(node_id, msg, resp).await;
                     }
                 }
                 _ = rx.recv() => {
@@ -351,7 +361,7 @@ impl Node {
         }
     }
 
-    fn manage_inner_message(
+    fn manage_peer_message(
         self: &Arc<Node>,
         node_id: NodeId,
         message: PeerMessage,
@@ -405,8 +415,162 @@ impl Node {
         }
     }
 
+    pub async fn manage_light_message(
+        &self,
+        node_id: NodeId,
+        message: LightMessage,
+        resp: Option<oneshot::Sender<LightResult>>,
+    ) {
+        let res = match message {
+            LightMessage::NewPeer(buckets) => {
+                self.network
+                    .light_network
+                    .light_peers
+                    .write()
+                    .insert(node_id, buckets);
+                None
+            }
+            LightMessage::Store(dht_id, value) => {
+                let res = match dht_id {
+                    DhtId::Block => match DhtBlocks::decode(&value) {
+                        Ok(block) => {
+                            if self.verify_block(&block).await.is_ok_and(|res| res) {
+                                self.network
+                                    .light_network
+                                    .block_dht
+                                    .store_block(block)
+                                    .map(|_| LightValue::Ok)
+                            } else {
+                                Err(light_errors::INVALID_CONTENT)
+                            }
+                        }
+                        Err(err) => Err(err),
+                    },
+                    _ => Err(light_errors::INVALID_DHT),
+                };
+                Some(res)
+            }
+            LightMessage::FindNode(bucket) => {
+                let res = Ok(LightValue::ValueOrNodes(ValueOrNodes::Nodes(
+                    self.network.light_network.kademlia_dht.find_node(&bucket),
+                )));
+                Some(res)
+            }
+            LightMessage::FindValue(dht_id, bucket) => {
+                let res = match dht_id {
+                    DhtId::Block => self
+                        .network
+                        .light_network
+                        .find_value(&self.network.light_network.block_dht.dht.store, &bucket),
+                    _ => Err(light_errors::INVALID_DHT),
+                };
+                Some(res)
+            }
+            LightMessage::Nodes(cds) => {
+                let cds = cds
+                    .into_iter()
+                    .filter(|c| c.node_id != self.network.node_id)
+                    .collect::<Vec<_>>();
+                if !cds.is_empty() {
+                    self.network
+                        .light_network
+                        .light_peers
+                        .potentially_add_nodes(cds);
+                }
+                None
+            }
+        };
+
+        match (res, resp) {
+            (Some(res), Some(resp)) => {
+                let _ = resp.send(res);
+            }
+            (None, None) => (),
+            _ => {
+                log::error!("unexpected state for res and resp values");
+                log::error!("this is a logic bug. please report it.");
+                // unreachable!();
+            }
+        }
+    }
+
+    pub async fn start_verification_channel(&self, mut rx: broadcast::Receiver<()>) {
+        let verification_rx = self.network.verification_rx.clone();
+        loop {
+            tokio::select! {
+                maybe_block = verification_rx.recv_async() => {
+                    if let Ok((block, tx)) = maybe_block {
+                        let res = self.verify_block(&block).await;
+                        let _ = tx.send(res.is_ok_and(|res| res));
+                    }
+                },
+                _ = rx.recv() => return
+            }
+        }
+    }
+
+    async fn verify_block(&self, block: &StatelessBlock) -> Result<bool, LightError> {
+        let number = u64::from_be_bytes(*block.block.header.number());
+        let hash = block.block.hash;
+        if self
+            .network
+            .light_network
+            .block_dht
+            .get_from_store(CompositeKey::Both(number, hash))?
+            .is_some()
+        {
+            return Ok(true);
+        }
+        if self
+            .network
+            .light_network
+            .block_dht
+            .verified_blocks
+            .read()
+            .unwrap()
+            .contains(block.id())
+        {
+            return Ok(true);
+        }
+        let bootstrapper = self.network.pick_random_bootstrapper().await;
+        let message = SubscribableMessage::GetAccepted(GetAccepted {
+            chain_id: self.network.config.c_chain_id.as_ref().to_vec(),
+            request_id: rand::random(),
+            deadline: DEFAULT_DEADLINE,
+            container_ids: vec![block.id().as_ref().to_vec()],
+        });
+        let res = self
+            .network
+            .send_to_peer(&MessageOrSubscribable::Subscribable(message), bootstrapper)
+            .await;
+        if let Some(Message::Accepted(Accepted {
+            chain_id,
+            container_ids,
+            ..
+        })) = res
+        {
+            if chain_id != self.network.config.c_chain_id.as_ref().to_vec() {
+                return Err(light_errors::INVALID_CONTENT);
+            }
+            if container_ids == vec![block.id().as_ref().to_vec()] {
+                self.network
+                    .light_network
+                    .block_dht
+                    .verified_blocks
+                    .write()
+                    .unwrap()
+                    .insert(*block.id());
+                Ok(true)
+            } else {
+                Ok(false)
+            }
+        } else {
+            Err(light_errors::INVALID_CONTENT)
+        }
+    }
+
     async fn watch_sent_transactions(
-        self: &Arc<Node>,
+        self: Arc<Node>,
         transaction_rx: Receiver<(Vec<u8>, Instant)>,
         mut rx: broadcast::Receiver<()>,
     ) -> Result<(), NodeError> {
@@ -460,7 +624,7 @@ impl Node {
     }
 
     async fn loop_node_messages(
-        self: &Arc<Node>,
+        self: Arc<Node>,
         mut rx: broadcast::Receiver<()>,
     ) -> Result<(), NodeError> {
         let intervals = &self.network.config.intervals;

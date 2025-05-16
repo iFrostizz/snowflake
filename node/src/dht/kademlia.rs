@@ -1,19 +1,23 @@
+use crate::dht::block::DhtBlocks;
 use crate::dht::{light_errors, Bucket, BucketDht, ConcreteDht, DhtBuckets, DhtId, LightError};
 use crate::id::{ChainId, NodeId};
 use crate::message::mail_box::Mail;
 use crate::message::SubscribableMessage;
+use crate::net::light::DhtCodex;
 use crate::net::light::LightPeers;
 use crate::net::queue::ConnectionData;
 use crate::server::msg::AppRequestMessage;
 use crate::server::peers::{PeerInfo, PeerSender};
 use crate::utils::constants;
 use crate::utils::twokhashmap::{CompositeKey, DoubleKeyedHashMap};
+use crate::utils::unpacker::StatelessBlock;
 use alloy::primitives::FixedBytes;
 use flume::Sender;
 use indexmap::IndexMap;
 use proto_lib::{p2p, sdk};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock, RwLockReadGuard};
+use tokio::sync::oneshot;
 use tokio::task::JoinSet;
 
 pub trait LockedMapDb<V> {
@@ -98,6 +102,7 @@ pub struct KademliaDht {
     pub peers_infos: Arc<RwLock<IndexMap<NodeId, PeerInfo>>>,
     light_peers: LightPeers,
     pub mail_tx: Sender<Mail>,
+    verification_tx: Sender<(StatelessBlock, oneshot::Sender<bool>)>,
     pub chain_id: ChainId,
     /// Maximum number of nodes to return in a `find_node` request.
     max_nodes: usize,
@@ -115,6 +120,7 @@ impl KademliaDht {
         peers_infos: Arc<RwLock<IndexMap<NodeId, PeerInfo>>>,
         light_peers: LightPeers,
         mail_tx: Sender<Mail>,
+        verification_tx: Sender<(StatelessBlock, oneshot::Sender<bool>)>,
         chain_id: ChainId,
         max_nodes: usize,
         node_id: NodeId,
@@ -123,6 +129,7 @@ impl KademliaDht {
             peers_infos,
             light_peers,
             mail_tx,
+            verification_tx,
             chain_id,
             max_nodes,
             node_id,
@@ -350,9 +357,17 @@ impl KademliaDht {
             };
             match light_message {
                 sdk::light_response::Message::Value(sdk::Value { value }) => {
-                    // TODO verify data using publicly available data and return if successful.
-                    //  if not successful, disconnect from node and decrease reputation
-                    return Ok(ValueOrNodes::Value(value));
+                    if let Ok(block) = DhtBlocks::decode(&value) {
+                        let (tx, rx) = oneshot::channel();
+                        self.verification_tx.send((block, tx)).unwrap();
+                        if rx.await.unwrap() {
+                            return Ok(ValueOrNodes::Value(value));
+                        } else {
+                            continue;
+                        }
+                    } else {
+                        continue;
+                    }
                 }
                 sdk::light_response::Message::Nodes(p2p::PeerList { claimed_ip_ports }) => {
                     // TODO: only pick nodes that are getting us closer to the bucket
@@ -502,10 +517,12 @@ mod tests {
             Some(light_peers_data.len()),
         );
         light_peers.write().extend(light_peers_data);
+        let (verification_tx, _) = flume::unbounded();
         let dht: KademliaDht = KademliaDht::new(
             peer_infos,
             light_peers,
             mail_tx,
+            verification_tx,
             ChainId::from([0; 32]),
             3,
             Default::default(),

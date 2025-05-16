@@ -143,7 +143,6 @@ impl Args {
         }
     }
 
-    // TODO from args
     fn back_off(&self) -> BackoffParams {
         BackoffParams {
             initial_duration: Duration::from_secs(1),

@@ -22,6 +22,7 @@ use crate::server::{
 };
 use crate::utils::bls::Bls;
 use crate::utils::constants::SNOWFLAKE_HANDLER_ID;
+use crate::utils::unpacker::StatelessBlock;
 use crate::utils::{bloom::Filter, ip::ip_from_octets, packer::Packer};
 use async_recursion::async_recursion;
 use flume::{Receiver, Sender};
@@ -92,7 +93,8 @@ pub struct Network {
     pub node_pop: Vec<u8>,
     pub handshake_semaphore: Arc<Semaphore>,
     pub mail_box: Arc<MailBox>,
-    pub light_network: LightNetwork,
+    pub light_network: Arc<LightNetwork>,
+    pub verification_rx: Receiver<(StatelessBlock, oneshot::Sender<bool>)>,
 }
 
 /// Intervals of operations in milliseconds

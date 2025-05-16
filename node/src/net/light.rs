@@ -1,14 +1,15 @@
 use crate::dht::block::DhtBlocks;
 use crate::dht::kademlia::{KademliaDht, LockedMapDb, ValueOrNodes};
-use crate::dht::{light_errors, DhtBuckets, LightValue};
-use crate::dht::{Bucket, ConcreteDht, DhtId, LightMessage, LightResult};
+use crate::dht::{Bucket, ConcreteDht, DhtId, LightResult};
+use crate::dht::{DhtBuckets, LightValue};
 use crate::id::{ChainId, NodeId};
 use crate::message::mail_box::Mail;
-use crate::net::node::NodeError;
 use crate::net::queue::{ConnectionData, ConnectionQueue};
 use crate::net::RwLock;
 use crate::net::{LightError, Network};
 use crate::server::peers::PeerInfo;
+use crate::utils::twokhashmap::CompositeKey;
+use crate::utils::unpacker::StatelessBlock;
 use crate::Arc;
 use flume::Sender;
 use indexmap::IndexMap;
@@ -16,20 +17,18 @@ use indexmap::IndexMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::{LockResult, RwLockReadGuard, RwLockWriteGuard};
-use tokio::sync::broadcast;
 use tokio::sync::oneshot;
 
 #[derive(Debug)]
 pub struct LightNetworkConfig {
-    pub sync_headers: bool,
     pub max_lookups: usize,
     pub alpha: usize,
     pub dht_buckets: DhtBuckets,
+    pub max_light_peers: Option<usize>,
 }
 
 #[derive(Debug)]
 pub struct LightNetwork {
-    node_id: NodeId,
     pub kademlia_dht: KademliaDht,
     pub block_dht: Arc<DhtBlocks>,
     pub light_peers: LightPeers,
@@ -42,27 +41,27 @@ impl LightNetwork {
         peers_infos: Arc<RwLock<IndexMap<NodeId, PeerInfo>>>,
         connection_queue: Arc<ConnectionQueue>,
         mail_tx: Sender<Mail>,
+        verification_tx: Sender<(StatelessBlock, oneshot::Sender<bool>)>,
         chain_id: ChainId,
         config: LightNetworkConfig,
-        max_light_peers: Option<usize>,
     ) -> Self {
         let block_dht = Arc::new(DhtBlocks::new(node_id, config.dht_buckets.block));
         let light_peers = LightPeers::new(
             node_id,
             peers_infos.clone(),
             connection_queue,
-            max_light_peers,
+            config.max_light_peers,
         );
         let kademlia_dht = KademliaDht::new(
             peers_infos,
             light_peers.clone(),
             mail_tx,
+            verification_tx,
             chain_id,
             10,
             node_id,
         );
         Self {
-            node_id,
             kademlia_dht,
             block_dht,
             light_peers,
@@ -70,96 +69,27 @@ impl LightNetwork {
         }
     }
 
-    pub async fn start(
-        &self,
-        network: Arc<Network>,
-        mut rx: broadcast::Receiver<()>,
-    ) -> Result<(), NodeError> {
-        let block_dht = self.block_dht.clone();
-        let kademlia_dht = self.kademlia_dht.clone();
-        let peer_bootstrap_process = tokio::spawn(block_dht.sync_blocks(kademlia_dht));
-
-        if self.config.sync_headers {
-            let block_dht = self.block_dht.clone();
-            let sync_handle = tokio::spawn(block_dht.sync_headers(network, rx.resubscribe()));
-
-            tokio::select! {
-                _ = sync_handle => {},
-                _ = peer_bootstrap_process => {},
-                _ = rx.recv() => {},
-            }
-        } else {
-            tokio::select! {
-                _ = peer_bootstrap_process => {},
-                _ = rx.recv() => {},
-            }
-        }
-
-        Ok(())
-    }
-
-    pub async fn manage_message(
-        &self,
-        node_id: NodeId,
-        message: LightMessage,
-        resp: Option<oneshot::Sender<LightResult>>,
-    ) {
-        let res = match message {
-            LightMessage::NewPeer(buckets) => {
-                self.light_peers.write().insert(node_id, buckets);
-                None
-            }
-            LightMessage::Store(dht_id, value) => {
-                let res = match dht_id {
-                    DhtId::Block => self
-                        .block_dht
-                        .insert_block(value)
-                        .await
-                        .map(|_| LightValue::Ok),
-                    _ => Err(light_errors::INVALID_DHT),
-                };
-                Some(res)
-            }
-            LightMessage::FindNode(bucket) => {
-                let res = Ok(LightValue::ValueOrNodes(ValueOrNodes::Nodes(
-                    self.kademlia_dht.find_node(&bucket),
-                )));
-                Some(res)
-            }
-            LightMessage::FindValue(dht_id, bucket) => {
-                let res = match dht_id {
-                    DhtId::Block => self.find_value(&self.block_dht.dht.store, &bucket),
-                    _ => Err(light_errors::INVALID_DHT),
-                };
-                Some(res)
-            }
-            LightMessage::Nodes(cds) => {
-                let cds = cds
-                    .into_iter()
-                    .filter(|c| c.node_id != self.node_id)
-                    .collect::<Vec<_>>();
-                if !cds.is_empty() {
-                    self.light_peers.potentially_add_nodes(cds);
+    /// Sync headers from peers using the Kademlia DHT
+    pub(crate) async fn sync_blocks(self: Arc<Self>) {
+        let last_block = 62000000; // TODO request from bootstrap node
+        let blocks = self.block_dht.bucket_to_number_iter2(last_block);
+        for number in blocks {
+            log::debug!("Syncing block {}", number);
+            if number > 61000000 {
+                // TODO should just use the find_content function.
+                if let Ok(block) = self
+                    .find_content(&self.block_dht, CompositeKey::First(number))
+                    .await
+                {
+                    log::debug!("Found block {}", number);
+                    self.block_dht.store_block(block).unwrap(); // TODO !
                 }
-                None
-            }
-        };
-
-        match (res, resp) {
-            (Some(res), Some(resp)) => {
-                let _ = resp.send(res);
-            }
-            (None, None) => (),
-            _ => {
-                log::error!("unexpected state for res and resp values");
-                log::error!("this is a logic bug. please report it.");
-                // unreachable!();
             }
         }
     }
 
     /// Lookup locally for a value or nodes spanning the bucket.
-    fn find_value<DB>(&self, db: &DB, bucket: &Bucket) -> LightResult
+    pub(crate) fn find_value<DB>(&self, db: &DB, bucket: &Bucket) -> LightResult
     where
         DB: LockedMapDb<Vec<u8>>,
     {
@@ -222,7 +152,8 @@ pub trait DhtCodex<V> {
     /// Verification of the validity of the content.
     /// It is used to check if the content is well-formed.
     /// If the content is ill-formed, it should not be stored.
-    async fn verify(&self, value: &V) -> Result<bool, LightError>;
+    // TODO this function should not be part of the codex but instead something higher-level.
+    fn verify(&self, value: &V) -> Result<bool, LightError>;
     /// Typed to encoded value
     fn encode(value: V) -> Result<Vec<u8>, LightError>;
     /// Encoded to typed value
@@ -427,6 +358,7 @@ mod tests {
     use super::*;
     use crate::server::peers::PeerSender;
     use std::collections::HashMap;
+    use tokio::sync::broadcast;
 
     #[test]
     fn test_check_interesting_node_ids() {

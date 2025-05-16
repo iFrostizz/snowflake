@@ -1,31 +1,19 @@
-use crate::dht::kademlia::{KademliaDht, LockedMapDb};
+use crate::dht::kademlia::LockedMapDb;
 use crate::dht::{light_errors, Bucket, DhtId, LightError};
 use crate::dht::{ConcreteDht, Dht};
 use crate::id::{BlockID, NodeId};
-use crate::message::SubscribableMessage;
 use crate::net::light::{DhtCodex, DhtContent};
-use crate::net::Network;
-use crate::node::{MessageOrSubscribable, Node, SinglePickerConfig};
-use crate::utils::constants::DEFAULT_DEADLINE;
 use crate::utils::twokhashmap::{CompositeKey, DoubleKeyedHashMap};
 use crate::utils::unpacker::StatelessBlock;
 use crate::utils::FIFOSet;
-use crate::Arc;
-use alloy::primitives::U256;
 use alloy::primitives::{keccak256, FixedBytes};
-use proto_lib::p2p::message::Message;
-use proto_lib::p2p::GetAcceptedFrontier;
-use proto_lib::p2p::{Accepted, GetAccepted};
-use proto_lib::p2p::{EngineType, GetAncestors};
+use alloy::primitives::{B256, U256};
 use std::cmp::Ordering;
 use std::ops::RangeInclusive;
-use std::sync::{Mutex, RwLock};
-use std::time::Duration;
-use tokio::sync::broadcast;
+use std::sync::RwLock;
 
 #[derive(Debug)]
 pub struct DhtBlocks {
-    node: Mutex<Option<Arc<Node>>>,
     pub dht: Dht<RwLock<DoubleKeyedHashMap<Bucket, Bucket, Vec<u8>>>>,
     pub verified_blocks: RwLock<FIFOSet<BlockID>>,
 }
@@ -35,51 +23,16 @@ impl DhtCodex<StatelessBlock> for DhtBlocks {
         DhtId::Block
     }
 
-    async fn verify(&self, block: &StatelessBlock) -> Result<bool, LightError> {
+    fn verify(&self, block: &StatelessBlock) -> Result<bool, LightError> {
         let number = u64::from_be_bytes(*block.block.header.number());
-        let block_id = block.block.hash;
+        let hash = block.block.hash;
         if self
-            .get_from_store(CompositeKey::Both(number, block_id))?
+            .get_from_store(CompositeKey::Both(number, hash))?
             .is_some()
         {
             return Ok(true);
         }
-        if self.verified_blocks.read().unwrap().contains(block.id()) {
-            return Ok(true);
-        }
-        let node = self.node.lock().unwrap().clone().unwrap();
-        let bootstrapper = Self::pick_random_bootstrapper(&node.network).await;
-        let message = SubscribableMessage::GetAccepted(GetAccepted {
-            chain_id: node.network.config.c_chain_id.as_ref().to_vec(),
-            request_id: rand::random(),
-            deadline: DEFAULT_DEADLINE,
-            container_ids: vec![block.id().as_ref().to_vec()],
-        });
-        let res = node
-            .network
-            .send_to_peer(
-                &MessageOrSubscribable::Subscribable(message.clone()),
-                bootstrapper,
-            )
-            .await;
-        if let Some(Message::Accepted(Accepted {
-            chain_id,
-            request_id: _request_id,
-            container_ids,
-        })) = res
-        {
-            if chain_id != node.network.config.c_chain_id.as_ref().to_vec() {
-                return Err(light_errors::INVALID_CONTENT);
-            }
-            if container_ids == vec![block.id().as_ref().to_vec()] {
-                self.verified_blocks.write().unwrap().insert(*block.id());
-                Ok(true)
-            } else {
-                Ok(false)
-            }
-        } else {
-            Err(light_errors::INVALID_CONTENT)
-        }
+        Ok(self.verified_blocks.read().unwrap().contains(block.id()))
     }
 
     fn encode(value: StatelessBlock) -> Result<Vec<u8>, LightError> {
@@ -133,17 +86,15 @@ impl DhtContent<CompositeKey<u64, FixedBytes<32>>, StatelessBlock> for DhtBlocks
     async fn insert_to_store(&self, bytes: Vec<u8>) -> Result<Option<StatelessBlock>, LightError> {
         let decoded = Self::decode(&bytes)?;
         let number = u64::from_be_bytes(*decoded.block.header.number());
-        let block_id = decoded.block.hash;
-        if self.dht.is_desired_bucket(&number.to_bucket())
-            || self.dht.is_desired_bucket(&block_id.to_bucket())
-        {
-            if !self.verify(&decoded).await? {
+        let hash = decoded.block.hash;
+        if self.is_desired_bucket(number, hash) {
+            if !self.verify(&decoded)? {
                 return Err(light_errors::INVALID_CONTENT);
             }
             match self
                 .dht
                 .store
-                .insert(CompositeKey::Both(number, block_id), bytes)
+                .insert(CompositeKey::Both(number, hash), bytes)
             {
                 Some(ret_bytes) => Ok(Some(Self::decode(&ret_bytes)?)),
                 None => Ok(None),
@@ -157,105 +108,28 @@ impl DhtContent<CompositeKey<u64, FixedBytes<32>>, StatelessBlock> for DhtBlocks
 impl DhtBlocks {
     pub(crate) fn new(node_id: NodeId, k: Bucket) -> Self {
         Self {
-            node: Mutex::new(None),
             dht: Dht::new(node_id, k, RwLock::new(DoubleKeyedHashMap::new())),
             verified_blocks: RwLock::new(FIFOSet::new(10000)),
         }
     }
 
-    pub fn todo_attach_node(&self, node: Arc<Node>) {
-        *self.node.lock().unwrap() = Some(node);
+    pub fn is_desired_bucket(&self, number: u64, hash: B256) -> bool {
+        self.dht.is_desired_bucket(&number.to_bucket())
+            || self.dht.is_desired_bucket(&hash.to_bucket())
     }
 
-    // TODO here we mostly need the network. Rewrite this function.
-    async fn sync_process(self: Arc<Self>, network: Arc<Network>) {
-        let chain_id = network.config.c_chain_id.as_ref().to_vec();
-        let mut bootstrapper = Self::pick_random_bootstrapper(&network).await;
-
-        let message = SubscribableMessage::GetAcceptedFrontier(GetAcceptedFrontier {
-            chain_id: chain_id.clone(),
-            request_id: rand::random(),
-            deadline: DEFAULT_DEADLINE,
-        });
-        let message = loop {
-            if let Some(Message::AcceptedFrontier(res)) = network
-                .send_to_peer(
-                    &MessageOrSubscribable::Subscribable(message.clone()),
-                    bootstrapper,
-                )
-                .await
-            {
-                break res;
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        };
-
-        let mut last_container_id = message.container_id;
-        loop {
-            let message = SubscribableMessage::GetAncestors(GetAncestors {
-                chain_id: chain_id.clone(),
-                request_id: rand::random(),
-                deadline: DEFAULT_DEADLINE,
-                container_id: last_container_id.clone(),
-                engine_type: EngineType::Snowman.into(),
-            });
-            let message = loop {
-                if let Some(Message::Ancestors(res)) = network
-                    .send_to_peer(
-                        &MessageOrSubscribable::Subscribable(message.clone()),
-                        bootstrapper,
-                    )
-                    .await
-                {
-                    break res;
-                }
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            };
-
-            let len = message.containers.len();
-            log::debug!("Syncing {} containers", len);
-            for (i, container) in message.containers.into_iter().enumerate() {
-                // TODO unlikely but should handle.
-                let block = StatelessBlock::unpack(&container).unwrap();
-                if i == len - 1 {
-                    last_container_id = block.id().as_ref().to_vec();
-                }
-                self.verified_blocks.write().unwrap().insert(*block.id());
-                self.store_block(block);
-                bootstrapper = Self::pick_random_bootstrapper(&network).await;
-            }
-        }
-    }
-
-    fn store_block(&self, block: StatelessBlock) {
+    pub(crate) fn store_block(&self, block: StatelessBlock) -> Result<(), LightError> {
         let number = u64::from_be_bytes(*block.block.header.number());
         let hash = block.block.hash;
-        if self.dht.is_desired_bucket(&number.to_bucket()) {
-            self.dht.store.insert(
-                CompositeKey::Both(number, hash),
-                Self::encode(block).unwrap(), // TODO unlikely but should handle.
-            );
-        }
-    }
-
-    /// Sync headers from peers using the Kademlia DHT
-    pub(crate) async fn sync_blocks(self: Arc<Self>, kademlia_dht: KademliaDht) {
-        // let last_block = 70000000; // TODO request from bootstrap node
-        let last_block = 62000000;
-        let blocks = self.bucket_to_number_iter2(last_block);
-        for block_key in blocks {
-            log::debug!("Syncing block {}", block_key);
-            if block_key > 61000000 {
-                // TODO should just use the find_content function.
-                if let Ok(block_bytes) = kademlia_dht
-                    .search_value(&DhtId::Block, &block_key.to_bucket(), 10, 3)
-                    .await
-                {
-                    log::debug!("Found block {}", block_key);
-                    let block = Self::decode(&block_bytes).unwrap(); // TODO !
-                    self.store_block(block);
-                }
-            }
+        if self.dht.is_desired_bucket(&number.to_bucket())
+            || self.dht.is_desired_bucket(&hash.to_bucket())
+        {
+            self.dht
+                .store
+                .insert(CompositeKey::Both(number, hash), Self::encode(block)?);
+            Ok(())
+        } else {
+            Err(light_errors::UNDESIRED_BUCKET)
         }
     }
 
@@ -273,7 +147,7 @@ impl DhtBlocks {
         n.try_into().unwrap()
     }
 
-    fn bucket_to_number_iter2(&self, max_block: u64) -> impl Iterator<Item = u64> {
+    pub(crate) fn bucket_to_number_iter2(&self, max_block: u64) -> impl Iterator<Item = u64> {
         struct BlockIter {
             bucket_range_iter: BucketRangeIter,
             last_range: RangeInclusive<u64>,
@@ -377,56 +251,6 @@ impl DhtBlocks {
 
         let (bucket_lo, bucket_hi) = self.dht.bucket_dht.bucket_range();
         BlockIter::new(*bucket_lo, *bucket_hi, max_block)
-    }
-
-    pub async fn sync_headers(
-        self: Arc<Self>,
-        network: Arc<Network>,
-        mut rx: broadcast::Receiver<()>,
-    ) {
-        let dht = self.clone();
-        let bootstrap_process = tokio::spawn(dht.sync_process(network));
-        tokio::select! {
-            _ = bootstrap_process => {},
-            _ = rx.recv() => {},
-        }
-    }
-
-    async fn pick_random_bootstrapper(network: &Arc<Network>) -> NodeId {
-        let mut maybe_bootstrapper = Network::pick_peer(
-            &network.peers_infos,
-            &network.bootstrappers,
-            SinglePickerConfig::Bootstrapper,
-        );
-        while maybe_bootstrapper.is_none() {
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            maybe_bootstrapper = Network::pick_peer(
-                &network.peers_infos,
-                &network.bootstrappers,
-                SinglePickerConfig::Bootstrapper,
-            );
-        }
-        maybe_bootstrapper.unwrap()
-    }
-
-    pub async fn insert_block(&self, bytes: Vec<u8>) -> Result<(), LightError> {
-        let decoded = Self::decode(&bytes)?;
-
-        let number = u64::from_be_bytes(*decoded.block.header.number());
-        let hash = decoded.block.hash;
-        if self.dht.is_desired_bucket(&number.to_bucket())
-            || self.dht.is_desired_bucket(&hash.to_bucket())
-        {
-            if !self.verify(&decoded).await? {
-                return Err(light_errors::INVALID_CONTENT);
-            }
-            self.dht
-                .store
-                .insert(CompositeKey::Both(number, hash), bytes);
-            Ok(())
-        } else {
-            Err(light_errors::UNDESIRED_BUCKET)
-        }
     }
 }
 

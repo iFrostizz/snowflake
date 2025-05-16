@@ -2,7 +2,7 @@ use crate::client::config;
 use crate::dht::DhtBuckets;
 use crate::id::{ChainId, NodeId};
 use crate::message::mail_box::MailBox;
-use crate::message::{pipeline::Pipeline, MiniMessage};
+use crate::message::{pipeline::Pipeline, MiniMessage, SubscribableMessage};
 use crate::net::light::{LightNetwork, LightNetworkConfig};
 use crate::net::queue::ConnectionQueue;
 use crate::net::{ip::UnsignedIp, BackoffParams, Intervals, Network, PeerInfo};
@@ -14,6 +14,8 @@ use crate::server::{
     tcp::write_stream_message,
 };
 use crate::stats;
+use crate::utils::constants::DEFAULT_DEADLINE;
+use crate::utils::unpacker::StatelessBlock;
 use crate::utils::{
     bloom::{BloomError, Filter},
     bls::Bls,
@@ -24,7 +26,7 @@ use futures::future;
 use indexmap::IndexMap;
 use prost::EncodeError;
 use proto_lib::p2p::message::Message;
-use proto_lib::p2p::{self};
+use proto_lib::p2p::{self, EngineType, GetAcceptedFrontier, GetAncestors};
 use proto_lib::sdk;
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
@@ -200,20 +202,22 @@ impl Network {
         let bootstrappers = RwLock::new(config.bootstrappers.clone());
 
         let connection_queue = Arc::new(ConnectionQueue::new(config.max_out_connections));
+        let (verification_tx, verification_rx) = flume::unbounded();
         let light_network = LightNetwork::new(
             node_id,
             peers_infos.clone(),
             connection_queue.clone(),
             mail_box.tx().clone(),
+            verification_tx,
             config.c_chain_id,
             LightNetworkConfig {
-                sync_headers: config.sync_headers,
                 max_lookups: 10,
                 alpha: 3,
                 dht_buckets: config.dht_buckets.clone(),
+                max_light_peers: config.max_light_peers,
             },
-            config.max_light_peers,
         );
+        let light_network = Arc::new(light_network);
 
         Ok(Self {
             node_id,
@@ -231,6 +235,7 @@ impl Network {
             handshake_semaphore,
             mail_box,
             light_network,
+            verification_rx,
         })
     }
 
@@ -471,6 +476,112 @@ impl Network {
             return Err(AddPeerError::MaxPeersReached.into());
         }
         Ok(())
+    }
+
+    pub(crate) async fn pick_random_bootstrapper(self: &Arc<Network>) -> NodeId {
+        let mut maybe_bootstrapper = Network::pick_peer(
+            &self.peers_infos,
+            &self.bootstrappers,
+            SinglePickerConfig::Bootstrapper,
+        );
+        while maybe_bootstrapper.is_none() {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            maybe_bootstrapper = Network::pick_peer(
+                &self.peers_infos,
+                &self.bootstrappers,
+                SinglePickerConfig::Bootstrapper,
+            );
+        }
+        maybe_bootstrapper.unwrap()
+    }
+
+    pub async fn start_light_network(
+        self: Arc<Network>,
+        mut rx: broadcast::Receiver<()>,
+    ) -> Result<(), NodeError> {
+        let light_network = self.light_network.clone();
+        let peer_bootstrap_process = tokio::spawn(light_network.sync_blocks());
+
+        if self.config.sync_headers {
+            let sync_handle = tokio::spawn(self.bootstrap_headers());
+
+            tokio::select! {
+                _ = sync_handle => {},
+                _ = peer_bootstrap_process => {},
+                _ = rx.recv() => {},
+            }
+        } else {
+            tokio::select! {
+                _ = peer_bootstrap_process => {},
+                _ = rx.recv() => {},
+            }
+        }
+
+        Ok(())
+    }
+
+    pub async fn bootstrap_headers(self: Arc<Network>) {
+        let chain_id = self.config.c_chain_id.as_ref().to_vec();
+        let mut bootstrapper = self.pick_random_bootstrapper().await;
+
+        let message = SubscribableMessage::GetAcceptedFrontier(GetAcceptedFrontier {
+            chain_id: chain_id.clone(),
+            request_id: rand::random(),
+            deadline: DEFAULT_DEADLINE,
+        });
+        let message = loop {
+            if let Some(Message::AcceptedFrontier(res)) = self
+                .send_to_peer(
+                    &MessageOrSubscribable::Subscribable(message.clone()),
+                    bootstrapper,
+                )
+                .await
+            {
+                break res;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        };
+
+        let mut last_container_id = message.container_id;
+        loop {
+            let message = SubscribableMessage::GetAncestors(GetAncestors {
+                chain_id: chain_id.clone(),
+                request_id: rand::random(),
+                deadline: DEFAULT_DEADLINE,
+                container_id: last_container_id.clone(),
+                engine_type: EngineType::Snowman.into(),
+            });
+            let message = loop {
+                if let Some(Message::Ancestors(res)) = self
+                    .send_to_peer(
+                        &MessageOrSubscribable::Subscribable(message.clone()),
+                        bootstrapper,
+                    )
+                    .await
+                {
+                    break res;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            };
+
+            let len = message.containers.len();
+            log::debug!("Syncing {} containers", len);
+            for (i, container) in message.containers.into_iter().enumerate() {
+                // TODO unlikely but should handle.
+                let block = StatelessBlock::unpack(&container).unwrap();
+                if i == len - 1 {
+                    last_container_id = block.id().as_ref().to_vec();
+                }
+                let block_dht = &self.light_network.block_dht;
+                block_dht
+                    .verified_blocks
+                    .write()
+                    .unwrap()
+                    .insert(*block.id());
+                block_dht.store_block(block).unwrap(); // TODO!
+                bootstrapper = self.pick_random_bootstrapper().await;
+            }
+        }
     }
 
     pub async fn send_to_peer(
