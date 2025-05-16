@@ -93,7 +93,7 @@ where
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct KademliaDht {
     pub peers_infos: Arc<RwLock<IndexMap<NodeId, PeerInfo>>>,
     light_peers: LightPeers,
@@ -101,6 +101,7 @@ pub struct KademliaDht {
     pub chain_id: ChainId,
     /// Maximum number of nodes to return in a `find_node` request.
     max_nodes: usize,
+    node_id: NodeId,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -116,6 +117,7 @@ impl KademliaDht {
         mail_tx: Sender<Mail>,
         chain_id: ChainId,
         max_nodes: usize,
+        node_id: NodeId,
     ) -> Self {
         Self {
             peers_infos,
@@ -123,6 +125,7 @@ impl KademliaDht {
             mail_tx,
             chain_id,
             max_nodes,
+            node_id,
         }
     }
 
@@ -202,7 +205,7 @@ impl KademliaDht {
             .collect();
         if nodes_with_content.len() < max {
             let closest = self
-                .find_closest_nodes(nodes, bucket, excluding, max * 2)
+                .find_closest_nodes(nodes, &bucket, excluding, max * 2)
                 .into_iter()
                 .take(max - nodes_with_content.len());
             nodes_with_content.extend(closest);
@@ -260,13 +263,23 @@ impl KademliaDht {
                     })
                     .collect()
             };
-            if let Ok(value_or_nodes) = self.iterative_lookup(dht_id, senders, bucket).await {
+            if let Ok(value_or_nodes) = self.iterative_lookup(dht_id, senders, &bucket).await {
                 match value_or_nodes {
                     ValueOrNodes::Value(value) => return Ok(value),
                     ValueOrNodes::Nodes(connections_data) => {
-                        // TODO should not deal with socket, cert, etc. here.
-                        let nodes: Vec<_> =
-                            connections_data.into_iter().map(|c| c.node_id).collect();
+                        // TODO add those nodes, wait for them to be connected,
+                        //  and continue the lookup.
+                        let nodes: Vec<_> = connections_data
+                            .into_iter()
+                            .filter_map(|c| {
+                                if c.node_id != self.node_id {
+                                    Some(c)
+                                } else {
+                                    None
+                                }
+                            })
+                            .map(|c| c.node_id)
+                            .collect();
                         worklist.extend(nodes.clone());
                         excluding.extend(nodes);
                     }
@@ -489,8 +502,14 @@ mod tests {
             Some(light_peers_data.len()),
         );
         light_peers.write().extend(light_peers_data);
-        let dht: KademliaDht =
-            KademliaDht::new(peer_infos, light_peers, mail_tx, ChainId::from([0; 32]), 3);
+        let dht: KademliaDht = KademliaDht::new(
+            peer_infos,
+            light_peers,
+            mail_tx,
+            ChainId::from([0; 32]),
+            3,
+            Default::default(),
+        );
         let closest = dht.find_node(&extend_to_bucket(buckets[4]));
         assert_eq!(closest.len(), 3);
         assert_eq!(

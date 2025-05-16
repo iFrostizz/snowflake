@@ -5,13 +5,14 @@ use crate::utils::ip::{ip_from_octets, ip_octets};
 use flume::{Receiver, Sender};
 use proto_lib::p2p::ClaimedIpPort;
 use std::collections::HashMap;
+use std::fmt::{Debug, Formatter};
 use std::net::SocketAddr;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tokio::sync::{broadcast, Semaphore};
 use tokio::task::JoinHandle;
 
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+#[derive(Clone, Eq, PartialEq, Hash)]
 pub struct ConnectionData {
     pub node_id: NodeId,
     pub socket_addr: SocketAddr,
@@ -19,6 +20,17 @@ pub struct ConnectionData {
     pub timestamp: u64,
     #[allow(unused)]
     pub x509_certificate: Vec<u8>,
+}
+
+impl Debug for ConnectionData {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ConnectionData")
+            .field("node_id", &self.node_id)
+            .field("socket_addr", &self.socket_addr)
+            .field("timestamp", &self.timestamp)
+            .field("x509_certificate", &"[...]")
+            .finish()
+    }
 }
 
 impl TryFrom<ClaimedIpPort> for ConnectionData {

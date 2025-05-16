@@ -1,5 +1,5 @@
 #!/bin/bash
-set -e
+set -ex
 
 source docker/common.sh
 
@@ -31,4 +31,4 @@ export RUST_BACKTRACE=1
 export RUST_LOG=info,snowflake=${LOG_LEVEL:-debug}
 
 /app/snowflake --public-ip 127.0.0.1 --http-port $HTTP_PORT --rpc-port $RPC_PORT \
-  --max-peers 0 --bootstrappers-path "$BOOTSTRAPPERS_FILE" --light-bootstrappers-path "$PEER_FILE"
+  --max-peers 0 --bootstrappers-path "$BOOTSTRAPPERS_FILE" --light-bootstrappers-path "$PEER_FILE" ${PEER_ARGS:+"$PEER_ARGS"}

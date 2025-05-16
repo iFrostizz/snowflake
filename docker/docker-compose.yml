@@ -11,7 +11,16 @@ services:
         # Default to debug, can be overridden via environment variable
         BUILD_MODE: ${BUILD_MODE:-debug}
     image: snowflake:latest
-    entrypoint: /bin/true
+    network_mode: host
+    healthcheck:
+      test: [ "CMD", "/app/docker/check_anr_ready.sh" ]
+      interval: 30s
+      timeout: 5s
+      retries: 10
+      start_period: 40s
+    entrypoint:
+      - /bin/bash
+      - ./docker/setup.sh
     logging:
       driver: "json-file"
       options:
@@ -21,13 +30,15 @@ services:
   bootstrap:
     container_name: bootstrap
     image: snowflake:latest
+    network_mode: host
     volumes:
       - snowflake:/shared
     entrypoint:
       - /bin/bash
       - ./docker/bootstrap.sh
     depends_on:
-      - snowflake
+      snowflake:
+        condition: service_healthy
 
   peer1:
     container_name: peer1
@@ -41,6 +52,8 @@ services:
       - snowflake:/shared
     depends_on:
       - bootstrap
+    environment:
+      - PEER_ARGS=--sync-headers
 
   peer2:
     container_name: peer2

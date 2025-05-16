@@ -363,6 +363,7 @@ impl Network {
     }
 
     fn light_handshake(&self, sender: &PeerSender) -> Result<(), NodeError> {
+        // TODO provide From implementation
         let block_k = self.config.dht_buckets.block;
         let buckets = sdk::DhtBuckets {
             block: block_k.to_be_bytes_vec(),

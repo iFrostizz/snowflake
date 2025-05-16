@@ -77,6 +77,7 @@ impl Node {
 
         let connection_queue = Arc::new(ConnectionQueue::new(max_concurrent));
         let peers_infos = Arc::new(RwLock::new(IndexMap::new()));
+        let dht_buckets = network_config.dht_buckets.clone();
         let network = Arc::new(Network::new(network_config, node_id, peers_infos.clone()).unwrap());
         let mail_box = MailBox::new(max_latency_records);
         let light_network = LightNetwork::new(
@@ -89,6 +90,7 @@ impl Node {
                 sync_headers,
                 max_lookups: 10,
                 alpha: 3,
+                dht_buckets,
             },
             network.config.max_light_peers,
         );
@@ -364,12 +366,12 @@ impl Node {
             tokio::select! {
                 res = rpn.recv_async() => {
                     if let Ok(msg) = res {
-                        self.manage_inner_message(&node_id, msg, &mut maybe_hs_permit);
+                        self.manage_inner_message(node_id, msg, &mut maybe_hs_permit);
                     }
                 }
                 res = rpl.recv_async() => {
                     if let Ok((msg, resp)) = res {
-                        self.light_network.manage_message(&node_id, msg, resp).await;
+                        self.light_network.manage_message(node_id, msg, resp).await;
                     }
                 }
                 _ = rx.recv() => {
@@ -381,7 +383,7 @@ impl Node {
 
     fn manage_inner_message(
         self: &Arc<Node>,
-        node_id: &NodeId,
+        node_id: NodeId,
         message: PeerMessage,
         maybe_hs_permit: &mut Option<OwnedSemaphorePermit>,
     ) {
@@ -410,10 +412,10 @@ impl Node {
             PeerMessage::NewPeer { infos: peer_infos } => {
                 if let Some(hs_permit) = maybe_hs_permit.take() {
                     let mut peers = self.network.peers_infos.write().unwrap();
-                    if let Some(PeerInfo { infos, .. }) = peers.get_mut(node_id) {
+                    if let Some(PeerInfo { infos, .. }) = peers.get_mut(&node_id) {
                         if infos.is_none() {
                             stats::handshook_peers::inc();
-                            let gossip_id = peer_infos.gossip_id(node_id);
+                            let gossip_id = peer_infos.gossip_id(&node_id);
                             *infos = Some(peer_infos);
                             let mut bloom_filter = self.network.bloom_filter.write().unwrap();
                             bloom_filter.feed(gossip_id); // we write it to the filter even if it fails to avoid always hearing about it

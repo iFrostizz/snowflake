@@ -4,7 +4,6 @@ pub mod kademlia;
 use crate::dht::kademlia::{LockedMapDb, ValueOrNodes};
 use crate::id::NodeId;
 use crate::net::queue::ConnectionData;
-use alloy::primitives::keccak256;
 use jsonrpsee::types::ErrorObject;
 use ruint::Uint;
 use serde::Deserialize;
@@ -21,13 +20,6 @@ pub trait ConcreteDht {
     fn to_bucket(&self) -> Bucket;
 }
 
-impl ConcreteDht for u64 {
-    fn to_bucket(&self) -> Bucket {
-        let arr: [u8; 20] = keccak256(self.to_be_bytes())[0..20].try_into().unwrap();
-        <Bucket>::from_be_bytes(arr)
-    }
-}
-
 #[derive(Debug)]
 struct BucketDht {
     bucket_lo: Bucket,
@@ -37,7 +29,12 @@ struct BucketDht {
 impl BucketDht {
     pub(crate) fn new(node_id: NodeId, k: Bucket) -> Self {
         let bucket = Bucket::from_be_bytes(node_id.into());
-        let (bucket_lo, bucket_hi) = (bucket.wrapping_sub(k), bucket.wrapping_add(k));
+        let two: Bucket = 2.try_into().unwrap();
+        let (bucket_lo, bucket_hi) = if k == Bucket::MAX {
+            (bucket.wrapping_sub(k / two), bucket.wrapping_sub(k / two))
+        } else {
+            (bucket.wrapping_sub(k / two), bucket.wrapping_add(k / two))
+        };
         Self {
             bucket_lo,
             bucket_hi,
@@ -51,9 +48,9 @@ impl BucketDht {
 
     pub fn is_desired_bucket(&self, bucket: &Bucket) -> bool {
         let (bucket_lo, bucket_hi) = self.bucket_range();
-        match bucket_lo.cmp(bucket_hi) {
+        match bucket_lo.cmp(&bucket_hi) {
             Ordering::Less => bucket_lo <= bucket && bucket < bucket_hi,
-            Ordering::Equal => bucket_lo == bucket,
+            Ordering::Equal => false,
             Ordering::Greater => bucket_lo <= bucket || bucket < bucket_hi,
         }
     }

@@ -25,10 +25,12 @@ pub struct LightNetworkConfig {
     pub sync_headers: bool,
     pub max_lookups: usize,
     pub alpha: usize,
+    pub dht_buckets: DhtBuckets,
 }
 
 #[derive(Debug)]
 pub struct LightNetwork {
+    node_id: NodeId,
     pub kademlia_dht: KademliaDht,
     pub block_dht: Arc<DhtBlocks>,
     pub light_peers: LightPeers,
@@ -45,16 +47,23 @@ impl LightNetwork {
         config: LightNetworkConfig,
         max_light_peers: Option<usize>,
     ) -> Self {
-        let block_dht = Arc::new(DhtBlocks::new(node_id));
+        let block_dht = Arc::new(DhtBlocks::new(node_id, config.dht_buckets.block));
         let light_peers = LightPeers::new(
             node_id,
             peers_infos.clone(),
             connection_queue,
             max_light_peers,
         );
-        let kademlia_dht =
-            KademliaDht::new(peers_infos, light_peers.clone(), mail_tx, chain_id, 10);
+        let kademlia_dht = KademliaDht::new(
+            peers_infos,
+            light_peers.clone(),
+            mail_tx,
+            chain_id,
+            10,
+            node_id,
+        );
         Self {
+            node_id,
             kademlia_dht,
             block_dht,
             light_peers,
@@ -67,27 +76,38 @@ impl LightNetwork {
         node: Arc<Node>,
         mut rx: broadcast::Receiver<()>,
     ) -> Result<(), NodeError> {
+        let block_dht = self.block_dht.clone();
+        let kademlia_dht = node.light_network.kademlia_dht.clone();
+        let peer_bootstrap_process = tokio::spawn(block_dht.sync_blocks(kademlia_dht));
+
         if self.config.sync_headers {
             let block_dht = self.block_dht.clone();
-            let rx = rx.resubscribe();
-            tokio::spawn(async move {
-                block_dht.sync_headers(node, rx).await;
-            });
+            let sync_handle = tokio::spawn(block_dht.sync_headers(node, rx.resubscribe()));
+
+            tokio::select! {
+                _ = sync_handle => {},
+                _ = peer_bootstrap_process => {},
+                _ = rx.recv() => {},
+            }
+        } else {
+            tokio::select! {
+                _ = peer_bootstrap_process => {},
+                _ = rx.recv() => {},
+            }
         }
 
-        let _ = rx.recv().await;
         Ok(())
     }
 
     pub async fn manage_message(
         &self,
-        node_id: &NodeId,
+        node_id: NodeId,
         message: LightMessage,
         resp: Option<oneshot::Sender<LightResult>>,
     ) {
         let res = match message {
             LightMessage::NewPeer(buckets) => {
-                self.light_peers.write().insert(*node_id, buckets);
+                self.light_peers.write().insert(node_id, buckets);
                 None
             }
             LightMessage::Store(dht_id, value) => {
@@ -114,8 +134,14 @@ impl LightNetwork {
                 };
                 Some(res)
             }
-            LightMessage::Nodes(node_ids) => {
-                self.light_peers.potentially_add_nodes(node_ids);
+            LightMessage::Nodes(cds) => {
+                let cds = cds
+                    .into_iter()
+                    .filter(|c| c.node_id != self.node_id)
+                    .collect::<Vec<_>>();
+                if !cds.is_empty() {
+                    self.light_peers.potentially_add_nodes(cds);
+                }
                 None
             }
         };

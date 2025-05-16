@@ -111,9 +111,9 @@ pub struct Args {
     #[arg(long, default_value_t = false)]
     pub sync_headers: bool,
 
-    // TODO if sync-headers is true, then this should be the max.
-    #[arg(long, default_value_t = 100)]
-    pub block_dht_buckets: usize,
+    // #[arg(long, default_value_t = Bucket::try_from(2).unwrap().pow(Bucket::try_from(50).unwrap()))]
+    #[arg(long, default_value_t = Bucket::MAX)]
+    pub block_dht_buckets: Bucket,
 }
 
 pub async fn read_args() -> Result<Args, NodeError> {
@@ -128,6 +128,9 @@ pub async fn read_args() -> Result<Args, NodeError> {
         }
     }
     assert!(args.public_ip.is_some());
+    if args.sync_headers {
+        args.block_dht_buckets = Bucket::MAX;
+    }
     Ok(args)
 }
 
@@ -186,7 +189,7 @@ impl Args {
             .bootstrappers(&self.network_id.to_string())
             .expect("failed to instantiate bootstrappers"),
             dht_buckets: DhtBuckets {
-                block: Bucket::try_from(self.block_dht_buckets).unwrap(),
+                block: self.block_dht_buckets,
             },
         }
     }

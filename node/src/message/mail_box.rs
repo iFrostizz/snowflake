@@ -108,16 +108,16 @@ impl MailBox {
         .await;
 
         let mut mails = mails.lock().unwrap();
-        let set = mails.get_mut(&node_id).unwrap();
+        if let Some(set) = mails.get_mut(&node_id) {
+            // has timed out, we need to force clean
+            if res.is_err() {
+                let (.., message) = set.remove(&request_id).unwrap();
+                message.on_timeout();
+            }
 
-        // has timed out, we need to force clean
-        if res.is_err() {
-            let (.., message) = set.remove(&request_id).unwrap();
-            message.on_timeout();
-        }
-
-        if set.is_empty() {
-            debug_assert!(mails.remove(&node_id).is_some());
+            if set.is_empty() {
+                debug_assert!(mails.remove(&node_id).is_some());
+            }
         }
     }
 
