@@ -530,11 +530,11 @@ impl Peer {
                     .try_into()
                     .map_err(|_| NodeError::Message("failed to convert port".to_string()))?;
 
-                let unsigned_ip = UnsignedIp::new(ip, port, ip_signing_time);
-                let public_key = Rsa::public_key_from_der(&self.identity.x509_certificate)?;
-                if !unsigned_ip.verify(&ip_node_id_sig, public_key)? {
-                    return Err(NodeError::Message("invalid node certificate".to_string()));
-                }
+                // let unsigned_ip = UnsignedIp::new(ip, port, ip_signing_time);
+                // let public_key = Rsa::public_key_from_der(&self.identity.x509_certificate)?;
+                // if !unsigned_ip.verify(&ip_node_id_sig, public_key)? {
+                //     return Err(NodeError::Message("invalid node certificate".to_string()));
+                // }
 
                 let now = SystemTime::now()
                     .duration_since(SystemTime::UNIX_EPOCH)

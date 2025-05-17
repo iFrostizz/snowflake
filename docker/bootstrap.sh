@@ -68,9 +68,7 @@ json_content="{
       \"ip\":\"127.0.0.1:9658\"
     }
   ],
-  \"fuji\":[
-    # Add more nodes here if needed
-  ]
+  \"fuji\":[]
 }"
 
 echo "${json_content}" > "$BOOTSTRAPPERS_FILE"

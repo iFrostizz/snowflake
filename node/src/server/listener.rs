@@ -82,7 +82,7 @@ impl Listener {
                     log::debug!("no certificate from listened connection");
                     return;
                 };
-                
+
                 let x509_certificate = cert.as_ref().to_vec();
                 let node_id = NodeId::from_cert(x509_certificate.clone());
 

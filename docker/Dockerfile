@@ -43,12 +43,14 @@ RUN git clone https://github.com/ava-labs/avalanchego avalanchego
 WORKDIR /app/avalanchego
 RUN go mod download
 COPY . .
-ENV GOCACHE=/root/.cache/go-build
-RUN --mount=type=cache,target="/root/.cache/go-build" ./scripts/build.sh
+ENV GOCACHE=/root/.cache/go-cache
+ENV GOMODCACHE=/root/.cache/gomod-cache
+RUN --mount=type=cache,target="/root/.cache/go-cache" ./scripts/build.sh
 WORKDIR /app
 RUN git clone https://github.com/ifrostizz/avalanche-network-runner anr
 WORKDIR /app/anr
 COPY . .
+RUN --mount=type=cache,target="/root/.cache/go-cache" go mod download
 
 FROM base AS runtime
 WORKDIR /app
