@@ -36,9 +36,6 @@ get_node_id() {
   echo "$node_id"
 }
 
-# TODO since the nodes are available in the snowflake container only, make them available cross container.
-#   Because we will need them in the Rust binary to connect to the bootstrap nodes.
-
 NODE_ID1=$(get_node_id 9650)
 NODE_ID2=$(get_node_id 9652)
 NODE_ID3=$(get_node_id 9654)
@@ -49,23 +46,23 @@ json_content="{
   \"mainnet\":[
     {
       \"id\":\"$NODE_ID1\",
-      \"ip\":\"127.0.0.1:9650\"
+      \"ip\":\"127.0.0.1:9651\"
     },
     {
       \"id\":\"$NODE_ID2\",
-      \"ip\":\"127.0.0.1:9652\"
+      \"ip\":\"127.0.0.1:9653\"
     },
     {
       \"id\":\"$NODE_ID3\",
-      \"ip\":\"127.0.0.1:9654\"
+      \"ip\":\"127.0.0.1:9655\"
     },
     {
       \"id\":\"$NODE_ID4\",
-      \"ip\":\"127.0.0.1:9656\"
+      \"ip\":\"127.0.0.1:9657\"
     },
     {
       \"id\":\"$NODE_ID5\",
-      \"ip\":\"127.0.0.1:9658\"
+      \"ip\":\"127.0.0.1:9659\"
     }
   ],
   \"fuji\":[]

@@ -132,11 +132,7 @@ impl ConnectionQueue {
         match node.network.check_add_peer(&data.node_id) {
             Ok(()) => {
                 let handle = tokio::spawn(async move {
-                    let res = node.create_connection(semaphore, data, connected_tx).await;
-                    if let Err(err) = &res {
-                        log::debug!("err when creating connection {err}");
-                    }
-                    res
+                    node.create_connection(semaphore, data, connected_tx).await
                 });
                 Some(handle)
             }

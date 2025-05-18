@@ -18,10 +18,9 @@ pub fn client_config(cert_path: &Path, key_path: &Path) -> ClientConfig {
         roots: webpki_roots::TLS_SERVER_ROOTS.into(),
     };
 
-    let mut config = ClientConfig::builder()
+    let mut config = ClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS12, &rustls::version::TLS13])
         .with_root_certificates(root_store)
-        .with_client_auth_cert(certs, private_key)
-        .expect("invalid client auth certs/key");
+        .with_client_auth_cert(certs, private_key).unwrap();
 
     // disable client certificate verification
     config
@@ -29,6 +28,6 @@ pub fn client_config(cert_path: &Path, key_path: &Path) -> ClientConfig {
         .set_certificate_verifier(Arc::new(NoCertificateVerification::new(
             aws_lc_rs::default_provider(),
         )));
-
+    
     config
 }

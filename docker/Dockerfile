@@ -39,7 +39,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 
 FROM base AS anr
 WORKDIR /app
-RUN git clone https://github.com/ava-labs/avalanchego avalanchego
+RUN git clone --depth 1 --branch v1.13.0 https://github.com/ava-labs/avalanchego avalanchego
 WORKDIR /app/avalanchego
 RUN go mod download
 COPY . .
@@ -63,6 +63,5 @@ COPY docker/entrypoint.sh /app/
 COPY --from=anr /app/avalanchego/build/avalanchego /shared/avalanchego
 COPY --from=anr /app/anr/ /shared/anr/
 RUN chmod +x /app/docker/bootstrap.sh /app/docker/common.sh /app/docker/get_node_id.sh /app/docker/check_anr_ready.sh /app/entrypoint.sh
-ENTRYPOINT ["tail", "-f", "/dev/null"]
 
 ENTRYPOINT ["/app/entrypoint.sh"]

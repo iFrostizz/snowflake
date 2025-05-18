@@ -195,7 +195,7 @@ impl Node {
                 peer
             }
             Err(err) => {
-                log::debug!("error on connecting with back off: {err}");
+                log::debug!("error on connecting to {} with back off: {err}", data.node_id);
                 return Err(err);
             }
         };

@@ -174,7 +174,7 @@ impl Peer {
         node_id: NodeId,
         x509_certificate: Vec<u8>,
         sock_addr: SocketAddr,
-        timestamp: u64,
+        timestamp: u64, // TODO populate this with something different than 0.
         tls: TlsStream<TcpStream>,
     ) -> Self {
         let (spn, rpn) = flume::unbounded();
@@ -254,6 +254,7 @@ impl Peer {
             .await
             {
                 Ok(Ok(tls)) => {
+                    dbg!(&socket_addr);
                     let server_connection = tls.get_ref().1;
                     let certs = server_connection
                         .peer_certificates()
@@ -331,22 +332,31 @@ impl Peer {
         (write, read, recurring)
     }
 
-    async fn connect(
-        sock_addr: &SocketAddr,
-        config: &Arc<ClientConfig>,
-    ) -> Result<TlsStream<TcpStream>, NodeError> {
-        let dns_name = ServerName::try_from(sock_addr.ip().to_string())
-            .map_err(|_| NodeError::Dns)?
-            .to_owned();
+async fn connect(
+    sock_addr: &SocketAddr,
+    config: &Arc<ClientConfig>,
+) -> Result<TlsStream<TcpStream>, NodeError> {
+    let dns_name =
+        ServerName::try_from(sock_addr.ip().to_string())
+            .map_err(|e| NodeError::Message(format!("Invalid DNS name: {}", e)))?;
 
-        let sock =
-            tokio::time::timeout(Duration::from_secs(5), TcpStream::connect(sock_addr)).await??;
+    let sock = tokio::time::timeout(
+        Duration::from_secs(5),
+        TcpStream::connect(sock_addr)
+    ).await??;
 
-        let config = TlsConnector::from(config.clone());
-        let tls = config.connect(dns_name, sock).await?;
-
-        Ok(TlsStream::Client(tls))
+    let config = TlsConnector::from(config.clone());
+    match config.connect(dns_name.clone(), sock).await {
+        Ok(tls) => Ok(TlsStream::Client(tls)),
+        Err(e) => {
+            // Add more detailed error information for debugging
+            Err(NodeError::Message(format!(
+                "TLS connection error for {}: {}",
+                sock_addr, e
+            )))
+        }
     }
+}
 
     async fn write_peer(
         out_pipeline: Arc<Pipeline>,
