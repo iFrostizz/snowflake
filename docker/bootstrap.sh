@@ -14,7 +14,7 @@ while [ "$(find "$PEER_DIR" -maxdepth 1 -type f | wc -l)" -lt "$EXPECTED_PEERS" 
   sleep 1
 done
 
-echo "{\"mainnet\":[" > "$PEER_FILE"
+echo "{\"local\":[" > "$PEER_FILE"
 FIRST=true
 for file in "$PEER_DIR"/*.json; do
   if [ "$FIRST" = true ]; then
@@ -24,7 +24,7 @@ for file in "$PEER_DIR"/*.json; do
   fi
   cat "$file" >> "$PEER_FILE"
 done
-echo "],\"fuji\":[]}" >> "$PEER_FILE"
+echo "],\"mainnet\":[],\"fuji\":[]}" >> "$PEER_FILE"
 
 get_node_id() {
   port=$1
@@ -43,7 +43,7 @@ NODE_ID4=$(get_node_id 9656)
 NODE_ID5=$(get_node_id 9658)
 
 json_content="{
-  \"mainnet\":[
+  \"local\":[
     {
       \"id\":\"$NODE_ID1\",
       \"ip\":\"127.0.0.1:9651\"
@@ -65,6 +65,7 @@ json_content="{
       \"ip\":\"127.0.0.1:9659\"
     }
   ],
+  \"mainnet\":[],
   \"fuji\":[]
 }"
 

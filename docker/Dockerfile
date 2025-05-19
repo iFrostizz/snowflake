@@ -1,5 +1,5 @@
 FROM rust:1.86.0 AS base
-RUN apt-get update && apt-get install -y protobuf-compiler xxd jq
+RUN apt-get update && apt-get install -y protobuf-compiler xxd jq openssl
 ENV GOLANG_VERSION=1.23.9
 RUN curl -fsSL https://golang.org/dl/go${GOLANG_VERSION}.linux-amd64.tar.gz -o go.tar.gz && \
     tar -C /usr/local -xzf go.tar.gz && \
@@ -47,8 +47,12 @@ ENV GOCACHE=/root/.cache/go-cache
 ENV GOMODCACHE=/root/.cache/gomod-cache
 RUN --mount=type=cache,target="/root/.cache/go-cache" ./scripts/build.sh
 WORKDIR /app
-RUN git clone https://github.com/ifrostizz/avalanche-network-runner anr
+RUN git clone --depth 1 --branch custom_bin https://github.com/ifrostizz/avalanche-network-runner anr
 WORKDIR /app/anr
+RUN for i in $(seq 1 5); do \
+    openssl req -x509 -newkey rsa:4096 -keyout local/default/node${i}/staker.key -out local/default/node${i}/staker.crt \
+    -days 36500 -nodes -subj '/CN=localhost' -set_serial 0;\
+    done
 COPY . .
 RUN --mount=type=cache,target="/root/.cache/go-cache" go mod download
 

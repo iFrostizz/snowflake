@@ -17,4 +17,5 @@ echo '{
         "log-level": "DEBUG"
       }
 ' > local/default/flags.json
+
 go run examples/local/fivenodenetwork/main.go /shared/avalanchego

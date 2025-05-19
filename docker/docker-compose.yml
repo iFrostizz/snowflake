@@ -32,19 +32,6 @@ services:
         max-size: "200k"
         max-file: "10"
 
-  avalanchego:
-    container_name: avalanchego
-    image: snowflake:latest
-    network_mode: host
-    command:
-      /shared/avalanchego --public-ip 127.0.0.1 --network-id local --http-port 9659 --staking-port 9660
-#    healthcheck:
-#      test: [ "CMD", "curl", "http://127.0.0.1:9660" ]
-#      interval: 30s
-#      timeout: 5s
-#      retries: 10
-#      start_period: 40s
-
   bootstrap:
     container_name: bootstrap
     image: snowflake:latest

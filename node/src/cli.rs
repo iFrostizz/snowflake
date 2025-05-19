@@ -17,6 +17,7 @@ pub enum NetworkName {
     #[default]
     Mainnet,
     Fuji,
+    Local,
 }
 
 impl Display for NetworkName {
@@ -24,6 +25,7 @@ impl Display for NetworkName {
         match self {
             NetworkName::Mainnet => write!(f, "mainnet"),
             NetworkName::Fuji => write!(f, "fuji"),
+            NetworkName::Local => write!(f, "local"),
         }
     }
 }

@@ -63,7 +63,6 @@ pub struct BackoffParams {
     pub max_retries: usize,
 }
 
-#[allow(unused)]
 #[derive(Debug, Clone)]
 pub struct HandshakeInfos {
     pub ip_signing_time: u64,
@@ -254,7 +253,6 @@ impl Peer {
             .await
             {
                 Ok(Ok(tls)) => {
-                    dbg!(&socket_addr);
                     let server_connection = tls.get_ref().1;
                     let certs = server_connection
                         .peer_certificates()
@@ -349,7 +347,6 @@ async fn connect(
     match config.connect(dns_name.clone(), sock).await {
         Ok(tls) => Ok(TlsStream::Client(tls)),
         Err(e) => {
-            // Add more detailed error information for debugging
             Err(NodeError::Message(format!(
                 "TLS connection error for {}: {}",
                 sock_addr, e
