@@ -493,31 +493,34 @@ impl Node {
             (Some(res), Some(resp)) => {
                 let _ = resp.send(res);
             }
-            (None, None) => (),
-            _ => {
+            (None, None) | (Some(Ok(LightValue::Ok)), None) => (),
+            (res, resp) => {
                 log::error!("unexpected state for res and resp values");
                 log::error!("this is a logic bug. please report it.");
-                // unreachable!();
+                log::error!("res: {:?} resp: {:?}", res, resp);
+                unreachable!();
             }
         }
     }
 
     pub async fn start_verification_channel(&self, mut rx: broadcast::Receiver<()>) {
         let verification_rx = self.network.verification_rx.clone();
-        let pool = threadpool::ThreadPool::new(10);
+        let pool = Arc::new(Semaphore::new(10));
         loop {
             tokio::select! {
                 maybe_block = verification_rx.recv_async() => {
                     if let Ok((block, tx)) = maybe_block {
                         let network = self.network.clone();
-                        pool.execute(move || {
-                            tokio::spawn(async move {
-                                let res = network.verify_block(&block).await.is_ok_and(|res| res);
-                                let _ = tx.send(res);
-                                if res {
-                                    let _ = network.light_network.block_dht.store_block_if_desired(block);
-                                }
-                            });
+                        let pool = pool.clone();
+                        // TODO preferably the semaphore should be acquired before spawning the task
+                        tokio::spawn(async move {
+                            let r = pool.acquire().await.unwrap();
+                            let res = network.verify_block(&block).await.is_ok_and(|res| res);
+                            let _ = tx.send(res);
+                            if res {
+                                let _ = network.light_network.block_dht.store_block_if_desired(block);
+                            }
+                            drop(r);
                         });
                     }
                 },

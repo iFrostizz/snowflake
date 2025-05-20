@@ -456,6 +456,7 @@ impl Network {
     ) -> Result<bool, LightError> {
         let block = stateless_block.block();
         let number = u64::from_be_bytes(*block.header.number());
+        log::debug!("verifying block {}", number);
         let hash = block.hash;
         if self
             .light_network
@@ -483,9 +484,9 @@ impl Network {
             deadline: DEFAULT_DEADLINE,
             container_ids: vec![block_id.as_ref().to_vec()],
         });
-        let res = self
+        let res = dbg!(self
             .send_to_peer(&MessageOrSubscribable::Subscribable(message), bootstrapper)
-            .await;
+            .await);
         if let Some(Message::Accepted(Accepted {
             chain_id,
             container_ids,
@@ -582,77 +583,77 @@ impl Network {
 
     pub async fn bootstrap_headers(self: Arc<Network>) {
         let chain_id = self.config.c_chain_id.as_ref().to_vec();
-        let mut bootstrapper = self.pick_random_bootstrapper().await;
 
-        let message = SubscribableMessage::GetAcceptedFrontier(GetAcceptedFrontier {
-            chain_id: chain_id.clone(),
-            request_id: rand::random(),
-            deadline: DEFAULT_DEADLINE,
-        });
-        let message = loop {
-            if let Some(Message::AcceptedFrontier(res)) = self
+        loop {
+            let mut bootstrapper = self.pick_random_bootstrapper().await;
+
+            let message = SubscribableMessage::GetAcceptedFrontier(GetAcceptedFrontier {
+                chain_id: chain_id.clone(),
+                request_id: rand::random(),
+                deadline: DEFAULT_DEADLINE,
+            });
+            let Some(Message::AcceptedFrontier(message)) = self
                 .send_to_peer(
                     &MessageOrSubscribable::Subscribable(message.clone()),
                     bootstrapper,
                 )
-                .await
-            {
-                break res;
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        };
+                .await else {
+                continue;
+            };
 
-        let mut last_container_id = message.container_id;
-        'outer: loop {
-            let message = SubscribableMessage::GetAncestors(GetAncestors {
-                chain_id: chain_id.clone(),
-                request_id: rand::random(),
-                deadline: DEFAULT_DEADLINE,
-                container_id: last_container_id.clone(),
-                engine_type: EngineType::Snowman.into(),
-            });
-            let message = loop {
-                if let Some(Message::Ancestors(res)) = self
+            let mut last_container_id = dbg!(message.container_id);
+            'outer: loop {
+                let message = SubscribableMessage::GetAncestors(GetAncestors {
+                    chain_id: chain_id.clone(),
+                    request_id: rand::random(),
+                    deadline: DEFAULT_DEADLINE,
+                    container_id: last_container_id.clone(),
+                    engine_type: EngineType::Snowman.into(),
+                });
+                let Some(Message::Ancestors(message)) = self
                     .send_to_peer(
                         &MessageOrSubscribable::Subscribable(message.clone()),
                         bootstrapper,
                     )
-                    .await
-                {
-                    break res;
+                    .await else {
+                    continue;
+                };
+
+                let len = message.containers.len();
+                log::debug!("Syncing {} containers", len);
+                if len == 0 {
+                    break 'outer;
                 }
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            };
 
-            let len = message.containers.len();
-            log::debug!("Syncing {} containers", len);
-            if len == 0 {
-                break 'outer;
-            }
-
-            for (i, container) in message.containers.into_iter().enumerate() {
-                match StatelessBlock::unpack(container) {
-                    Ok(block) => {
-                        let block_dht = &self.light_network.block_dht;
-                        block_dht
-                            .verified_blocks
-                            .write()
-                            .unwrap()
-                            .insert(*block.id());
-                        if let Err(err) = block_dht.insert_to_store(block.bytes().to_vec()).await {
-                            log::error!("Failed to store block: {:?}", err);
-                        }
-                        if i == len - 1 {
-                            if block.block().header.number() == &[0; 8] {
-                                break 'outer;
+                for (i, container) in message.containers.into_iter().enumerate() {
+                    match StatelessBlock::unpack(container) {
+                        Ok(block) => {
+                            dbg!(&block.block().header.number());
+                            let block_dht = &self.light_network.block_dht;
+                            block_dht
+                                .verified_blocks
+                                .write()
+                                .unwrap()
+                                .insert(*block.id());
+                            if let Err(err) = block_dht.insert_to_store(block.bytes().to_vec()) {
+                                log::error!("Failed to store block: {:?}", err);
                             }
-                            last_container_id = block.id().as_ref().to_vec();
+                            if block_dht.next_block_to_store().is_ok_and(|n| &n.to_be_bytes() == block.block().header.number()) {
+                                break 'outer;
+                            } else if i == len - 1 {
+                                if block.block().header.number() == &[0; 8] {
+                                    break 'outer;
+                                }
+                                last_container_id = block.id().as_ref().to_vec();
+                            }
+                            bootstrapper = self.pick_random_bootstrapper().await;
                         }
-                        bootstrapper = self.pick_random_bootstrapper().await;
+                        Err(err) => log::error!("error deserializing block: {:?}", err),
                     }
-                    Err(err) => log::error!("error deserializing block: {:?}", err),
                 }
             }
+
+            tokio::time::sleep(Duration::from_secs(5)).await;
         }
     }
 
@@ -662,15 +663,18 @@ impl Network {
             if let Ok(last_block) = self.latest_block().await {
                 let light_network = &self.light_network;
                 let blocks = light_network.block_dht.bucket_to_number_iter(last_block);
+                let n = *light_network.block_dht.min_stored_blocks.lock().unwrap();
                 for number in blocks {
-                    // log::debug!("Syncing block {}", number);
-                    if let Ok(block) = light_network
-                        .find_content(&light_network.block_dht, CompositeKey::First(number))
-                        .await
-                    {
-                        log::debug!("Found block {}", number);
-                        if let Err(err) = light_network.block_dht.store_block_if_desired(block) {
-                            log::error!("Failed to store block: {}", err);
+                    if number >= n {
+                        if let Ok(block) = light_network
+                            .find_content(&light_network.block_dht, CompositeKey::First(number))
+                            .await
+                        {
+                            log::debug!("Found block {}", number);
+                            if let Err(err) = light_network.block_dht.store_block_if_desired(block)
+                            {
+                                log::error!("Failed to store block: {}", err);
+                            }
                         }
                     }
                 }

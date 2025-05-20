@@ -186,6 +186,7 @@ impl From<LightError> for jsonrpsee::types::ErrorObjectOwned {
     }
 }
 
+#[derive(Debug)]
 pub enum LightValue<T = Vec<u8>> {
     Ok,
     ValueOrNodes(ValueOrNodes<T>),

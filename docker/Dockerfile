@@ -5,8 +5,7 @@ RUN curl -fsSL https://golang.org/dl/go${GOLANG_VERSION}.linux-amd64.tar.gz -o g
     tar -C /usr/local -xzf go.tar.gz && \
     rm go.tar.gz
 ENV PATH="/usr/local/go/bin:${PATH}"
-RUN cargo install cargo-chef
-RUN cargo install sccache
+RUN cargo install cargo-chef sccache
 RUN cargo install --git https://github.com/iFrostizz/bs58-rs --branch add-cb58
 ENV RUSTC_WRAPPER=sccache SCCACHE_DIR=/sccache
 
@@ -47,13 +46,9 @@ ENV GOCACHE=/root/.cache/go-cache
 ENV GOMODCACHE=/root/.cache/gomod-cache
 RUN --mount=type=cache,target="/root/.cache/go-cache" ./scripts/build.sh
 WORKDIR /app
-#RUN git clone --depth 1 --branch custom_bin https://github.com/ifrostizz/avalanche-network-runner anr
-COPY docker/anr/ ./anr
+RUN git clone --depth 1 --branch custom_bin https://github.com/ifrostizz/avalanche-network-runner anr
 WORKDIR /app/anr
-RUN for i in $(seq 1 5); do \
-    openssl req -x509 -newkey rsa:4096 -keyout local/default/node${i}/staker.key -out local/default/node${i}/staker.crt \
-    -days 36500 -nodes -subj '/CN=localhost' -set_serial 0;\
-    done
+COPY docker/keys/ /app/anr/local/default/
 COPY . .
 RUN --mount=type=cache,target="/root/.cache/go-cache" go mod download
 

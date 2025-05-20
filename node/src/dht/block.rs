@@ -10,12 +10,13 @@ use alloy::primitives::{keccak256, FixedBytes};
 use alloy::primitives::{B256, U256};
 use std::cmp::Ordering;
 use std::ops::RangeInclusive;
-use std::sync::RwLock;
+use std::sync::{Mutex, RwLock};
 
 #[derive(Debug)]
 pub struct DhtBlocks {
     pub dht: Dht<RwLock<DoubleKeyedHashMap<Bucket, Bucket, Vec<u8>>>>,
     pub verified_blocks: RwLock<FIFOSet<BlockID>>,
+    pub min_stored_blocks: Mutex<u64>,
 }
 
 impl DhtCodex<StatelessBlock> for DhtBlocks {
@@ -77,7 +78,7 @@ impl DhtContent<CompositeKey<u64, FixedBytes<32>>, StatelessBlock> for DhtBlocks
         &self,
         key: CompositeKey<u64, FixedBytes<32>>,
     ) -> Result<Option<StatelessBlock>, LightError> {
-        match self.dht.store.get(&key) {
+        match self.dht.store.get(&dbg!(key)) {
             Some(block_bytes) => {
                 let block = Self::decode(&block_bytes)?;
                 Ok(Some(block))
@@ -86,7 +87,7 @@ impl DhtContent<CompositeKey<u64, FixedBytes<32>>, StatelessBlock> for DhtBlocks
         }
     }
 
-    async fn insert_to_store(&self, bytes: Vec<u8>) -> Result<(), LightError> {
+    fn insert_to_store(&self, bytes: Vec<u8>) -> Result<(), LightError> {
         let decoded = Self::decode(&bytes)?;
         let block = decoded.block();
         let number = u64::from_be_bytes(*block.header.number());
@@ -95,9 +96,18 @@ impl DhtContent<CompositeKey<u64, FixedBytes<32>>, StatelessBlock> for DhtBlocks
             if !self.verify(&decoded)? {
                 return Err(light_errors::INVALID_CONTENT);
             }
-            self.dht
-                .store
-                .insert(CompositeKey::Both(number, hash), bytes);
+            if self
+                .get_from_store(CompositeKey::Both(number, hash))?
+                .is_none()
+            {
+                let n = self.next_block_to_store()?;
+                if n == number {
+                    *self.min_stored_blocks.lock().unwrap() += 1;
+                }
+                self.dht
+                    .store
+                    .insert(CompositeKey::Both(number, hash), bytes);
+            }
             Ok(())
         } else {
             Err(light_errors::UNDESIRED_BUCKET)
@@ -110,6 +120,7 @@ impl DhtBlocks {
         Self {
             dht: Dht::new(node_id, k, RwLock::new(DoubleKeyedHashMap::new())),
             verified_blocks: RwLock::new(FIFOSet::new(10000)),
+            min_stored_blocks: Mutex::new(0),
         }
     }
 
@@ -122,17 +133,16 @@ impl DhtBlocks {
         &self,
         stateless_block: StatelessBlock,
     ) -> Result<(), LightError> {
-        let block = stateless_block.block();
-        let number = u64::from_be_bytes(*block.header.number());
-        let hash = block.hash;
-        if self.is_desired_bucket(number, hash) {
-            self.dht.store.insert(
-                CompositeKey::Both(number, hash),
-                Self::encode(stateless_block)?,
-            );
-            Ok(())
-        } else {
-            Err(light_errors::UNDESIRED_BUCKET)
+        self.insert_to_store(stateless_block.bytes().to_owned())
+    }
+
+    pub(crate) fn next_block_to_store(&self) -> Result<u64, LightError> {
+        let mut n = *self.min_stored_blocks.lock().unwrap();
+        loop {
+            if self.get_from_store(CompositeKey::First(n))?.is_none() {
+                return Ok(n);
+            }
+            n += 1;
         }
     }
 

@@ -119,7 +119,7 @@ impl LightNetwork {
     {
         let encoded = DHT::encode(value)?;
         if node_id == self.light_peers.node_id {
-            dht.insert_to_store(encoded).await?;
+            dht.insert_to_store(encoded)?;
             Ok(())
         } else {
             self.kademlia_dht.store(node_id, &DHT::id(), encoded).await
@@ -144,7 +144,7 @@ pub trait DhtContent<K, V>: DhtCodex<V> {
     fn get_from_store(&self, key: K) -> Result<Option<V>, LightError>;
     /// Insert an encoded value into the store.
     /// If the value is ill-formed, it should not be stored.
-    async fn insert_to_store(&self, bytes: Vec<u8>) -> Result<(), LightError>;
+    fn insert_to_store(&self, bytes: Vec<u8>) -> Result<(), LightError>;
 }
 
 #[derive(Debug, Clone)]
