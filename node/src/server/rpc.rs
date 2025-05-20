@@ -562,7 +562,8 @@ mod rpc_impl {
 
         async fn get_block_transaction_count_by_hash(&self, hash: Bytes32) -> RpcResult<u64> {
             let block = self.get_block_by_hash(hash).await?;
-            Ok(block.block.transactions.len() as u64)
+            let block = block.block();
+            Ok(block.transactions.len() as u64)
         }
 
         async fn get_block_transaction_count_by_number(
@@ -570,12 +571,14 @@ mod rpc_impl {
             block_parameter: BlockParameter,
         ) -> RpcResult<u64> {
             let block = self.get_block_by_parameter(block_parameter).await?;
-            Ok(block.block.transactions.len() as u64)
+            let block = block.block();
+            Ok(block.transactions.len() as u64)
         }
 
         async fn get_uncle_count_by_block_hash(&self, hash: Bytes32) -> RpcResult<u64> {
             let block = self.get_block_by_hash(hash).await?;
-            Ok(block.block.uncles.len() as u64)
+            let block = block.block();
+            Ok(block.uncles.len() as u64)
         }
 
         async fn get_uncle_count_by_block_number(
@@ -583,7 +586,8 @@ mod rpc_impl {
             block_parameter: BlockParameter,
         ) -> RpcResult<u64> {
             let block = self.get_block_by_parameter(block_parameter).await?;
-            Ok(block.block.uncles.len() as u64)
+            let block = block.block();
+            Ok(block.uncles.len() as u64)
         }
 
         fn get_code(
@@ -643,7 +647,7 @@ mod rpc_impl {
         ) -> RpcResult<alloy::rpc::types::Block> {
             self.get_block_by_hash(hash)
                 .await
-                .map(|block| block_to_rpc(block.block, full))
+                .map(|block| block_to_rpc(block.block(), full))
         }
 
         async fn get_block_by_number(
@@ -653,7 +657,7 @@ mod rpc_impl {
         ) -> RpcResult<alloy::rpc::types::Block> {
             self.get_block_by_parameter(block_parameter)
                 .await
-                .map(|block| block_to_rpc(block.block, full))
+                .map(|block| block_to_rpc(block.block(), full))
         }
 
         fn get_transaction_by_hash(
@@ -671,7 +675,7 @@ mod rpc_impl {
             let block: alloy::rpc::types::Block = self
                 .get_block_by_hash(hash)
                 .await
-                .map(|block| block_to_rpc(block.block, true))?;
+                .map(|block| block_to_rpc(block.block(), true))?;
             Self::transaction_at_position(block, position)
         }
 
@@ -683,7 +687,7 @@ mod rpc_impl {
             let block = self
                 .get_block_by_parameter(block_parameter)
                 .await
-                .map(|block| block_to_rpc(block.block, true))?;
+                .map(|block| block_to_rpc(block.block(), true))?;
             Self::transaction_at_position(block, position)
         }
 
@@ -696,15 +700,16 @@ mod rpc_impl {
             hash: Bytes32,
             index: u64,
         ) -> RpcResult<alloy::rpc::types::Header> {
-            let mut block = self.get_block_by_hash(hash).await?;
-            if block.block.uncles.get(index as usize).is_none() {
+            let block = self.get_block_by_hash(hash).await?;
+            let mut block = block.block();
+            if block.uncles.get(index as usize).is_none() {
                 return Err(ErrorObject::borrowed(1000, "missing uncle at index", None));
             }
-            let uncle = block.block.uncles.swap_remove(index as usize);
+            let uncle = block.uncles.swap_remove(index as usize);
             Ok(header_to_rpc(
                 uncle,
-                block.block.hash,
-                Some(U256::try_from(block.block.size).unwrap()),
+                block.hash,
+                Some(U256::try_from(block.size).unwrap()),
             ))
         }
 
@@ -713,15 +718,16 @@ mod rpc_impl {
             block_parameter: BlockParameter,
             index: u64,
         ) -> RpcResult<alloy::rpc::types::Header> {
-            let mut block = self.get_block_by_parameter(block_parameter).await?;
-            if block.block.uncles.get(index as usize).is_none() {
+            let block = self.get_block_by_parameter(block_parameter).await?;
+            let mut block = block.block();
+            if block.uncles.get(index as usize).is_none() {
                 return Err(ErrorObject::borrowed(1000, "missing uncle at index", None));
             }
-            let uncle = block.block.uncles.swap_remove(index as usize);
+            let uncle = block.uncles.swap_remove(index as usize);
             Ok(header_to_rpc(
                 uncle,
-                block.block.hash,
-                Some(U256::try_from(block.block.size).unwrap()),
+                block.hash,
+                Some(U256::try_from(block.size).unwrap()),
             ))
         }
 
@@ -891,7 +897,7 @@ mod rpc_impl {
                             .get_bucket(&bucket)
                         {
                             Some(value) => RpcValueOrNodes::Value(Value::Block(block_to_rpc(
-                                DhtBlocks::decode(&value)?.block,
+                                DhtBlocks::decode(&value)?.block(),
                                 true,
                             ))),
                             None => {
@@ -976,7 +982,7 @@ mod rpc_impl {
                     sdk::light_response::Message::Value(sdk::Value { value }) => match dht_id {
                         DhtId::Block => {
                             let block = DhtBlocks::decode(&value)?;
-                            RpcValueOrNodes::Value(Value::Block(block_to_rpc(block.block, true)))
+                            RpcValueOrNodes::Value(Value::Block(block_to_rpc(block.block(), true)))
                         }
                         _ => return Err(light_errors::INVALID_DHT.into()),
                     },

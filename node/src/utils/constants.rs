@@ -1,4 +1,4 @@
-use crate::id::{ChainId, FUJI_C_CHAIN_ID, MAINNET_C_CHAIN_ID, LOCAL_C_CHAIN_ID};
+use crate::id::{ChainId, FUJI_C_CHAIN_ID, LOCAL_C_CHAIN_ID, MAINNET_C_CHAIN_ID};
 use phf::phf_map;
 
 pub const CLIENT: &str = "snowflake";
@@ -30,7 +30,7 @@ pub static ETH_NETWORK: phf::Map<&'static str, u64> = phf_map! {
 pub static C_CHAIN_ID_STR: phf::Map<&'static str, &str> = phf_map! {
     "mainnet" => "2q9e4r6Mu3U68nU1fYjgbR6JvwrRx36CohpAX5UQxse55x1Q5",
     "fuji" => "yH8D7ThNJkxmtkuv2jgBa4P1Rn3Qpr4pPr7QYNfcdoS6k6HWp",
-    "local" => "2owdGqyG6FFzTHy5qhenDXQcEghvr571KZE3gSfRJERSJinuwC",
+    "local" => "2NuxE6iXPyM9tknyHCVkTGQVM6Bj2rYMNW7tRd4aNiXXE3oPcB",
 };
 
 pub const C_CHAIN_ID: phf::Map<&'static str, ChainId> = phf_map! {

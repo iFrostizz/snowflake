@@ -24,11 +24,12 @@ impl DhtCodex<StatelessBlock> for DhtBlocks {
     }
 
     fn encode(value: StatelessBlock) -> Result<Vec<u8>, LightError> {
-        value.pack().map_err(|_| light_errors::ENCODING_FAILED)
+        // value.pack().map_err(|_| light_errors::ENCODING_FAILED)
+        Ok(value.bytes().to_owned())
     }
 
     fn decode(bytes: &[u8]) -> Result<StatelessBlock, LightError> {
-        StatelessBlock::unpack(bytes).map_err(|_| light_errors::DECODING_FAILED)
+        StatelessBlock::unpack(bytes.to_owned()).map_err(|_| light_errors::DECODING_FAILED)
     }
 }
 
@@ -59,15 +60,17 @@ impl ConcreteDht for u64 {
 
 impl DhtContent<CompositeKey<u64, FixedBytes<32>>, StatelessBlock> for DhtBlocks {
     fn verify(&self, block: &StatelessBlock) -> Result<bool, LightError> {
-        let number = u64::from_be_bytes(*block.block.header.number());
-        let hash = block.block.hash;
+        let block_id = *block.id();
+        let block = block.block();
+        let number = u64::from_be_bytes(*block.header.number());
+        let hash = block.hash;
         if self
             .get_from_store(CompositeKey::Both(number, hash))?
             .is_some()
         {
             return Ok(true);
         }
-        Ok(self.verified_blocks.read().unwrap().contains(block.id()))
+        Ok(self.verified_blocks.read().unwrap().contains(&block_id))
     }
 
     fn get_from_store(
@@ -85,8 +88,9 @@ impl DhtContent<CompositeKey<u64, FixedBytes<32>>, StatelessBlock> for DhtBlocks
 
     async fn insert_to_store(&self, bytes: Vec<u8>) -> Result<(), LightError> {
         let decoded = Self::decode(&bytes)?;
-        let number = u64::from_be_bytes(*decoded.block.header.number());
-        let hash = decoded.block.hash;
+        let block = decoded.block();
+        let number = u64::from_be_bytes(*block.header.number());
+        let hash = block.hash;
         if self.is_desired_bucket(number, hash) {
             if !self.verify(&decoded)? {
                 return Err(light_errors::INVALID_CONTENT);
@@ -114,13 +118,18 @@ impl DhtBlocks {
             || self.dht.is_desired_bucket(&hash.to_bucket())
     }
 
-    pub(crate) fn store_block_if_desired(&self, block: StatelessBlock) -> Result<(), LightError> {
-        let number = u64::from_be_bytes(*block.block.header.number());
-        let hash = block.block.hash;
+    pub(crate) fn store_block_if_desired(
+        &self,
+        stateless_block: StatelessBlock,
+    ) -> Result<(), LightError> {
+        let block = stateless_block.block();
+        let number = u64::from_be_bytes(*block.header.number());
+        let hash = block.hash;
         if self.is_desired_bucket(number, hash) {
-            self.dht
-                .store
-                .insert(CompositeKey::Both(number, hash), Self::encode(block)?);
+            self.dht.store.insert(
+                CompositeKey::Both(number, hash),
+                Self::encode(stateless_block)?,
+            );
             Ok(())
         } else {
             Err(light_errors::UNDESIRED_BUCKET)
@@ -319,4 +328,14 @@ mod tests {
     //         assert_eq!(count, blocks);
     //     });
     // }
+
+    #[test]
+    fn wants_all_blocks() {
+        let dht = DhtBlocks::new(NodeId::default(), Bucket::MAX);
+        assert!(dht.is_desired_bucket(0, Default::default()));
+        assert!(dht.is_desired_bucket(1, Default::default()));
+        assert!(dht.is_desired_bucket(u64::MAX, Default::default()));
+        assert!(dht.is_desired_bucket(231312, Default::default()));
+        assert!(dht.is_desired_bucket(1337, Default::default()));
+    }
 }

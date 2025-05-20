@@ -452,10 +452,11 @@ impl Network {
 
     pub async fn verify_block(
         self: &Arc<Network>,
-        block: &StatelessBlock,
+        stateless_block: &StatelessBlock,
     ) -> Result<bool, LightError> {
-        let number = u64::from_be_bytes(*block.block.header.number());
-        let hash = block.block.hash;
+        let block = stateless_block.block();
+        let number = u64::from_be_bytes(*block.header.number());
+        let hash = block.hash;
         if self
             .light_network
             .block_dht
@@ -464,13 +465,14 @@ impl Network {
         {
             return Ok(true);
         }
+        let block_id = *stateless_block.id();
         if self
             .light_network
             .block_dht
             .verified_blocks
             .read()
             .unwrap()
-            .contains(block.id())
+            .contains(&block_id)
         {
             return Ok(true);
         }
@@ -479,7 +481,7 @@ impl Network {
             chain_id: self.config.c_chain_id.as_ref().to_vec(),
             request_id: rand::random(),
             deadline: DEFAULT_DEADLINE,
-            container_ids: vec![block.id().as_ref().to_vec()],
+            container_ids: vec![block_id.as_ref().to_vec()],
         });
         let res = self
             .send_to_peer(&MessageOrSubscribable::Subscribable(message), bootstrapper)
@@ -493,13 +495,13 @@ impl Network {
             if chain_id != self.config.c_chain_id.as_ref().to_vec() {
                 return Err(light_errors::INVALID_CONTENT);
             }
-            if container_ids == vec![block.id().as_ref().to_vec()] {
+            if container_ids == vec![block_id.as_ref().to_vec()] {
                 self.light_network
                     .block_dht
                     .verified_blocks
                     .write()
                     .unwrap()
-                    .insert(*block.id());
+                    .insert(block_id);
                 Ok(true)
             } else {
                 Ok(false)
@@ -601,7 +603,7 @@ impl Network {
         };
 
         let mut last_container_id = message.container_id;
-        loop {
+        'outer: loop {
             let message = SubscribableMessage::GetAncestors(GetAncestors {
                 chain_id: chain_id.clone(),
                 request_id: rand::random(),
@@ -624,20 +626,27 @@ impl Network {
 
             let len = message.containers.len();
             log::debug!("Syncing {} containers", len);
+            if len == 0 {
+                break 'outer;
+            }
+
             for (i, container) in message.containers.into_iter().enumerate() {
-                match StatelessBlock::unpack(&container) {
+                match StatelessBlock::unpack(container) {
                     Ok(block) => {
-                        if i == len - 1 {
-                            last_container_id = block.id().as_ref().to_vec();
-                        }
                         let block_dht = &self.light_network.block_dht;
                         block_dht
                             .verified_blocks
                             .write()
                             .unwrap()
                             .insert(*block.id());
-                        if let Err(err) = block_dht.store_block_if_desired(block) {
+                        if let Err(err) = block_dht.insert_to_store(block.bytes().to_vec()).await {
                             log::error!("Failed to store block: {:?}", err);
+                        }
+                        if i == len - 1 {
+                            if block.block().header.number() == &[0; 8] {
+                                break 'outer;
+                            }
+                            last_container_id = block.id().as_ref().to_vec();
                         }
                         bootstrapper = self.pick_random_bootstrapper().await;
                     }
@@ -654,22 +663,20 @@ impl Network {
                 let light_network = &self.light_network;
                 let blocks = light_network.block_dht.bucket_to_number_iter(last_block);
                 for number in blocks {
-                    log::debug!("Syncing block {}", number);
-                    // TODO remove this once we have working e2e testing
-                    if number > 61000000 {
-                        if let Ok(block) = light_network
-                            .find_content(&light_network.block_dht, CompositeKey::First(number))
-                            .await
-                        {
-                            log::debug!("Found block {}", number);
-                            if let Err(err) = light_network.block_dht.store_block_if_desired(block)
-                            {
-                                log::error!("Failed to store block: {}", err);
-                            }
+                    // log::debug!("Syncing block {}", number);
+                    if let Ok(block) = light_network
+                        .find_content(&light_network.block_dht, CompositeKey::First(number))
+                        .await
+                    {
+                        log::debug!("Found block {}", number);
+                        if let Err(err) = light_network.block_dht.store_block_if_desired(block) {
+                            log::error!("Failed to store block: {}", err);
                         }
                     }
                 }
             }
+
+            tokio::time::sleep(Duration::from_secs(10)).await;
         }
     }
 
@@ -706,9 +713,10 @@ impl Network {
         else {
             return Err(NodeError::Message("invalid message received".to_string()));
         };
-        let block = StatelessBlock::unpack(&res.container)
+        let block = StatelessBlock::unpack(res.container)
             .map_err(|_| NodeError::Message("invalid container received".to_string()))?;
-        Ok(u64::from_be_bytes(*block.block.header.number()))
+        let block = block.block();
+        Ok(u64::from_be_bytes(*block.header.number()))
     }
 
     pub async fn send_to_peer(

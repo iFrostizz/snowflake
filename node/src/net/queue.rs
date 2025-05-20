@@ -38,7 +38,7 @@ impl TryFrom<ClaimedIpPort> for ConnectionData {
     fn try_from(value: ClaimedIpPort) -> Result<Self, Self::Error> {
         // TODO error handling
         let x509_certificate = value.x509_certificate;
-        let node_id = NodeId::from_cert(x509_certificate.clone());
+        let node_id = NodeId::from_cert(&x509_certificate);
         let port = value.ip_port.try_into().map_err(|_| ())?;
         let ip = ip_from_octets(value.ip_addr).map_err(|_| ())?;
         let socket_addr = SocketAddr::new(ip, port);

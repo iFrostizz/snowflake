@@ -5,7 +5,7 @@ use crate::dht::{DhtBuckets, LightValue};
 use crate::id::{ChainId, NodeId};
 use crate::message::mail_box::Mail;
 use crate::message::{mail_box::MailBox, pipeline::Pipeline, MiniMessage, SubscribableMessage};
-use crate::net::ip::UnsignedIp;
+// use crate::net::ip::UnsignedIp;
 use crate::net::light::LightNetwork;
 use crate::net::node::SendErrorWrapper;
 use crate::net::queue::ConnectionQueue;
@@ -28,7 +28,7 @@ use crate::utils::{bloom::Filter, constants, ip::ip_from_octets, packer::Packer}
 use async_recursion::async_recursion;
 use flume::{Receiver, Sender};
 use indexmap::IndexMap;
-use openssl::rsa::Rsa;
+// use openssl::rsa::Rsa;
 use proto_lib::p2p::{
     self, message::Message, AppError, BloomFilter, Client, GetPeerList, Handshake,
 };
@@ -63,6 +63,7 @@ pub struct BackoffParams {
     pub max_retries: usize,
 }
 
+#[allow(unused)]
 #[derive(Debug, Clone)]
 pub struct HandshakeInfos {
     pub ip_signing_time: u64,
@@ -330,30 +331,25 @@ impl Peer {
         (write, read, recurring)
     }
 
-async fn connect(
-    sock_addr: &SocketAddr,
-    config: &Arc<ClientConfig>,
-) -> Result<TlsStream<TcpStream>, NodeError> {
-    let dns_name =
-        ServerName::try_from(sock_addr.ip().to_string())
+    async fn connect(
+        sock_addr: &SocketAddr,
+        config: &Arc<ClientConfig>,
+    ) -> Result<TlsStream<TcpStream>, NodeError> {
+        let dns_name = ServerName::try_from(sock_addr.ip().to_string())
             .map_err(|e| NodeError::Message(format!("Invalid DNS name: {}", e)))?;
 
-    let sock = tokio::time::timeout(
-        Duration::from_secs(5),
-        TcpStream::connect(sock_addr)
-    ).await??;
+        let sock =
+            tokio::time::timeout(Duration::from_secs(5), TcpStream::connect(sock_addr)).await??;
 
-    let config = TlsConnector::from(config.clone());
-    match config.connect(dns_name.clone(), sock).await {
-        Ok(tls) => Ok(TlsStream::Client(tls)),
-        Err(e) => {
-            Err(NodeError::Message(format!(
+        let config = TlsConnector::from(config.clone());
+        match config.connect(dns_name.clone(), sock).await {
+            Ok(tls) => Ok(TlsStream::Client(tls)),
+            Err(e) => Err(NodeError::Message(format!(
                 "TLS connection error for {}: {}",
                 sock_addr, e
-            )))
+            ))),
         }
     }
-}
 
     async fn write_peer(
         out_pipeline: Arc<Pipeline>,

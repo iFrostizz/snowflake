@@ -32,6 +32,7 @@ pub trait ConcreteDht {
 
 #[derive(Debug)]
 struct BucketDht {
+    k: Bucket,
     bucket_lo: Bucket,
     bucket_hi: Bucket,
 }
@@ -46,6 +47,7 @@ impl BucketDht {
             (bucket.wrapping_sub(k / two), bucket.wrapping_add(k / two))
         };
         Self {
+            k,
             bucket_lo,
             bucket_hi,
         }
@@ -57,11 +59,14 @@ impl BucketDht {
     }
 
     pub fn is_desired_bucket(&self, bucket: &Bucket) -> bool {
+        if self.k == Bucket::ZERO {
+            return false;
+        }
         let (bucket_lo, bucket_hi) = self.bucket_range();
         match bucket_lo.cmp(bucket_hi) {
-            Ordering::Less => bucket_lo <= bucket && bucket < bucket_hi,
-            Ordering::Equal => false,
-            Ordering::Greater => bucket_lo <= bucket || bucket < bucket_hi,
+            Ordering::Less => bucket_lo <= bucket && bucket <= bucket_hi,
+            Ordering::Equal => true,
+            Ordering::Greater => bucket_lo <= bucket || bucket <= bucket_hi,
         }
     }
 }
@@ -144,6 +149,7 @@ pub mod light_errors {
         code: 1,
         message: "Content not found",
     };
+    #[allow(unused)]
     pub(crate) const ENCODING_FAILED: LightError = LightError {
         code: 2,
         message: "Invalid encoded value",
@@ -211,7 +217,8 @@ mod tests {
         assert_eq!(hi, &Bucket::from_be_bytes(bytes_with_last(0, 8)));
         assert!(dht.is_desired_bucket(&num_to_bucket(0)));
         assert!(dht.is_desired_bucket(lo));
-        assert!(!dht.is_desired_bucket(&num_to_bucket(8)));
+        assert!(dht.is_desired_bucket(&num_to_bucket(8)));
+        assert!(!dht.is_desired_bucket(&num_to_bucket(9)));
         assert!(dht.is_desired_bucket(&Bucket::from_be_bytes([0xff; 20])));
         assert!(!dht.is_desired_bucket(&num_to_bucket(16)));
 
@@ -229,7 +236,7 @@ mod tests {
         assert_eq!(hi, &Bucket::from_be_bytes(bytes_with_last(0, 16)));
         assert!(dht.is_desired_bucket(&num_to_bucket(0)));
         assert!(dht.is_desired_bucket(&num_to_bucket(8)));
-        assert!(!dht.is_desired_bucket(&num_to_bucket(16)));
-        assert!(dht.is_desired_bucket(&num_to_bucket(15)));
+        assert!(!dht.is_desired_bucket(&num_to_bucket(17)));
+        assert!(dht.is_desired_bucket(&num_to_bucket(16)));
     }
 }

@@ -47,7 +47,8 @@ ENV GOCACHE=/root/.cache/go-cache
 ENV GOMODCACHE=/root/.cache/gomod-cache
 RUN --mount=type=cache,target="/root/.cache/go-cache" ./scripts/build.sh
 WORKDIR /app
-RUN git clone --depth 1 --branch custom_bin https://github.com/ifrostizz/avalanche-network-runner anr
+#RUN git clone --depth 1 --branch custom_bin https://github.com/ifrostizz/avalanche-network-runner anr
+COPY docker/anr/ ./anr
 WORKDIR /app/anr
 RUN for i in $(seq 1 5); do \
     openssl req -x509 -newkey rsa:4096 -keyout local/default/node${i}/staker.key -out local/default/node${i}/staker.crt \

@@ -64,7 +64,7 @@ impl Node {
         let bytes = std::fs::read(&network_config.cert_path).expect("failed to read cert");
         let x509 = x509::X509::from_pem(&bytes).unwrap();
         let cert = x509.to_der().unwrap();
-        let node_id = NodeId::from_cert(cert);
+        let node_id = NodeId::from_cert(&cert);
 
         let peers_infos = Arc::new(RwLock::new(IndexMap::new()));
         let network = Arc::new(Network::new(network_config, node_id, peers_infos.clone()).unwrap());
@@ -195,7 +195,10 @@ impl Node {
                 peer
             }
             Err(err) => {
-                log::debug!("error on connecting to {} with back off: {err}", data.node_id);
+                log::debug!(
+                    "error on connecting to {} with back off: {err}",
+                    data.node_id
+                );
                 return Err(err);
             }
         };

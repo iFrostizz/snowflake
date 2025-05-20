@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::hash::Hash;
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub enum CompositeKey<K1, K2> {
     First(K1),
     Second(K2),

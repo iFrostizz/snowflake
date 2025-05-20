@@ -84,7 +84,7 @@ impl Listener {
                 };
 
                 let x509_certificate = cert.as_ref().to_vec();
-                let node_id = NodeId::from_cert(x509_certificate.clone());
+                let node_id = NodeId::from_cert(&x509_certificate);
 
                 // TODO support peer replacements
                 if let Err(err) = node.network.check_add_peer(&node_id) {

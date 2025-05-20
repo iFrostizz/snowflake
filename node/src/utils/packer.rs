@@ -5,6 +5,7 @@ pub struct Packer {
     bytes: Vec<u8>,
 }
 
+#[allow(unused)]
 impl Packer {
     pub fn new() -> Self {
         Self { bytes: Vec::new() }

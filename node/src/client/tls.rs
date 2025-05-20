@@ -1,7 +1,7 @@
 pub(crate) mod danger {
-    use rustls::{server, DistinguishedName};
     use rustls::client::danger::HandshakeSignatureValid;
     use rustls::server::danger::ClientCertVerified;
+    use rustls::{server, DistinguishedName};
     use tokio_rustls::rustls::{
         client,
         crypto::{verify_tls12_signature, verify_tls13_signature, CryptoProvider},
@@ -68,11 +68,21 @@ pub(crate) mod danger {
             &[]
         }
 
-        fn verify_client_cert(&self, _end_entity: &CertificateDer<'_>, _intermediates: &[CertificateDer<'_>], _now: UnixTime) -> Result<ClientCertVerified, Error> {
+        fn verify_client_cert(
+            &self,
+            _end_entity: &CertificateDer<'_>,
+            _intermediates: &[CertificateDer<'_>],
+            _now: UnixTime,
+        ) -> Result<ClientCertVerified, Error> {
             Ok(server::danger::ClientCertVerified::assertion())
         }
 
-        fn verify_tls12_signature(&self, message: &[u8], cert: &CertificateDer<'_>, dss: &DigitallySignedStruct) -> Result<HandshakeSignatureValid, Error> {
+        fn verify_tls12_signature(
+            &self,
+            message: &[u8],
+            cert: &CertificateDer<'_>,
+            dss: &DigitallySignedStruct,
+        ) -> Result<HandshakeSignatureValid, Error> {
             verify_tls12_signature(
                 message,
                 cert,
@@ -81,7 +91,12 @@ pub(crate) mod danger {
             )
         }
 
-        fn verify_tls13_signature(&self, message: &[u8], cert: &CertificateDer<'_>, dss: &DigitallySignedStruct) -> Result<HandshakeSignatureValid, Error> {
+        fn verify_tls13_signature(
+            &self,
+            message: &[u8],
+            cert: &CertificateDer<'_>,
+            dss: &DigitallySignedStruct,
+        ) -> Result<HandshakeSignatureValid, Error> {
             verify_tls13_signature(
                 message,
                 cert,

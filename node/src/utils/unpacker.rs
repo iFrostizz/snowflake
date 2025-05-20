@@ -1,4 +1,4 @@
-use super::packer::{Packer, PackerError};
+use super::packer::PackerError;
 use crate::id::BlockID;
 use crate::utils::rlp::Block;
 use sha2::Digest;
@@ -15,7 +15,7 @@ impl Unpacker {
         let res = bytes
             .get(*cursor..*cursor + N)
             .map(|bytes| bytes.try_into().unwrap())
-            .ok_or(PackerError::UnpackLen(name, 32))?;
+            .ok_or(PackerError::UnpackLen(name, N))?;
         *cursor += N;
         Ok(res)
     }
@@ -39,52 +39,63 @@ impl Unpacker {
     }
 }
 
+#[allow(unused)]
 #[derive(Debug)]
 pub struct StatelessBlock {
-    #[allow(unused)]
-    pub version: Option<Vec<u8>>,
+    pub version: Option<u16>,
     pub parent_id: BlockID,
-    pub timestamp: u64,
+    pub timestamp: i64,
     pub p_chain_height: u64,
     pub certificate: Vec<u8>,
-    pub block: Block,
+    pub block: Option<Block>,
     pub sig: Vec<u8>,
+
     id: BlockID,
+    bytes: Vec<u8>,
 }
 
 impl StatelessBlock {
-    pub fn unpack(bytes: &[u8]) -> Result<StatelessBlock, PackerError> {
+    /// `ParseWithoutVerification` in avalanchego
+    pub fn unpack(bytes: Vec<u8>) -> Result<StatelessBlock, PackerError> {
         let mut cursor = 0;
-        cursor += 6; // version
 
+        // First unpack the version (2 bytes)
+        let version = u16::from_be_bytes(Unpacker::unpack_fixed_bytes(
+            &bytes,
+            &mut cursor,
+            "version".to_string(),
+        )?);
+
+        cursor += 4; // interface https://github.com/ava-labs/avalanchego/blob/84a2c77186ce66381ec1dbdca5b8537472bd46e2/codec/reflectcodec/type_codec.go#L638-L639
+
+        // println!("{:?}", &bytes[cursor..]);
+
+        // Then unpack the nested statelessUnsignedBlock
         let parent_id = BlockID::from(Unpacker::unpack_fixed_bytes(
-            bytes,
+            &bytes,
             &mut cursor,
             "parent_id".to_string(),
         )?);
 
-        let timestamp = u64::from_be_bytes(Unpacker::unpack_fixed_bytes(
-            bytes,
+        let timestamp = i64::from_be_bytes(Unpacker::unpack_fixed_bytes(
+            &bytes,
             &mut cursor,
             "timestamp".to_string(),
         )?);
 
         let p_chain_height = u64::from_be_bytes(Unpacker::unpack_fixed_bytes(
-            bytes,
+            &bytes,
             &mut cursor,
             "p_chain_height".to_string(),
         )?);
 
-        let cert_bytes = Unpacker::unpack_bytes(bytes, &mut cursor, "cert_bytes".to_string())?;
+        let cert_bytes = Unpacker::unpack_bytes(&bytes, &mut cursor, "cert_bytes".to_string())?;
+        let block_bytes = Unpacker::unpack_bytes(&bytes, &mut cursor, "block_bytes".to_string())?;
+        let sig_bytes = Unpacker::unpack_bytes(&bytes, &mut cursor, "sig_bytes".to_string())?;
 
-        let rlp_bytes = Unpacker::unpack_bytes(bytes, &mut cursor, "rlp_bytes".to_string())?;
-        let block = Block::decode(rlp_bytes)?;
-
-        let sig_bytes = Unpacker::unpack_bytes(bytes, &mut cursor, "sig_bytes".to_string())?;
-
-        if cursor != bytes.len() {
-            return Err(PackerError::Conversion(String::from("wrong block length")));
-        }
+        // if dbg!(cursor) != dbg!(bytes.len()) {
+        //     return Err(PackerError::Conversion(String::from("wrong block length")));
+        // }
 
         let unsigned_bytes_len = bytes
             .len()
@@ -99,14 +110,19 @@ impl StatelessBlock {
         let id = id_hash.into();
 
         Ok(StatelessBlock {
-            version: None,
+            version: Some(version), // Now we can store the version
             parent_id,
             timestamp,
             p_chain_height,
-            certificate: cert_bytes.to_vec(), // TODO (optional) verify proposer if not empty
-            block,
+            certificate: cert_bytes.to_vec(),
+            block: if block_bytes.is_empty() {
+                None
+            } else {
+                Some(Block::decode(block_bytes)?)
+            },
             sig: sig_bytes.to_vec(),
             id,
+            bytes,
         })
     }
 
@@ -114,15 +130,28 @@ impl StatelessBlock {
         &self.id
     }
 
-    pub fn pack(&self) -> Result<Vec<u8>, PackerError> {
-        let mut packer = Packer::new();
-        packer.pack_fixed_bytes(&[0, 0, 0, 0, 0, 0]);
-        packer.pack_fixed_bytes(self.parent_id.as_ref());
-        packer.pack_fixed_bytes(&self.timestamp.to_be_bytes());
-        packer.pack_fixed_bytes(&self.p_chain_height.to_be_bytes());
-        packer.pack_bytes(&self.certificate);
-        packer.pack_bytes(&self.block.encode()?);
-        packer.pack_bytes(&self.sig);
-        Ok(packer.finish())
+    pub fn block(&self) -> Block {
+        self.block.clone().unwrap_or_default()
     }
+
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    // #[deprecated]
+    // pub fn pack(&self) -> Result<Vec<u8>, PackerError> {
+    //     let mut packer = Packer::new();
+    //     packer.pack_fixed_bytes(&[0, 0, 0, 0, 0, 0]);
+    //     packer.pack_fixed_bytes(self.parent_id.as_ref());
+    //     packer.pack_fixed_bytes(&self.timestamp.to_be_bytes());
+    //     packer.pack_fixed_bytes(&self.p_chain_height.to_be_bytes());
+    //     packer.pack_bytes(&self.certificate);
+    //     if let Some(block) = &self.block {
+    //         packer.pack_bytes(&block.encode()?);
+    //     } else {
+    //         packer.pack_bytes(&[]);
+    //     }
+    //     packer.pack_bytes(&self.sig);
+    //     Ok(packer.finish())
+    // }
 }

@@ -76,6 +76,7 @@ impl UnsignedIp {
         })
     }
 
+    #[allow(unused)]
     pub fn verify(&self, signature: &[u8], pkey: Rsa<Public>) -> Result<bool, ErrorStack> {
         let max_timestamp = time::SystemTime::now()
             .duration_since(time::UNIX_EPOCH)
