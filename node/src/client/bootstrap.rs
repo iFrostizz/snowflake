@@ -118,7 +118,7 @@ impl<'a> Bootstrappers<'a> {
                 .next()
                 .expect("empty socket");
 
-            let connection_queue = node.connection_queue.clone();
+            let connection_queue = node.network.connection_queue.clone();
             set.push((
                 node_id,
                 connection_queue.connect_peer(
@@ -129,6 +129,7 @@ impl<'a> Bootstrappers<'a> {
                         timestamp: 0,
                         x509_certificate: vec![],
                     },
+                    None,
                 ),
             ));
         }

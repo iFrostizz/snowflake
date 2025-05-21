@@ -1,4 +1,4 @@
-.PHONY: proto
+.PHONY: proto, keys
 
 ci-check: fmt-check	clippy test proto-check
 

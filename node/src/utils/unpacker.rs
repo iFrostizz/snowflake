@@ -1,4 +1,4 @@
-use super::packer::{Packer, PackerError};
+use super::packer::PackerError;
 use crate::id::BlockID;
 use crate::utils::rlp::Block;
 use sha2::Digest;
@@ -15,7 +15,7 @@ impl Unpacker {
         let res = bytes
             .get(*cursor..*cursor + N)
             .map(|bytes| bytes.try_into().unwrap())
-            .ok_or(PackerError::UnpackLen(name, 32))?;
+            .ok_or(PackerError::UnpackLen(name, N))?;
         *cursor += N;
         Ok(res)
     }
@@ -39,90 +39,113 @@ impl Unpacker {
     }
 }
 
+#[allow(unused)]
 #[derive(Debug)]
 pub struct StatelessBlock {
-    #[allow(unused)]
-    pub version: Option<Vec<u8>>,
+    pub version: Option<u16>,
     pub parent_id: BlockID,
-    pub timestamp: u64,
+    pub timestamp: i64,
     pub p_chain_height: u64,
     pub certificate: Vec<u8>,
     pub block: Block,
-    id: BlockID,
     pub sig: Vec<u8>,
+
+    id: BlockID,
+    bytes: Vec<u8>,
 }
 
 impl StatelessBlock {
-    pub fn unpack(bytes: &[u8]) -> Result<StatelessBlock, PackerError> {
-        let mut cursor = 0;
-        cursor += 6; // version
+    /// `ParseWithoutVerification` in avalanchego
+    pub fn unpack(bytes: Vec<u8>) -> Result<StatelessBlock, PackerError> {
+        if let Ok(block) = Block::decode(&bytes) {
+            let parent_id = BlockID::from(*block.header.parent_hash());
+            let timestamp = i64::from_be_bytes(*block.header.time());
+            let id = BlockID::from(block.hash().0);
+            Ok(StatelessBlock {
+                version: None,
+                parent_id,
+                timestamp,
+                p_chain_height: 0,
+                certificate: vec![],
+                block,
+                sig: vec![],
+                id,
+                bytes,
+            })
+        } else {
+            println!("{:?}", bytes);
+            let mut cursor = 0;
 
-        let parent_id = BlockID::from(Unpacker::unpack_fixed_bytes(
-            bytes,
-            &mut cursor,
-            "parent_id".to_string(),
-        )?);
+            // First unpack the version (2 bytes)
+            let version = u16::from_be_bytes(Unpacker::unpack_fixed_bytes(
+                &bytes,
+                &mut cursor,
+                "version".to_string(),
+            )?);
 
-        let timestamp = u64::from_be_bytes(Unpacker::unpack_fixed_bytes(
-            bytes,
-            &mut cursor,
-            "timestamp".to_string(),
-        )?);
+            cursor += 4; // interface https://github.com/ava-labs/avalanchego/blob/84a2c77186ce66381ec1dbdca5b8537472bd46e2/codec/reflectcodec/type_codec.go#L638-L639
 
-        let p_chain_height = u64::from_be_bytes(Unpacker::unpack_fixed_bytes(
-            bytes,
-            &mut cursor,
-            "p_chain_height".to_string(),
-        )?);
+            // println!("{:?}", &bytes[cursor..]);
 
-        let cert_bytes = Unpacker::unpack_bytes(bytes, &mut cursor, "cert_bytes".to_string())?;
+            // Then unpack the nested statelessUnsignedBlock
+            let parent_id = BlockID::from(Unpacker::unpack_fixed_bytes(
+                &bytes,
+                &mut cursor,
+                "parent_id".to_string(),
+            )?);
 
-        let rlp_bytes = Unpacker::unpack_bytes(bytes, &mut cursor, "rlp_bytes".to_string())?;
-        let block = Block::decode(rlp_bytes)?;
+            let timestamp = i64::from_be_bytes(Unpacker::unpack_fixed_bytes(
+                &bytes,
+                &mut cursor,
+                "timestamp".to_string(),
+            )?);
 
-        let sig_bytes = Unpacker::unpack_bytes(bytes, &mut cursor, "sig_bytes".to_string())?;
+            let p_chain_height = u64::from_be_bytes(Unpacker::unpack_fixed_bytes(
+                &bytes,
+                &mut cursor,
+                "p_chain_height".to_string(),
+            )?);
 
-        if cursor != bytes.len() {
-            return Err(PackerError::Conversion(String::from("wrong block length")));
+            let cert_bytes = Unpacker::unpack_bytes(&bytes, &mut cursor, "cert_bytes".to_string())?;
+            let block_bytes =
+                Unpacker::unpack_bytes(&bytes, &mut cursor, "block_bytes".to_string())?;
+            let sig_bytes = Unpacker::unpack_bytes(&bytes, &mut cursor, "sig_bytes".to_string())?;
+
+            if cursor != bytes.len() {
+                return Err(PackerError::Conversion(String::from("wrong block length")));
+            }
+
+            let unsigned_bytes_len = bytes
+                .len()
+                .checked_sub(i32::BITS as usize / 8)
+                .ok_or_else(|| PackerError::Conversion(String::from("len underflow")))?
+                .checked_sub(sig_bytes.len())
+                .ok_or_else(|| PackerError::Conversion(String::from("len underflow")))?;
+
+            let mut hasher = Sha256::new();
+            hasher.update(&bytes[..unsigned_bytes_len]);
+            let id_hash: [u8; BlockID::LEN] = hasher.finalize().into();
+            let id = id_hash.into();
+
+            Ok(StatelessBlock {
+                version: Some(version), // Now we can store the version
+                parent_id,
+                timestamp,
+                p_chain_height,
+                certificate: cert_bytes.to_vec(),
+                block: Block::decode(block_bytes)?,
+                sig: sig_bytes.to_vec(),
+                id,
+                bytes,
+            })
         }
-
-        let unsigned_bytes_len = bytes
-            .len()
-            .checked_sub(i32::BITS as usize / 8)
-            .ok_or_else(|| PackerError::Conversion(String::from("len underflow")))?
-            .checked_sub(sig_bytes.len())
-            .ok_or_else(|| PackerError::Conversion(String::from("len underflow")))?;
-
-        let mut hasher = Sha256::new();
-        hasher.update(&bytes[..unsigned_bytes_len]);
-        let id_hash: [u8; BlockID::LEN] = hasher.finalize().into();
-        let id = id_hash.into();
-
-        Ok(StatelessBlock {
-            version: None,
-            parent_id,
-            timestamp,
-            p_chain_height,
-            certificate: cert_bytes.to_vec(), // TODO (optional) verify proposer if not empty
-            block,
-            id,
-            sig: sig_bytes.to_vec(),
-        })
     }
 
     pub fn id(&self) -> &BlockID {
         &self.id
     }
 
-    pub fn pack(&self) -> Result<Vec<u8>, PackerError> {
-        let mut packer = Packer::new();
-        packer.pack_fixed_bytes(&[0, 0, 0, 0, 0, 0]);
-        packer.pack_fixed_bytes(self.parent_id.as_ref());
-        packer.pack_fixed_bytes(&self.timestamp.to_be_bytes());
-        packer.pack_fixed_bytes(&self.p_chain_height.to_be_bytes());
-        packer.pack_bytes(&self.certificate);
-        packer.pack_bytes(&self.block.encode()?);
-        packer.pack_bytes(&self.sig);
-        Ok(packer.finish())
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
     }
 }

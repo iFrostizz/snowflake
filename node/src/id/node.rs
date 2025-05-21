@@ -125,7 +125,7 @@ impl Serialize for NodeId {
 impl NodeId {
     pub const LEN: usize = 20;
 
-    pub fn from_cert(cert: Vec<u8>) -> Self {
+    pub fn from_cert(cert: &[u8]) -> Self {
         let mut hasher = <Sha256 as Digest>::new();
         hasher.update(cert);
         let inner = hasher.finalize();
@@ -177,7 +177,7 @@ mod tests {
                 println!("{:?}", &cert);
                 assert!(!cert.is_empty());
 
-                let node_id = NodeId::from_cert(cert);
+                let node_id = NodeId::from_cert(&cert);
 
                 assert_eq!(node_id.to_string(), format!("NodeID-{}", file_name));
             }

@@ -59,7 +59,6 @@ impl PeerSender {
         message: SubscribableMessage,
         callback: oneshot::Sender<Message>,
     ) -> Result<(), NodeError> {
-        // TODO: the node_id parameter feels a bit duplicated here, does it really makes sense?
         mail_tx
             .send(Mail {
                 node_id: self.node_id,

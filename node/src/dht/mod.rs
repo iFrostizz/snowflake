@@ -4,15 +4,24 @@ pub mod kademlia;
 use crate::dht::kademlia::{LockedMapDb, ValueOrNodes};
 use crate::id::NodeId;
 use crate::net::queue::ConnectionData;
-use alloy::primitives::keccak256;
 use jsonrpsee::types::ErrorObject;
+use proto_lib::sdk;
 use ruint::Uint;
 use serde::Deserialize;
 use std::cmp::Ordering;
+use std::fmt::{Display, Formatter};
 
 #[derive(Debug, Clone, Eq, Deserialize, PartialEq)]
 pub struct DhtBuckets {
     pub block: Bucket,
+}
+
+impl From<&DhtBuckets> for sdk::DhtBuckets {
+    fn from(buckets: &DhtBuckets) -> Self {
+        sdk::DhtBuckets {
+            block: buckets.block.to_be_bytes_vec(),
+        }
+    }
 }
 
 pub type Bucket = Uint<160, 3>;
@@ -21,15 +30,9 @@ pub trait ConcreteDht {
     fn to_bucket(&self) -> Bucket;
 }
 
-impl ConcreteDht for u64 {
-    fn to_bucket(&self) -> Bucket {
-        let arr: [u8; 20] = keccak256(self.to_be_bytes())[0..20].try_into().unwrap();
-        <Bucket>::from_be_bytes(arr)
-    }
-}
-
 #[derive(Debug)]
 struct BucketDht {
+    k: Bucket,
     bucket_lo: Bucket,
     bucket_hi: Bucket,
 }
@@ -37,8 +40,14 @@ struct BucketDht {
 impl BucketDht {
     pub(crate) fn new(node_id: NodeId, k: Bucket) -> Self {
         let bucket = Bucket::from_be_bytes(node_id.into());
-        let (bucket_lo, bucket_hi) = (bucket.wrapping_sub(k), bucket.wrapping_add(k));
+        let two: Bucket = 2.try_into().unwrap();
+        let (bucket_lo, bucket_hi) = if k == Bucket::MAX {
+            (bucket.wrapping_sub(k / two), bucket.wrapping_sub(k / two))
+        } else {
+            (bucket.wrapping_sub(k / two), bucket.wrapping_add(k / two))
+        };
         Self {
+            k,
             bucket_lo,
             bucket_hi,
         }
@@ -50,11 +59,14 @@ impl BucketDht {
     }
 
     pub fn is_desired_bucket(&self, bucket: &Bucket) -> bool {
+        if self.k == Bucket::ZERO {
+            return false;
+        }
         let (bucket_lo, bucket_hi) = self.bucket_range();
         match bucket_lo.cmp(bucket_hi) {
-            Ordering::Less => bucket_lo <= bucket && bucket < bucket_hi,
-            Ordering::Equal => bucket_lo == bucket,
-            Ordering::Greater => bucket_lo <= bucket || bucket < bucket_hi,
+            Ordering::Less => bucket_lo <= bucket && bucket <= bucket_hi,
+            Ordering::Equal => true,
+            Ordering::Greater => bucket_lo <= bucket || bucket <= bucket_hi,
         }
     }
 }
@@ -124,6 +136,12 @@ pub struct LightError {
     pub message: &'static str,
 }
 
+impl Display for LightError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
 pub mod light_errors {
     use super::LightError;
 
@@ -131,6 +149,7 @@ pub mod light_errors {
         code: 1,
         message: "Content not found",
     };
+    #[allow(unused)]
     pub(crate) const ENCODING_FAILED: LightError = LightError {
         code: 2,
         message: "Invalid encoded value",
@@ -167,6 +186,7 @@ impl From<LightError> for jsonrpsee::types::ErrorObjectOwned {
     }
 }
 
+#[derive(Debug)]
 pub enum LightValue<T = Vec<u8>> {
     Ok,
     ValueOrNodes(ValueOrNodes<T>),
@@ -192,13 +212,14 @@ mod tests {
             arr
         };
 
-        let dht = BucketDht::new(NodeId::default(), num_to_bucket(8));
+        let dht = BucketDht::new(NodeId::default(), num_to_bucket(16));
         let (lo, hi) = dht.bucket_range();
         assert_eq!(lo, &Bucket::from_be_bytes(bytes_with_last(0xff, 0xf8)));
         assert_eq!(hi, &Bucket::from_be_bytes(bytes_with_last(0, 8)));
         assert!(dht.is_desired_bucket(&num_to_bucket(0)));
         assert!(dht.is_desired_bucket(lo));
-        assert!(!dht.is_desired_bucket(&num_to_bucket(8)));
+        assert!(dht.is_desired_bucket(&num_to_bucket(8)));
+        assert!(!dht.is_desired_bucket(&num_to_bucket(9)));
         assert!(dht.is_desired_bucket(&Bucket::from_be_bytes([0xff; 20])));
         assert!(!dht.is_desired_bucket(&num_to_bucket(16)));
 
@@ -206,17 +227,17 @@ mod tests {
         let (lo, hi) = dht.bucket_range();
         assert_eq!(lo, &Bucket::from_be_bytes([0; 20]));
         assert_eq!(lo, hi);
-        assert!(dht.is_desired_bucket(&num_to_bucket(0)));
+        assert!(!dht.is_desired_bucket(&num_to_bucket(0)));
         assert!(!dht.is_desired_bucket(&Bucket::from_be_bytes([0xff; 20])));
         assert!(!dht.is_desired_bucket(&num_to_bucket(1)));
 
-        let dht = BucketDht::new(NodeId::from(bytes_with_last(0, 8)), num_to_bucket(8));
+        let dht = BucketDht::new(NodeId::from(bytes_with_last(0, 8)), num_to_bucket(16));
         let (lo, hi) = dht.bucket_range();
         assert_eq!(lo, &Bucket::from_be_bytes([0; 20]));
         assert_eq!(hi, &Bucket::from_be_bytes(bytes_with_last(0, 16)));
         assert!(dht.is_desired_bucket(&num_to_bucket(0)));
         assert!(dht.is_desired_bucket(&num_to_bucket(8)));
-        assert!(!dht.is_desired_bucket(&num_to_bucket(16)));
-        assert!(dht.is_desired_bucket(&num_to_bucket(15)));
+        assert!(!dht.is_desired_bucket(&num_to_bucket(17)));
+        assert!(dht.is_desired_bucket(&num_to_bucket(16)));
     }
 }

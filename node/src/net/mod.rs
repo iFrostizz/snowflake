@@ -5,7 +5,10 @@ use crate::dht::{DhtBuckets, LightValue};
 use crate::id::{ChainId, NodeId};
 use crate::message::mail_box::Mail;
 use crate::message::{mail_box::MailBox, pipeline::Pipeline, MiniMessage, SubscribableMessage};
+// use crate::net::ip::UnsignedIp;
+use crate::net::light::LightNetwork;
 use crate::net::node::SendErrorWrapper;
+use crate::net::queue::ConnectionQueue;
 use crate::net::sdk::Store;
 use crate::net::sdk::{FindNode, FindValue, LightHandshake};
 use crate::net::{
@@ -20,10 +23,12 @@ use crate::server::{
 };
 use crate::utils::bls::Bls;
 use crate::utils::constants::SNOWFLAKE_HANDLER_ID;
-use crate::utils::{bloom::Filter, ip::ip_from_octets, packer::Packer};
+use crate::utils::unpacker::StatelessBlock;
+use crate::utils::{bloom::Filter, constants, ip::ip_from_octets, packer::Packer};
 use async_recursion::async_recursion;
 use flume::{Receiver, Sender};
 use indexmap::IndexMap;
+// use openssl::rsa::Rsa;
 use proto_lib::p2p::{
     self, message::Message, AppError, BloomFilter, Client, GetPeerList, Handshake,
 };
@@ -36,7 +41,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::{BufReader, ErrorKind};
 use std::net::SocketAddr;
 use std::sync::{Arc, RwLock};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 use tokio::io::{split, ReadHalf, WriteHalf};
 use tokio::net::TcpStream;
 use tokio::sync::broadcast;
@@ -76,6 +81,7 @@ pub struct HandshakeInfos {
 pub struct Network {
     pub config: NetworkConfig,
     pub node_id: NodeId,
+    pub connection_queue: Arc<ConnectionQueue>,
     pub signed_ip: SignedIp,
     pub client: Client,
     pub client_config: Arc<ClientConfig>,
@@ -88,6 +94,9 @@ pub struct Network {
     pub public_key: [u8; Bls::PUBLIC_KEY_BYTES],
     pub node_pop: Vec<u8>,
     pub handshake_semaphore: Arc<Semaphore>,
+    pub mail_box: Arc<MailBox>,
+    pub light_network: Arc<LightNetwork>,
+    pub verification_rx: Receiver<(StatelessBlock, oneshot::Sender<bool>)>,
 }
 
 /// Intervals of operations in milliseconds
@@ -165,7 +174,7 @@ impl Peer {
         node_id: NodeId,
         x509_certificate: Vec<u8>,
         sock_addr: SocketAddr,
-        timestamp: u64,
+        timestamp: u64, // TODO populate this with something different than 0.
         tls: TlsStream<TcpStream>,
     ) -> Self {
         let (spn, rpn) = flume::unbounded();
@@ -327,16 +336,19 @@ impl Peer {
         config: &Arc<ClientConfig>,
     ) -> Result<TlsStream<TcpStream>, NodeError> {
         let dns_name = ServerName::try_from(sock_addr.ip().to_string())
-            .map_err(|_| NodeError::Dns)?
-            .to_owned();
+            .map_err(|e| NodeError::Message(format!("Invalid DNS name: {}", e)))?;
 
         let sock =
             tokio::time::timeout(Duration::from_secs(5), TcpStream::connect(sock_addr)).await??;
 
         let config = TlsConnector::from(config.clone());
-        let tls = config.connect(dns_name, sock).await?;
-
-        Ok(TlsStream::Client(tls))
+        match config.connect(dns_name.clone(), sock).await {
+            Ok(tls) => Ok(TlsStream::Client(tls)),
+            Err(e) => Err(NodeError::Message(format!(
+                "TLS connection error for {}: {}",
+                sock_addr, e
+            ))),
+        }
     }
 
     async fn write_peer(
@@ -502,7 +514,7 @@ impl Peer {
             Message::Handshake(handshake) => {
                 let Handshake {
                     network_id,
-                    my_time: _, // TODO reject if too early
+                    my_time,
                     ip_addr,
                     ip_port,
                     ip_signing_time,
@@ -515,6 +527,26 @@ impl Peer {
                     ..
                 } = handshake;
 
+                let ip = ip_from_octets(ip_addr)
+                    .map_err(|_| NodeError::Message("failed to deserialize IP".to_string()))?;
+                let port = ip_port
+                    .try_into()
+                    .map_err(|_| NodeError::Message("failed to convert port".to_string()))?;
+
+                // let unsigned_ip = UnsignedIp::new(ip, port, ip_signing_time);
+                // let public_key = Rsa::public_key_from_der(&self.identity.x509_certificate)?;
+                // if !unsigned_ip.verify(&ip_node_id_sig, public_key)? {
+                //     return Err(NodeError::Message("invalid node certificate".to_string()));
+                // }
+
+                let now = SystemTime::now()
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs();
+                if now.abs_diff(my_time) > constants::MAX_CLOCK_DIFF {
+                    return Err(NodeError::Message("timestamp is too skewed".to_string()));
+                }
+
                 // send a PeerList message according to their filter
                 self.channels
                     .spn
@@ -523,17 +555,8 @@ impl Peer {
                         known_peers,
                     })
                     .map_err(SendErrorWrapper::from)?;
-
-                let ip = ip_from_octets(ip_addr)
-                    .map_err(|_| NodeError::Message("failed to serialize IP".to_string()))?;
-                let port = ip_port
-                    .try_into()
-                    .map_err(|_| NodeError::Message("failed to convert port".to_string()))?;
                 let sock_addr = SocketAddr::new(ip, port);
 
-                // TODO check if the peer is already known because this will lead to message
-                //  amplification if connecting to snowflake clients.
-                //  Also, the PeerList should only be sent in that case.
                 self.channels
                     .spn
                     .send(PeerMessage::NewPeer {

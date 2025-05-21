@@ -142,9 +142,10 @@ mod rpc_impl {
     }
 
     fn block_to_rpc(block: Block, full: bool) -> alloy::rpc::types::Block {
+        let hash = block.hash();
         let header = header_to_rpc(
             block.header,
-            block.hash,
+            hash,
             Some(U256::try_from(block.size).unwrap()),
         );
 
@@ -395,7 +396,7 @@ mod rpc_impl {
 
     #[derive(Serialize, Clone)]
     pub enum Value {
-        Block(alloy::rpc::types::Block),
+        Block(Box<alloy::rpc::types::Block>),
     }
 
     #[derive(Serialize, Clone)]
@@ -446,13 +447,20 @@ mod rpc_impl {
         ) -> RpcResult<StatelessBlock> {
             let number = match block_parameter {
                 BlockParameter::Number(number) => number,
-                _ => not_implemented!(), // TODO resolve block https://github.com/iFrostizz/snowflake/issues/50
+                BlockParameter::Earliest => 0,
+                BlockParameter::Latest
+                | BlockParameter::Finalized
+                | BlockParameter::Pending
+                | BlockParameter::Safe => self.node.network.latest_block().await.map_err(|_| {
+                    ErrorObject::borrowed(jsonrpc_errors::INTERNAL_ERROR, "block not found", None)
+                })?,
             };
             Ok(self
                 .node
+                .network
                 .light_network
                 .find_content(
-                    &self.node.light_network.block_dht,
+                    &self.node.network.light_network.block_dht,
                     CompositeKey::First(number),
                 )
                 .await?)
@@ -461,9 +469,10 @@ mod rpc_impl {
         async fn get_block_by_hash(&self, hash: Bytes32) -> RpcResult<StatelessBlock> {
             Ok(self
                 .node
+                .network
                 .light_network
                 .find_content(
-                    &self.node.light_network.block_dht,
+                    &self.node.network.light_network.block_dht,
                     CompositeKey::Second(hash),
                 )
                 .await?)
@@ -554,7 +563,8 @@ mod rpc_impl {
 
         async fn get_block_transaction_count_by_hash(&self, hash: Bytes32) -> RpcResult<u64> {
             let block = self.get_block_by_hash(hash).await?;
-            Ok(block.block.transactions.len() as u64)
+            let block = block.block;
+            Ok(block.transactions.len() as u64)
         }
 
         async fn get_block_transaction_count_by_number(
@@ -562,12 +572,14 @@ mod rpc_impl {
             block_parameter: BlockParameter,
         ) -> RpcResult<u64> {
             let block = self.get_block_by_parameter(block_parameter).await?;
-            Ok(block.block.transactions.len() as u64)
+            let block = block.block;
+            Ok(block.transactions.len() as u64)
         }
 
         async fn get_uncle_count_by_block_hash(&self, hash: Bytes32) -> RpcResult<u64> {
             let block = self.get_block_by_hash(hash).await?;
-            Ok(block.block.uncles.len() as u64)
+            let block = block.block;
+            Ok(block.uncles.len() as u64)
         }
 
         async fn get_uncle_count_by_block_number(
@@ -575,7 +587,8 @@ mod rpc_impl {
             block_parameter: BlockParameter,
         ) -> RpcResult<u64> {
             let block = self.get_block_by_parameter(block_parameter).await?;
-            Ok(block.block.uncles.len() as u64)
+            let block = block.block;
+            Ok(block.uncles.len() as u64)
         }
 
         fn get_code(
@@ -688,15 +701,17 @@ mod rpc_impl {
             hash: Bytes32,
             index: u64,
         ) -> RpcResult<alloy::rpc::types::Header> {
-            let mut block = self.get_block_by_hash(hash).await?;
-            if block.block.uncles.get(index as usize).is_none() {
+            let block = self.get_block_by_hash(hash).await?;
+            let mut block = block.block;
+            if block.uncles.get(index as usize).is_none() {
                 return Err(ErrorObject::borrowed(1000, "missing uncle at index", None));
             }
-            let uncle = block.block.uncles.swap_remove(index as usize);
+            let hash = block.hash();
+            let uncle = block.uncles.swap_remove(index as usize);
             Ok(header_to_rpc(
                 uncle,
-                block.block.hash,
-                Some(U256::try_from(block.block.size).unwrap()),
+                hash,
+                Some(U256::try_from(block.size).unwrap()),
             ))
         }
 
@@ -705,15 +720,17 @@ mod rpc_impl {
             block_parameter: BlockParameter,
             index: u64,
         ) -> RpcResult<alloy::rpc::types::Header> {
-            let mut block = self.get_block_by_parameter(block_parameter).await?;
-            if block.block.uncles.get(index as usize).is_none() {
+            let block = self.get_block_by_parameter(block_parameter).await?;
+            let mut block = block.block;
+            let hash = block.hash();
+            if block.uncles.get(index as usize).is_none() {
                 return Err(ErrorObject::borrowed(1000, "missing uncle at index", None));
             }
-            let uncle = block.block.uncles.swap_remove(index as usize);
+            let uncle = block.uncles.swap_remove(index as usize);
             Ok(header_to_rpc(
                 uncle,
-                block.block.hash,
-                Some(U256::try_from(block.block.size).unwrap()),
+                hash,
+                Some(U256::try_from(block.size).unwrap()),
             ))
         }
 
@@ -755,6 +772,7 @@ mod rpc_impl {
             let maybe_peer_infos = {
                 let peers_infos = self
                     .node
+                    .network
                     .light_network
                     .kademlia_dht
                     .peers_infos
@@ -764,7 +782,7 @@ mod rpc_impl {
             };
             if let Some(peer_infos) = maybe_peer_infos {
                 peer_infos
-                    .ping(&self.node.light_network.kademlia_dht.mail_tx)
+                    .ping(&self.node.network.light_network.kademlia_dht.mail_tx)
                     .await
                     .map_err(|err| ErrorObject::owned(1000, err.to_string(), None::<()>))
             } else {
@@ -787,8 +805,9 @@ mod rpc_impl {
                 DhtId::Block => {
                     let block = DhtBlocks::decode(&value)?;
                     self.node
+                        .network
                         .light_network
-                        .store(&self.node.light_network.block_dht, node_id, block)
+                        .store(&self.node.network.light_network.block_dht, node_id, block)
                         .await?;
                 }
                 DhtId::State => {}
@@ -803,6 +822,7 @@ mod rpc_impl {
         ) -> RpcResult<Vec<NodeId>> {
             let node_ids = if node_id.is_none() || node_id == Some(self.node.network.node_id) {
                 self.node
+                    .network
                     .light_network
                     .kademlia_dht
                     .find_node(&bucket)
@@ -814,6 +834,7 @@ mod rpc_impl {
                 let sender = {
                     let peers_infos = self
                         .node
+                        .network
                         .light_network
                         .kademlia_dht
                         .peers_infos
@@ -825,7 +846,7 @@ mod rpc_impl {
                     peer_infos.sender.clone()
                 };
                 let message = AppRequestMessage::encode(
-                    &self.node.light_network.kademlia_dht.chain_id,
+                    &self.node.network.light_network.kademlia_dht.chain_id,
                     sdk::FindNode {
                         bucket: bucket.to_be_bytes_vec(),
                     },
@@ -835,9 +856,9 @@ mod rpc_impl {
                 };
                 let light_message: sdk::light_response::Message = sender
                     .send_and_app_response(
-                        self.node.light_network.kademlia_dht.chain_id,
+                        self.node.network.light_network.kademlia_dht.chain_id,
                         constants::SNOWFLAKE_HANDLER_ID,
-                        &self.node.light_network.kademlia_dht.mail_tx,
+                        &self.node.network.light_network.kademlia_dht.mail_tx,
                         SubscribableMessage::AppRequest(app_request),
                     )
                     .await
@@ -871,19 +892,24 @@ mod rpc_impl {
                     DhtId::Block => {
                         match self
                             .node
+                            .network
                             .light_network
                             .block_dht
                             .dht
                             .store
                             .get_bucket(&bucket)
                         {
-                            Some(value) => RpcValueOrNodes::Value(Value::Block(block_to_rpc(
-                                DhtBlocks::decode(&value)?.block,
-                                true,
-                            ))),
+                            Some(value) => {
+                                let block = block_to_rpc(DhtBlocks::decode(&value)?.block, true);
+                                RpcValueOrNodes::Value(Value::Block(Box::from(block)))
+                            }
                             None => {
-                                let connections_data =
-                                    self.node.light_network.kademlia_dht.find_node(&bucket);
+                                let connections_data = self
+                                    .node
+                                    .network
+                                    .light_network
+                                    .kademlia_dht
+                                    .find_node(&bucket);
                                 let node_ids = connections_data
                                     .into_iter()
                                     .map(|ConnectionData { node_id, .. }| node_id)
@@ -899,6 +925,7 @@ mod rpc_impl {
                 let sender = {
                     let peers_infos = self
                         .node
+                        .network
                         .light_network
                         .kademlia_dht
                         .peers_infos
@@ -910,7 +937,7 @@ mod rpc_impl {
                     peer_infos.sender.clone()
                 };
                 let message = AppRequestMessage::encode(
-                    &self.node.light_network.kademlia_dht.chain_id,
+                    &self.node.network.light_network.kademlia_dht.chain_id,
                     sdk::FindValue {
                         dht_id: dht_id.into(),
                         bucket: bucket.to_be_bytes_vec(),
@@ -921,7 +948,7 @@ mod rpc_impl {
                 };
                 let rx = sender
                     .send_and_response(
-                        &self.node.light_network.kademlia_dht.mail_tx,
+                        &self.node.network.light_network.kademlia_dht.mail_tx,
                         SubscribableMessage::AppRequest(app_request),
                     )
                     .map_err(|err| ErrorObject::owned(1000, err.to_string(), None::<()>))?;
@@ -935,6 +962,7 @@ mod rpc_impl {
                 if app_response.chain_id
                     != self
                         .node
+                        .network
                         .light_network
                         .kademlia_dht
                         .chain_id
@@ -956,8 +984,8 @@ mod rpc_impl {
                 match light_message {
                     sdk::light_response::Message::Value(sdk::Value { value }) => match dht_id {
                         DhtId::Block => {
-                            let block = DhtBlocks::decode(&value)?;
-                            RpcValueOrNodes::Value(Value::Block(block_to_rpc(block.block, true)))
+                            let block = block_to_rpc(DhtBlocks::decode(&value)?.block, true);
+                            RpcValueOrNodes::Value(Value::Block(Box::from(block)))
                         }
                         _ => return Err(light_errors::INVALID_DHT.into()),
                     },
@@ -1094,8 +1122,11 @@ mod tests {
             dht_buckets: DhtBuckets {
                 block: Default::default(),
             },
+            max_latency_records: 1,
+            max_out_connections: 1,
+            sync_headers: false,
         };
-        let node = Node::new(config, 1, 1, false);
+        let node = Node::new(config);
 
         let rpc = Rpc::new(Arc::from(node), 0, tx).await.unwrap();
         let addr = rpc.local_addr();

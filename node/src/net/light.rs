@@ -1,15 +1,14 @@
 use crate::dht::block::DhtBlocks;
 use crate::dht::kademlia::{KademliaDht, LockedMapDb, ValueOrNodes};
-use crate::dht::{light_errors, DhtBuckets, LightValue};
-use crate::dht::{Bucket, ConcreteDht, DhtId, LightMessage, LightResult};
+use crate::dht::{Bucket, ConcreteDht, DhtId, LightResult};
+use crate::dht::{DhtBuckets, LightValue};
 use crate::id::{ChainId, NodeId};
 use crate::message::mail_box::Mail;
-use crate::net::node::NodeError;
 use crate::net::queue::{ConnectionData, ConnectionQueue};
 use crate::net::RwLock;
 use crate::net::{LightError, Network};
-use crate::node::Node;
 use crate::server::peers::PeerInfo;
+use crate::utils::unpacker::StatelessBlock;
 use crate::Arc;
 use flume::Sender;
 use indexmap::IndexMap;
@@ -17,14 +16,14 @@ use indexmap::IndexMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::{LockResult, RwLockReadGuard, RwLockWriteGuard};
-use tokio::sync::broadcast;
 use tokio::sync::oneshot;
 
 #[derive(Debug)]
 pub struct LightNetworkConfig {
-    pub sync_headers: bool,
     pub max_lookups: usize,
     pub alpha: usize,
+    pub dht_buckets: DhtBuckets,
+    pub max_light_peers: Option<usize>,
 }
 
 #[derive(Debug)]
@@ -41,19 +40,26 @@ impl LightNetwork {
         peers_infos: Arc<RwLock<IndexMap<NodeId, PeerInfo>>>,
         connection_queue: Arc<ConnectionQueue>,
         mail_tx: Sender<Mail>,
+        verification_tx: Sender<(StatelessBlock, oneshot::Sender<bool>)>,
         chain_id: ChainId,
         config: LightNetworkConfig,
-        max_light_peers: Option<usize>,
     ) -> Self {
-        let block_dht = Arc::new(DhtBlocks::new(node_id));
+        let block_dht = Arc::new(DhtBlocks::new(node_id, config.dht_buckets.block));
         let light_peers = LightPeers::new(
             node_id,
             peers_infos.clone(),
             connection_queue,
-            max_light_peers,
+            config.max_light_peers,
         );
-        let kademlia_dht =
-            KademliaDht::new(peers_infos, light_peers.clone(), mail_tx, chain_id, 10);
+        let kademlia_dht = KademliaDht::new(
+            peers_infos,
+            light_peers.clone(),
+            mail_tx,
+            verification_tx,
+            chain_id,
+            10,
+            node_id,
+        );
         Self {
             kademlia_dht,
             block_dht,
@@ -62,79 +68,8 @@ impl LightNetwork {
         }
     }
 
-    pub async fn start(
-        &self,
-        node: Arc<Node>,
-        mut rx: broadcast::Receiver<()>,
-    ) -> Result<(), NodeError> {
-        if self.config.sync_headers {
-            let block_dht = self.block_dht.clone();
-            let rx = rx.resubscribe();
-            tokio::spawn(async move {
-                block_dht.sync_headers(node, rx).await;
-            });
-        }
-
-        let _ = rx.recv().await;
-        Ok(())
-    }
-
-    pub async fn manage_message(
-        &self,
-        node_id: &NodeId,
-        message: LightMessage,
-        resp: Option<oneshot::Sender<LightResult>>,
-    ) {
-        let res = match message {
-            LightMessage::NewPeer(buckets) => {
-                self.light_peers.write().insert(*node_id, buckets);
-                None
-            }
-            LightMessage::Store(dht_id, value) => {
-                let res = match dht_id {
-                    DhtId::Block => self
-                        .block_dht
-                        .insert_block(value)
-                        .await
-                        .map(|_| LightValue::Ok),
-                    _ => Err(light_errors::INVALID_DHT),
-                };
-                Some(res)
-            }
-            LightMessage::FindNode(bucket) => {
-                let res = Ok(LightValue::ValueOrNodes(ValueOrNodes::Nodes(
-                    self.kademlia_dht.find_node(&bucket),
-                )));
-                Some(res)
-            }
-            LightMessage::FindValue(dht_id, bucket) => {
-                let res = match dht_id {
-                    DhtId::Block => self.find_value(&self.block_dht.dht.store, &bucket),
-                    _ => Err(light_errors::INVALID_DHT),
-                };
-                Some(res)
-            }
-            LightMessage::Nodes(node_ids) => {
-                self.light_peers.potentially_add_nodes(node_ids);
-                None
-            }
-        };
-
-        match (res, resp) {
-            (Some(res), Some(resp)) => {
-                let _ = resp.send(res);
-            }
-            (None, None) => (),
-            _ => {
-                log::error!("unexpected state for res and resp values");
-                log::error!("this is a logic bug. please report it.");
-                // unreachable!();
-            }
-        }
-    }
-
     /// Lookup locally for a value or nodes spanning the bucket.
-    fn find_value<DB>(&self, db: &DB, bucket: &Bucket) -> LightResult
+    pub(crate) fn find_value<DB>(&self, db: &DB, bucket: &Bucket) -> LightResult
     where
         DB: LockedMapDb<Vec<u8>>,
     {
@@ -184,7 +119,7 @@ impl LightNetwork {
     {
         let encoded = DHT::encode(value)?;
         if node_id == self.light_peers.node_id {
-            dht.insert_to_store(encoded).await?;
+            dht.insert_to_store(encoded)?;
             Ok(())
         } else {
             self.kademlia_dht.store(node_id, &DHT::id(), encoded).await
@@ -194,10 +129,6 @@ impl LightNetwork {
 
 pub trait DhtCodex<V> {
     fn id() -> DhtId;
-    /// Verification of the validity of the content.
-    /// It is used to check if the content is well-formed.
-    /// If the content is ill-formed, it should not be stored.
-    async fn verify(&self, value: &V) -> Result<bool, LightError>;
     /// Typed to encoded value
     fn encode(value: V) -> Result<Vec<u8>, LightError>;
     /// Encoded to typed value
@@ -205,11 +136,15 @@ pub trait DhtCodex<V> {
 }
 
 pub trait DhtContent<K, V>: DhtCodex<V> {
+    /// Verification of the validity of the content.
+    /// It is used to check if the content is well-formed.
+    /// If the content is ill-formed, it should not be stored.
+    fn verify(&self, value: &V) -> Result<bool, LightError>;
     /// Get a typed value from the store.
     fn get_from_store(&self, key: K) -> Result<Option<V>, LightError>;
     /// Insert an encoded value into the store.
     /// If the value is ill-formed, it should not be stored.
-    async fn insert_to_store(&self, bytes: Vec<u8>) -> Result<Option<V>, LightError>;
+    fn insert_to_store(&self, bytes: Vec<u8>) -> Result<(), LightError>;
 }
 
 #[derive(Debug, Clone)]
@@ -217,11 +152,10 @@ pub struct LightPeers {
     node_id: NodeId,
     light_peers: Arc<RwLock<IndexMap<NodeId, DhtBuckets>>>,
     peers_infos: Arc<RwLock<IndexMap<NodeId, PeerInfo>>>,
-    connection_queue: Arc<ConnectionQueue>,
+    pub connection_queue: Arc<ConnectionQueue>,
     max_light_peers: Option<usize>,
 }
 
-// TODO: this structure weirdly looks like the LightPeers one.
 #[derive(Debug)]
 pub struct WriteLockGuardPeers<'a> {
     node_id: NodeId,
@@ -243,30 +177,28 @@ impl WriteLockGuardPeers<'_> {
 
 pub fn closest_peer(node_id: NodeId, peers: &IndexMap<NodeId, DhtBuckets>) -> Option<NodeId> {
     let bucket = Bucket::from_be_bytes(node_id.into());
-    let node_ids = peers.keys().cloned().collect::<Vec<_>>();
-    node_ids
-        .iter()
+    peers
+        .keys()
         .map(|node_id| {
             let bucket_b = Bucket::from_be_bytes((*node_id).into());
             KademliaDht::distance(&bucket, bucket_b)
         })
         .enumerate()
         .min_by_key(|(_, distance)| *distance)
-        .map(|(i, _)| node_ids[i])
+        .map(|(i, _)| *peers.keys().nth(i).unwrap())
 }
 
 pub fn furthest_peer(node_id: NodeId, peers: &IndexMap<NodeId, DhtBuckets>) -> Option<NodeId> {
     let bucket = Bucket::from_be_bytes(node_id.into());
-    let node_ids = peers.keys().cloned().collect::<Vec<_>>();
-    node_ids
-        .iter()
+    peers
+        .keys()
         .map(|node_id| {
             let bucket_b = Bucket::from_be_bytes((*node_id).into());
             KademliaDht::distance(&bucket, bucket_b)
         })
         .enumerate()
         .max_by_key(|(_, distance)| *distance)
-        .map(|(i, _)| node_ids[i])
+        .map(|(i, _)| *peers.keys().nth(i).unwrap())
 }
 
 impl Drop for WriteLockGuardPeers<'_> {
@@ -402,6 +334,7 @@ mod tests {
     use super::*;
     use crate::server::peers::PeerSender;
     use std::collections::HashMap;
+    use tokio::sync::broadcast;
 
     #[test]
     fn test_check_interesting_node_ids() {

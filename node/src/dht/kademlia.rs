@@ -1,26 +1,31 @@
+use crate::dht::block::DhtBlocks;
 use crate::dht::{light_errors, Bucket, BucketDht, ConcreteDht, DhtBuckets, DhtId, LightError};
 use crate::id::{ChainId, NodeId};
 use crate::message::mail_box::Mail;
 use crate::message::SubscribableMessage;
+use crate::net::light::DhtCodex;
 use crate::net::light::LightPeers;
 use crate::net::queue::ConnectionData;
 use crate::server::msg::AppRequestMessage;
 use crate::server::peers::{PeerInfo, PeerSender};
 use crate::utils::constants;
 use crate::utils::twokhashmap::{CompositeKey, DoubleKeyedHashMap};
+use crate::utils::unpacker::StatelessBlock;
 use alloy::primitives::FixedBytes;
 use flume::Sender;
 use indexmap::IndexMap;
 use proto_lib::{p2p, sdk};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock, RwLockReadGuard};
+use std::time::Duration;
+use tokio::sync::oneshot;
 use tokio::task::JoinSet;
 
 pub trait LockedMapDb<V> {
     type Key;
     fn get(&self, key: &Self::Key) -> Option<V>;
     fn get_bucket(&self, bucket: &Bucket) -> Option<V>;
-    fn insert(&self, key: Self::Key, value: V) -> Option<V>;
+    fn insert(&self, key: Self::Key, value: V);
 }
 
 impl ConcreteDht for CompositeKey<u64, FixedBytes<32>> {
@@ -47,8 +52,8 @@ where
         self.read().unwrap().get(bucket).cloned()
     }
 
-    fn insert(&self, key: Self::Key, value: V) -> Option<V> {
-        self.write().unwrap().insert(key.to_bucket(), value)
+    fn insert(&self, key: Self::Key, value: V) {
+        self.write().unwrap().insert(key.to_bucket(), value);
     }
 }
 
@@ -83,7 +88,7 @@ where
         read.get1(key).or_else(|| read.get2(key)).cloned()
     }
 
-    fn insert(&self, key: Self::Key, value: V) -> Option<V> {
+    fn insert(&self, key: Self::Key, value: V) {
         let CompositeKey::Both(k1, k2) = key else {
             panic!("invalid key")
         };
@@ -93,14 +98,16 @@ where
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct KademliaDht {
     pub peers_infos: Arc<RwLock<IndexMap<NodeId, PeerInfo>>>,
     light_peers: LightPeers,
     pub mail_tx: Sender<Mail>,
+    pub verification_tx: Sender<(StatelessBlock, oneshot::Sender<bool>)>,
     pub chain_id: ChainId,
     /// Maximum number of nodes to return in a `find_node` request.
     max_nodes: usize,
+    node_id: NodeId,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -114,15 +121,19 @@ impl KademliaDht {
         peers_infos: Arc<RwLock<IndexMap<NodeId, PeerInfo>>>,
         light_peers: LightPeers,
         mail_tx: Sender<Mail>,
+        verification_tx: Sender<(StatelessBlock, oneshot::Sender<bool>)>,
         chain_id: ChainId,
         max_nodes: usize,
+        node_id: NodeId,
     ) -> Self {
         Self {
             peers_infos,
             light_peers,
             mail_tx,
+            verification_tx,
             chain_id,
             max_nodes,
+            node_id,
         }
     }
 
@@ -229,8 +240,8 @@ impl KademliaDht {
         log::debug!("searching for value in dht {dht_id:?} at bucket {bucket}");
         let mut excluding = Vec::new();
         let mut worklist = Vec::new();
-        // TODO instead of a max_lookup, we should have a max nodes to query.
-        for _ in 0..max_lookups {
+        let mut lookups_remaining = max_lookups;
+        while lookups_remaining > 0 {
             let senders = {
                 let reserved = loop {
                     let mut reserved = Vec::new();
@@ -245,6 +256,7 @@ impl KademliaDht {
                     &excluding,
                     alpha.saturating_sub(reserved.len()),
                 );
+                // let mut node_ids = node_ids.into_iter().collect::<HashSet<_>>();
                 node_ids.extend(reserved);
                 if node_ids.is_empty() {
                     break;
@@ -260,13 +272,24 @@ impl KademliaDht {
                     })
                     .collect()
             };
-            if let Ok(value_or_nodes) = self.iterative_lookup(dht_id, senders, bucket).await {
+            if let Ok(value_or_nodes) = self
+                .iterative_lookup(dht_id, senders, bucket, &mut lookups_remaining)
+                .await
+            {
                 match value_or_nodes {
                     ValueOrNodes::Value(value) => return Ok(value),
                     ValueOrNodes::Nodes(connections_data) => {
-                        // TODO should not deal with socket, cert, etc. here.
-                        let nodes: Vec<_> =
-                            connections_data.into_iter().map(|c| c.node_id).collect();
+                        let nodes: Vec<_> = connections_data
+                            .into_iter()
+                            .filter_map(|c| {
+                                if c.node_id != self.node_id {
+                                    Some(c)
+                                } else {
+                                    None
+                                }
+                            })
+                            .map(|c| c.node_id)
+                            .collect();
                         worklist.extend(nodes.clone());
                         excluding.extend(nodes);
                     }
@@ -305,28 +328,34 @@ impl KademliaDht {
         dht_id: &DhtId,
         senders: Vec<(NodeId, PeerSender)>,
         bucket: &Bucket,
+        lookups_remaining: &mut usize,
     ) -> Result<ValueOrNodes<Vec<u8>>, LightError> {
         let mut set = JoinSet::new();
         let dht_id: u32 = dht_id.into();
         let bucket = bucket.to_be_bytes::<20>();
 
         for (_, sender) in senders {
-            let bucket = bucket.to_vec();
-            if let Ok(p2p::message::Message::AppRequest(app_request)) =
-                AppRequestMessage::encode(&self.chain_id, sdk::FindValue { dht_id, bucket })
-            {
-                let mail_tx = self.mail_tx.clone();
-                let chain_id = self.chain_id;
-                set.spawn(async move {
-                    sender
-                        .send_and_app_response(
-                            chain_id,
-                            constants::SNOWFLAKE_HANDLER_ID,
-                            &mail_tx,
-                            SubscribableMessage::AppRequest(app_request),
-                        )
-                        .await
-                });
+            if *lookups_remaining > 0 {
+                let bucket = bucket.to_vec();
+                if let Ok(p2p::message::Message::AppRequest(app_request)) =
+                    AppRequestMessage::encode(&self.chain_id, sdk::FindValue { dht_id, bucket })
+                {
+                    let mail_tx = self.mail_tx.clone();
+                    let chain_id = self.chain_id;
+                    set.spawn(async move {
+                        sender
+                            .send_and_app_response(
+                                chain_id,
+                                constants::SNOWFLAKE_HANDLER_ID,
+                                &mail_tx,
+                                SubscribableMessage::AppRequest(app_request),
+                            )
+                            .await
+                    });
+                    *lookups_remaining -= 1;
+                }
+            } else {
+                break;
             }
         }
 
@@ -337,21 +366,38 @@ impl KademliaDht {
             };
             match light_message {
                 sdk::light_response::Message::Value(sdk::Value { value }) => {
-                    // TODO verify data using publicly available data and return if successful.
-                    //  if not successful, disconnect from node and decrease reputation
-                    return Ok(ValueOrNodes::Value(value));
+                    if let Ok(block) = DhtBlocks::decode(&value) {
+                        let (tx, rx) = oneshot::channel();
+                        self.verification_tx.send((block, tx)).unwrap();
+                        if rx.await.unwrap() {
+                            return Ok(ValueOrNodes::Value(value));
+                        } else {
+                            continue;
+                        }
+                    } else {
+                        continue;
+                    }
                 }
                 sdk::light_response::Message::Nodes(p2p::PeerList { claimed_ip_ports }) => {
-                    // TODO: only pick nodes that are getting us closer to the bucket
+                    // TODO: only pick nodes that are getting us closer to the bucket.
+                    //  For that, don't only wait for the connection but also the light handshake.
                     if claimed_ip_ports.len() > 10 {
                         // disconnect and decrease reputation
                         continue;
                     }
-                    let node_ids: HashSet<_> = claimed_ip_ports
+                    let cds = claimed_ip_ports
                         .into_iter()
                         .filter_map(|claimed_ip_port| claimed_ip_port.try_into().ok())
                         .collect();
-                    nodes.extend(node_ids);
+                    // TODO this will be ineffective if the peer max is reached.
+                    //  We should allow either going over the limit for a short time and disconnect
+                    //  right away or replace other peers while making sure that we are not
+                    //  in the middle of a conversation. We can achieve this by attaching some
+                    //  kind of mutex on peers. If we do this, it will play well with the timeout
+                    //  because it could wait for ending the conversation with the first furthest
+                    //  peers before disconnecting from it.
+                    let cds = self.connect_to_light_nodes(cds).await;
+                    nodes.extend(cds);
                 }
                 sdk::light_response::Message::Ack(_) => {
                     // unexpected response
@@ -366,6 +412,36 @@ impl KademliaDht {
         } else {
             Err(light_errors::CONTENT_NOT_FOUND)
         }
+    }
+
+    async fn connect_to_light_nodes(
+        &self,
+        cds: HashSet<ConnectionData>,
+    ) -> HashSet<ConnectionData> {
+        let timeout = Duration::from_secs(5);
+        tokio::time::timeout(timeout, async move {
+            let mut set = JoinSet::new();
+            for cd in cds {
+                let connection_queue = self.light_peers.connection_queue.clone();
+                set.spawn(async move {
+                    (
+                        cd.clone(),
+                        connection_queue.wait_for_connection(cd, 0).await,
+                    )
+                });
+            }
+            let mut res = HashSet::new();
+            while let Some(data) = set.join_next().await {
+                if let Ok((cd, connected)) = data {
+                    if connected {
+                        res.insert(cd);
+                    }
+                }
+            }
+            res
+        })
+        .await
+        .unwrap_or_else(|_| HashSet::new())
     }
 
     fn map_to_connection_data(&self, node_ids: Vec<NodeId>) -> Vec<ConnectionData> {
@@ -489,8 +565,16 @@ mod tests {
             Some(light_peers_data.len()),
         );
         light_peers.write().extend(light_peers_data);
-        let dht: KademliaDht =
-            KademliaDht::new(peer_infos, light_peers, mail_tx, ChainId::from([0; 32]), 3);
+        let (verification_tx, _) = flume::unbounded();
+        let dht: KademliaDht = KademliaDht::new(
+            peer_infos,
+            light_peers,
+            mail_tx,
+            verification_tx,
+            ChainId::from([0; 32]),
+            3,
+            Default::default(),
+        );
         let closest = dht.find_node(&extend_to_bucket(buckets[4]));
         assert_eq!(closest.len(), 3);
         assert_eq!(
