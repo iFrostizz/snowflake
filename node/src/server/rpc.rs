@@ -396,7 +396,7 @@ mod rpc_impl {
 
     #[derive(Serialize, Clone)]
     pub enum Value {
-        Block(alloy::rpc::types::Block),
+        Block(Box<alloy::rpc::types::Block>),
     }
 
     #[derive(Serialize, Clone)]
@@ -899,10 +899,10 @@ mod rpc_impl {
                             .store
                             .get_bucket(&bucket)
                         {
-                            Some(value) => RpcValueOrNodes::Value(Value::Block(block_to_rpc(
-                                DhtBlocks::decode(&value)?.block,
-                                true,
-                            ))),
+                            Some(value) => {
+                                let block = block_to_rpc(DhtBlocks::decode(&value)?.block, true);
+                                RpcValueOrNodes::Value(Value::Block(Box::from(block)))
+                            }
                             None => {
                                 let connections_data = self
                                     .node
@@ -984,8 +984,8 @@ mod rpc_impl {
                 match light_message {
                     sdk::light_response::Message::Value(sdk::Value { value }) => match dht_id {
                         DhtId::Block => {
-                            let block = DhtBlocks::decode(&value)?;
-                            RpcValueOrNodes::Value(Value::Block(block_to_rpc(block.block, true)))
+                            let block = block_to_rpc(DhtBlocks::decode(&value)?.block, true);
+                            RpcValueOrNodes::Value(Value::Block(Box::from(block)))
                         }
                         _ => return Err(light_errors::INVALID_DHT.into()),
                     },
