@@ -69,6 +69,8 @@ pub enum NodeError {
     Bloom(#[from] BloomError),
     #[error("unwanted peer: reason: {0}")]
     UnwantedPeer(#[from] AddPeerError),
+    #[error("light error: {0}")]
+    LightError(#[from] LightError),
     #[error("openssl error: {0}")]
     OpenSsl(#[from] openssl::error::ErrorStack),
     #[error("unexpected message: {0}")]
@@ -665,8 +667,9 @@ impl Network {
     pub(crate) async fn sync_blocks(self: Arc<Self>) {
         loop {
             if let Ok(last_block) = self.latest_block().await {
+                let last_number = u64::from_be_bytes(*last_block.block.header.number());
                 let light_network = &self.light_network;
-                let blocks = light_network.block_dht.bucket_to_number_iter(last_block);
+                let blocks = light_network.block_dht.bucket_to_number_iter(last_number);
                 let n = *light_network.block_dht.min_stored_blocks.lock().unwrap();
                 for number in blocks {
                     if number >= n {
@@ -688,7 +691,7 @@ impl Network {
         }
     }
 
-    pub async fn latest_block(self: &Arc<Self>) -> Result<u64, NodeError> {
+    pub async fn latest_block(self: &Arc<Self>) -> Result<StatelessBlock, NodeError> {
         let chain_id = self.config.c_chain_id.as_ref().to_vec();
         let bootstrapper = self.pick_random_bootstrapper().await;
         let message = SubscribableMessage::GetAcceptedFrontier(GetAcceptedFrontier {
@@ -721,10 +724,17 @@ impl Network {
         else {
             return Err(NodeError::Message("invalid message received".to_string()));
         };
+
         let block = StatelessBlock::unpack(res.container)
             .map_err(|_| NodeError::Message("invalid container received".to_string()))?;
-        let block = block.block;
-        Ok(u64::from_be_bytes(*block.header.number()))
+        let block_dht = &self.light_network.block_dht;
+        block_dht
+            .verified_blocks
+            .write()
+            .unwrap()
+            .insert(*block.id());
+        block_dht.insert_to_store(block.bytes().to_vec())?;
+        Ok(block)
     }
 
     pub async fn send_to_peer(

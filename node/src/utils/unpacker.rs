@@ -73,7 +73,6 @@ impl StatelessBlock {
                 bytes,
             })
         } else {
-            println!("{:?}", bytes);
             let mut cursor = 0;
 
             // First unpack the version (2 bytes)
@@ -84,8 +83,6 @@ impl StatelessBlock {
             )?);
 
             cursor += 4; // interface https://github.com/ava-labs/avalanchego/blob/84a2c77186ce66381ec1dbdca5b8537472bd46e2/codec/reflectcodec/type_codec.go#L638-L639
-
-            // println!("{:?}", &bytes[cursor..]);
 
             // Then unpack the nested statelessUnsignedBlock
             let parent_id = BlockID::from(Unpacker::unpack_fixed_bytes(

@@ -451,9 +451,15 @@ mod rpc_impl {
                 BlockParameter::Latest
                 | BlockParameter::Finalized
                 | BlockParameter::Pending
-                | BlockParameter::Safe => self.node.network.latest_block().await.map_err(|_| {
-                    ErrorObject::borrowed(jsonrpc_errors::INTERNAL_ERROR, "block not found", None)
-                })?,
+                | BlockParameter::Safe => {
+                    return self.node.network.latest_block().await.map_err(|_| {
+                        ErrorObject::borrowed(
+                            jsonrpc_errors::INTERNAL_ERROR,
+                            "block not found",
+                            None,
+                        )
+                    })
+                }
             };
             Ok(self
                 .node
