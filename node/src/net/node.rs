@@ -454,10 +454,10 @@ impl Network {
         self: &Arc<Network>,
         stateless_block: &StatelessBlock,
     ) -> Result<bool, LightError> {
-        let block = stateless_block.block();
+        let block = &stateless_block.block;
         let number = u64::from_be_bytes(*block.header.number());
         log::debug!("verifying block {}", number);
-        let hash = block.hash;
+        let hash = block.hash();
         if self
             .light_network
             .block_dht
@@ -484,9 +484,9 @@ impl Network {
             deadline: DEFAULT_DEADLINE,
             container_ids: vec![block_id.as_ref().to_vec()],
         });
-        let res = dbg!(self
+        let res = self
             .send_to_peer(&MessageOrSubscribable::Subscribable(message), bootstrapper)
-            .await);
+            .await;
         if let Some(Message::Accepted(Accepted {
             chain_id,
             container_ids,
@@ -597,11 +597,12 @@ impl Network {
                     &MessageOrSubscribable::Subscribable(message.clone()),
                     bootstrapper,
                 )
-                .await else {
+                .await
+            else {
                 continue;
             };
 
-            let mut last_container_id = dbg!(message.container_id);
+            let mut last_container_id = message.container_id;
             'outer: loop {
                 let message = SubscribableMessage::GetAncestors(GetAncestors {
                     chain_id: chain_id.clone(),
@@ -615,7 +616,8 @@ impl Network {
                         &MessageOrSubscribable::Subscribable(message.clone()),
                         bootstrapper,
                     )
-                    .await else {
+                    .await
+                else {
                     continue;
                 };
 
@@ -628,7 +630,6 @@ impl Network {
                 for (i, container) in message.containers.into_iter().enumerate() {
                     match StatelessBlock::unpack(container) {
                         Ok(block) => {
-                            dbg!(&block.block().header.number());
                             let block_dht = &self.light_network.block_dht;
                             block_dht
                                 .verified_blocks
@@ -638,10 +639,13 @@ impl Network {
                             if let Err(err) = block_dht.insert_to_store(block.bytes().to_vec()) {
                                 log::error!("Failed to store block: {:?}", err);
                             }
-                            if block_dht.next_block_to_store().is_ok_and(|n| &n.to_be_bytes() == block.block().header.number()) {
+                            if block_dht
+                                .next_block_to_store()
+                                .is_ok_and(|n| &n.to_be_bytes() == block.block.header.number())
+                            {
                                 break 'outer;
                             } else if i == len - 1 {
-                                if block.block().header.number() == &[0; 8] {
+                                if block.block.header.number() == &[0; 8] {
                                     break 'outer;
                                 }
                                 last_container_id = block.id().as_ref().to_vec();
@@ -719,7 +723,7 @@ impl Network {
         };
         let block = StatelessBlock::unpack(res.container)
             .map_err(|_| NodeError::Message("invalid container received".to_string()))?;
-        let block = block.block();
+        let block = block.block;
         Ok(u64::from_be_bytes(*block.header.number()))
     }
 

@@ -62,9 +62,9 @@ impl ConcreteDht for u64 {
 impl DhtContent<CompositeKey<u64, FixedBytes<32>>, StatelessBlock> for DhtBlocks {
     fn verify(&self, block: &StatelessBlock) -> Result<bool, LightError> {
         let block_id = *block.id();
-        let block = block.block();
+        let block = &block.block;
         let number = u64::from_be_bytes(*block.header.number());
-        let hash = block.hash;
+        let hash = block.hash();
         if self
             .get_from_store(CompositeKey::Both(number, hash))?
             .is_some()
@@ -78,7 +78,7 @@ impl DhtContent<CompositeKey<u64, FixedBytes<32>>, StatelessBlock> for DhtBlocks
         &self,
         key: CompositeKey<u64, FixedBytes<32>>,
     ) -> Result<Option<StatelessBlock>, LightError> {
-        match self.dht.store.get(&dbg!(key)) {
+        match self.dht.store.get(&key) {
             Some(block_bytes) => {
                 let block = Self::decode(&block_bytes)?;
                 Ok(Some(block))
@@ -89,9 +89,9 @@ impl DhtContent<CompositeKey<u64, FixedBytes<32>>, StatelessBlock> for DhtBlocks
 
     fn insert_to_store(&self, bytes: Vec<u8>) -> Result<(), LightError> {
         let decoded = Self::decode(&bytes)?;
-        let block = decoded.block();
+        let block = &decoded.block;
         let number = u64::from_be_bytes(*block.header.number());
-        let hash = block.hash;
+        let hash = block.hash();
         if self.is_desired_bucket(number, hash) {
             if !self.verify(&decoded)? {
                 return Err(light_errors::INVALID_CONTENT);

@@ -38,7 +38,8 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 
 FROM base AS anr
 WORKDIR /app
-RUN git clone --depth 1 --branch v1.13.0 https://github.com/ava-labs/avalanchego avalanchego
+#RUN git clone --depth 1 --branch v1.13.0 https://github.com/ava-labs/avalanchego avalanchego
+COPY docker/avalanchego ./avalanchego
 WORKDIR /app/avalanchego
 RUN go mod download
 COPY . .
@@ -46,7 +47,8 @@ ENV GOCACHE=/root/.cache/go-cache
 ENV GOMODCACHE=/root/.cache/gomod-cache
 RUN --mount=type=cache,target="/root/.cache/go-cache" ./scripts/build.sh
 WORKDIR /app
-RUN git clone --depth 1 --branch custom_bin https://github.com/ifrostizz/avalanche-network-runner anr
+#RUN git clone --depth 1 --branch custom_bin https://github.com/ifrostizz/avalanche-network-runner anr
+COPY docker/anr/ ./anr
 WORKDIR /app/anr
 COPY docker/keys/ /app/anr/local/default/
 COPY . .

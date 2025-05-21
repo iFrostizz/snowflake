@@ -20,7 +20,7 @@ pub enum RlpError {
 
 #[derive(Debug, Clone, Default)]
 pub struct Block {
-    pub hash: B256,
+    hash: B256,
     pub size: usize,
     pub header: Header,
     pub transactions: Vec<Transaction>,
@@ -87,6 +87,10 @@ impl Block {
             ext_data,
         };
         Ok(block)
+    }
+
+    pub fn hash(&self) -> B256 {
+        self.hash
     }
 
     fn decode_header(bytes: &[u8]) -> Result<Header, RlpError> {

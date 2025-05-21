@@ -89,7 +89,6 @@ where
     }
 
     fn insert(&self, key: Self::Key, value: V) {
-        dbg!("insert {:?}", &key);
         let CompositeKey::Both(k1, k2) = key else {
             panic!("invalid key")
         };
@@ -367,11 +366,10 @@ impl KademliaDht {
             };
             match light_message {
                 sdk::light_response::Message::Value(sdk::Value { value }) => {
-                    dbg!("value");
                     if let Ok(block) = DhtBlocks::decode(&value) {
                         let (tx, rx) = oneshot::channel();
                         self.verification_tx.send((block, tx)).unwrap();
-                        if dbg!(rx.await).unwrap() {
+                        if rx.await.unwrap() {
                             return Ok(ValueOrNodes::Value(value));
                         } else {
                             continue;
@@ -381,7 +379,6 @@ impl KademliaDht {
                     }
                 }
                 sdk::light_response::Message::Nodes(p2p::PeerList { claimed_ip_ports }) => {
-                    dbg!("nodes");
                     // TODO: only pick nodes that are getting us closer to the bucket.
                     //  For that, don't only wait for the connection but also the light handshake.
                     if claimed_ip_ports.len() > 10 {
