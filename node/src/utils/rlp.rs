@@ -1328,7 +1328,8 @@ impl AccessList {
 #[cfg(test)]
 mod tests {
     use super::*;
-    // use crate::utils::unpacker::StatelessBlock;
+    use crate::utils::packer::PackerError;
+    use crate::utils::unpacker::StatelessBlock;
     use pretty_assertions::assert_eq;
     use std::fmt::Debug;
     use std::fs;
@@ -1360,10 +1361,16 @@ mod tests {
         }
     }
 
-    // #[test]
-    // fn can_parse_block() {
-    //     can_parse("blocks", StatelessBlock::unpack, StatelessBlock::pack);
-    // }
+    #[test]
+    fn can_parse_block() {
+        fn unpack(bytes: &[u8]) -> Result<StatelessBlock, PackerError> {
+            StatelessBlock::unpack(bytes.to_vec())
+        }
+        fn pack(block: &StatelessBlock) -> Result<Vec<u8>, PackerError> {
+            Ok(block.bytes().to_vec())
+        }
+        can_parse("blocks", unpack, pack);
+    }
 
     #[test]
     fn can_parse_transaction() {

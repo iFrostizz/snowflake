@@ -10,6 +10,7 @@ use ruint::Uint;
 use serde::Deserialize;
 use std::cmp::Ordering;
 use std::fmt::{Display, Formatter};
+use thiserror::Error;
 
 #[derive(Debug, Clone, Eq, Deserialize, PartialEq)]
 pub struct DhtBuckets {
@@ -130,7 +131,7 @@ pub enum LightMessage {
     Nodes(Vec<ConnectionData>),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub struct LightError {
     pub code: i32,
     pub message: &'static str,
