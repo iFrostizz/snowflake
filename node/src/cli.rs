@@ -179,7 +179,7 @@ impl Args {
             back_off,
             max_throughput: 1_000_000,      // 1000 kB/s
             max_out_queue_size: 10_000_000, // 10 MB
-            bucket_size: 500_000,           // 500 kB
+            bucket_size: 2_000_000,           // 2 MB
             max_concurrent_handshakes: self.max_handshakes,
             max_peers: self.max_peers,
             max_light_peers: self.max_light_peers,
