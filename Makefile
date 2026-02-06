@@ -17,11 +17,11 @@ test:
 	cargo test --quiet
 
 keys:
-	openssl ecparam -name prime256v1 -genkey -noout -out node.key
-	openssl pkcs8 -topk8 -nocrypt -in node.key -out node.key.tmp
-	mv node.key.tmp node.key
-	openssl req -x509 -new -key node.key -out node.crt -days 36500 -subj '/CN=localhost' -set_serial 0
-	openssl rand 32 > bls.key
+	openssl ecparam -name prime256v1 -genkey -noout -out staker.key
+	openssl pkcs8 -topk8 -nocrypt -in staker.key -out staker.key.tmp
+	mv staker.key.tmp staker.key
+	openssl req -x509 -new -key staker.key -out staker.crt -days 36500 -subj '/CN=localhost' -set_serial 0
+	openssl rand 32 > signer.key
 
 proto:
 	cargo build -p proto

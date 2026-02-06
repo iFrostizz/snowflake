@@ -24,7 +24,7 @@ impl Listener {
         config: Arc<ServerConfig>,
         max_connections: usize,
     ) -> Self {
-        let address = format!("{}:{}", "127.0.0.1", network_port);
+        let address = format!("{}:{}", "0.0.0.0", network_port);
         let tcp = TcpListener::bind(address)
             .await
             .expect("failed to start tcp server");
