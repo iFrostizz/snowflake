@@ -167,11 +167,9 @@ impl Args {
             bucket_size: 500_000,           // 500 kB
             max_concurrent_handshakes: self.max_handshakes,
             max_peers: self.max_peers,
-            bootstrappers: Bootstrappers::new(
-                &self.bootstrappers_path,
-            )
-            .bootstrappers(&self.network_id.to_string())
-            .expect("failed to instantiate bootstrappers"),
+            bootstrappers: Bootstrappers::new(&self.bootstrappers_path)
+                .bootstrappers(&self.network_id.to_string())
+                .expect("failed to instantiate bootstrappers"),
             max_latency_records: self.max_latency_records,
             max_out_connections: self.max_out_connections,
         }

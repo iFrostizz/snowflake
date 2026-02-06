@@ -23,9 +23,7 @@ pub struct Bootstrappers<'a> {
 
 impl<'a> Bootstrappers<'a> {
     pub fn new(bootstrapper_path: &'a Path) -> Self {
-        Self {
-            bootstrapper_path,
-        }
+        Self { bootstrapper_path }
     }
 
     fn read_bootsrappers(&self) -> io::Result<HashMap<String, Vec<Bootstrapper>>> {

@@ -1,4 +1,3 @@
-use tracing::instrument;
 use crate::id::{Id, NodeId};
 use crate::message::SubscribableMessage;
 use crate::net::node::{AddPeerError, NetworkConfig};
@@ -29,6 +28,7 @@ use tokio::sync::oneshot;
 use tokio::sync::{broadcast, OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinHandle;
 use tokio::time::{self};
+use tracing::instrument;
 
 #[derive(Debug)]
 pub struct Node {
@@ -153,7 +153,8 @@ impl Node {
         data: ConnectionData,
         connected_tx: Option<oneshot::Sender<bool>>,
     ) -> Result<(), NodeError> {
-        self.network.check_add_peer(&data.node_id)?;
+        self.network
+            .check_add_peer(&data.node_id, &data.socket_addr.ip())?;
 
         let hs_permit = self.hs_permit().await;
 
@@ -216,7 +217,8 @@ impl Node {
     ) -> Result<(), NodeError> {
         log::trace!("looping a new peer");
 
-        self.network.check_add_peer(peer.node_id())?;
+        self.network
+            .check_add_peer(peer.node_id(), &peer.sock_addr().ip())?;
 
         match self.spawn_peer(peer, hs_permit).await {
             Ok((tasks, tx)) => {
@@ -533,7 +535,8 @@ impl Node {
         let connection_data: Result<ConnectionData, _> = claimed.try_into();
         if let Ok(connection_data) = connection_data {
             let node_id = &connection_data.node_id;
-            match self.network.check_add_peer(node_id) {
+            let ip = &connection_data.socket_addr.ip();
+            match self.network.check_add_peer(node_id, ip) {
                 Ok(()) => {
                     self.network
                         .connection_queue

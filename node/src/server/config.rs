@@ -32,9 +32,8 @@ pub fn server_config(cert_path: &Path, key_path: &Path) -> ServerConfig {
     let certs: Vec<_> = rustls_pemfile::certs(&mut reader)
         .map(|result| result.unwrap())
         .collect();
-    let private_key = load_private_key(key_path).unwrap_or_else(|err| {
-        panic!("Cannot parse key file {}: {err}", key_path.display())
-    });
+    let private_key = load_private_key(key_path)
+        .unwrap_or_else(|err| panic!("Cannot parse key file {}: {err}", key_path.display()));
 
     ServerConfig::builder()
         .with_client_cert_verifier(Arc::new(NoCertificateVerification::new(

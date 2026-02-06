@@ -129,7 +129,10 @@ impl ConnectionQueue {
     ) -> Option<JoinHandle<Result<(), NodeError>>> {
         let node = node.clone();
         let semaphore = self.semaphore.clone();
-        match node.network.check_add_peer(&data.node_id) {
+        match node
+            .network
+            .check_add_peer(&data.node_id, &data.socket_addr.ip())
+        {
             Ok(()) => {
                 let handle = tokio::spawn(async move {
                     node.create_connection(semaphore, data, connected_tx).await

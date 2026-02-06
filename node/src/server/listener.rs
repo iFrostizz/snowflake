@@ -86,7 +86,7 @@ impl Listener {
                 let node_id = NodeId::from_cert(&x509_certificate);
 
                 // TODO support peer replacements
-                if let Err(err) = node.network.check_add_peer(&node_id) {
+                if let Err(err) = node.network.check_add_peer(&node_id, &sock_addr.ip()) {
                     log::debug!("{node_id}, {err}");
                     return;
                 }

@@ -70,12 +70,7 @@ async fn main() -> Result<(), NodeError> {
     let (node_tx, node_ops, server) = server(node.clone(), listener, &args).await;
 
     let client = tokio::task::spawn(async move {
-        client::start(
-            node,
-            &args.bootstrappers_path,
-            &args.network_id.to_string(),
-        )
-        .await
+        client::start(node, &args.bootstrappers_path, &args.network_id.to_string()).await
     });
 
     #[cfg(feature = "dhat-heap")]

@@ -49,9 +49,11 @@ impl Bls {
     #[cfg(test)]
     pub fn from_private_key(private_key: [u8; 32]) -> Self {
         let mut secret_key = blst_scalar { b: [0; 32] };
-        let ok =
-            unsafe { blst_scalar_from_be_bytes(&mut secret_key, private_key.as_ptr(), 32) };
-        assert!(ok && unsafe { blst_sk_check(&secret_key) }, "invalid bls key bytes");
+        let ok = unsafe { blst_scalar_from_be_bytes(&mut secret_key, private_key.as_ptr(), 32) };
+        assert!(
+            ok && unsafe { blst_sk_check(&secret_key) },
+            "invalid bls key bytes"
+        );
         Self { secret_key }
     }
 

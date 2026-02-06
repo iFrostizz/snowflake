@@ -119,7 +119,6 @@ impl HandshakeInfos {
 #[derive(Debug)]
 pub struct PeerConnection {
     tls: Option<TlsStream<TcpStream>>,
-    #[allow(unused)]
     sock_addr: SocketAddr,
     #[allow(unused)]
     timestamp: u64,
@@ -182,6 +181,10 @@ impl Peer {
 
     pub fn node_id(&self) -> &NodeId {
         &self.identity.node_id
+    }
+
+    pub fn sock_addr(&self) -> &SocketAddr {
+        &self.connection.sock_addr
     }
 
     pub fn sender(&self) -> &PeerSender {
@@ -335,7 +338,8 @@ impl Peer {
     ) -> Result<(), NodeError> {
         log::trace!("write");
         let res =
-            Network::schedule_write_messages(node_id, out_pipeline, write, rnp, disconnection_rx).await;
+            Network::schedule_write_messages(node_id, out_pipeline, write, rnp, disconnection_rx)
+                .await;
         if res.is_err() {
             log::debug!("error on write");
         }

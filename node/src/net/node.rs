@@ -1,4 +1,3 @@
-use std::path::Path;
 use crate::client::config;
 use crate::id::{ChainId, NodeId};
 use crate::message::mail_box::MailBox;
@@ -24,7 +23,8 @@ use prost::EncodeError;
 use proto_lib::p2p::message::Message;
 use proto_lib::p2p::{self};
 use std::collections::HashSet;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -184,6 +184,8 @@ pub enum AddPeerError {
     AlreadyConnected,
     #[error("max peers reached")]
     MaxPeersReached,
+    #[error("invalid address")]
+    Invalid,
 }
 
 impl Network {
@@ -268,9 +270,8 @@ impl Network {
         let (ptx, prx) = flume::unbounded();
 
         let (write_tx, rx) = oneshot::channel();
-        let write_messages = tokio::spawn(async move {
-            Self::write_messages(node_id, write, prx, rx).await
-        });
+        let write_messages =
+            tokio::spawn(async move { Self::write_messages(node_id, write, prx, rx).await });
 
         let (queue_tx, rx) = oneshot::channel();
         let queue_messages = tokio::spawn(async move {
@@ -302,15 +303,15 @@ impl Network {
         let prx = &prx;
         loop {
             tokio::select! {
-                    maybe_bytes = prx.recv_async() => {
-                        if let Ok(bytes) = maybe_bytes {
-                            write_stream_message(&mut write, bytes).await?;
-                        }
-                    }
-                    _ = &mut rx => {
-                        break Ok(())
+                maybe_bytes = prx.recv_async() => {
+                    if let Ok(bytes) = maybe_bytes {
+                        write_stream_message(&mut write, bytes).await?;
                     }
                 }
+                _ = &mut rx => {
+                    break Ok(())
+                }
+            }
         }
     }
 
@@ -327,19 +328,19 @@ impl Network {
 
         loop {
             tokio::select! {
-                    maybe_message = rnp.recv_async() => {
-                        if let Ok(message) = maybe_message {
-                            log::trace!("sending message {message:?}");
-                            let mini = MiniMessage::from(&message);
-                            if let Ok(bytes) = OutboundMessage::encode(message) {
-                                out_pipeline.queue_message(bytes.into(), WriteHandler(ptx.clone(), mini)).await;
-                            }
+                maybe_message = rnp.recv_async() => {
+                    if let Ok(message) = maybe_message {
+                        log::trace!("sending message {message:?}");
+                        let mini = MiniMessage::from(&message);
+                        if let Ok(bytes) = OutboundMessage::encode(message) {
+                            out_pipeline.queue_message(bytes.into(), WriteHandler(ptx.clone(), mini)).await;
                         }
                     }
-                    _ = &mut rx => {
-                        break Ok(());
-                    }
                 }
+                _ = &mut rx => {
+                    break Ok(());
+                }
+            }
         }
     }
 
@@ -472,9 +473,13 @@ impl Network {
         }
     }
 
-    pub fn check_add_peer(&self, node_id: &NodeId) -> Result<(), NodeError> {
+    pub fn check_add_peer(&self, node_id: &NodeId, ip_addr: &IpAddr) -> Result<(), NodeError> {
         if &self.node_id == node_id {
             return Err(AddPeerError::AddSelf.into());
+        }
+
+        if ip_addr.is_loopback() || ip_addr.is_unspecified() {
+            return Err(AddPeerError::Invalid.into());
         }
 
         let peers_infos = self.peers_infos.read().unwrap();
