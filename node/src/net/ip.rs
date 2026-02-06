@@ -54,8 +54,8 @@ impl UnsignedIp {
 
     pub fn sign_with_key(self, bls: &Bls, pem_key_path: &Path) -> Result<SignedIp, NodeError> {
         let pem_private_key = std::fs::read(pem_key_path)?;
-        let rsa_private_key = Rsa::private_key_from_pem(&pem_private_key)?;
-        let private_key = PKey::from_rsa(rsa_private_key)?;
+        let private_key = PKey::private_key_from_pem(&pem_private_key)
+            .or_else(|_| PKey::private_key_from_pkcs8(&pem_private_key))?;
 
         Ok(self.sign(&private_key, bls)?)
     }
