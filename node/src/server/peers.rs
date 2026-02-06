@@ -1,6 +1,4 @@
-use crate::id::ChainId;
 use crate::net::node::SendErrorWrapper;
-use crate::server::msg::{InboundMessage, InboundMessageExt};
 use crate::{
     id::NodeId,
     message::{mail_box::Mail, SubscribableMessage},
@@ -73,35 +71,6 @@ impl PeerSender {
         let (tx, rx) = oneshot::channel();
         self.send_with_subscribe(mail_tx, message, tx)?;
         Ok(rx)
-    }
-
-    pub async fn send_and_app_response<MESSAGE>(
-        &self,
-        chain_id: ChainId,
-        handler_id: u64,
-        mail_tx: &Sender<Mail>,
-        message: SubscribableMessage,
-    ) -> Result<MESSAGE, NodeError>
-    where
-        InboundMessage: InboundMessageExt<MESSAGE>,
-    {
-        let rx = self.send_and_response(mail_tx, message)?;
-        let Message::AppResponse(app_response) = rx.await? else {
-            return Err(NodeError::Message(
-                "received an invalid message".to_string(),
-            ));
-        };
-        if app_response.chain_id != chain_id.as_ref().to_vec() {
-            return Err(NodeError::Message("invalid chain ID".to_string()));
-        }
-        let bytes = app_response.app_bytes;
-        let Ok((app_id, bytes)) = unsigned_varint::decode::u64(&bytes) else {
-            return Err(NodeError::Message("invalid uvarint encoding".to_string()));
-        };
-        if app_id != handler_id {
-            return Err(NodeError::Message("invalid handler ID".to_string()));
-        }
-        Ok(InboundMessage::decode(bytes)?)
     }
 
     pub fn send_without_response(

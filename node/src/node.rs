@@ -46,14 +46,6 @@ struct PickerConfig {
     random: usize,
 }
 
-pub enum SinglePickerConfig {
-    Bootstrapper,
-    #[allow(unused)]
-    Random,
-    #[allow(unused)]
-    Light,
-}
-
 impl Node {
     pub fn new(network_config: NetworkConfig) -> Self {
         let bytes = std::fs::read(&network_config.cert_path).expect("failed to read cert");
@@ -352,13 +344,15 @@ impl Node {
                 sender,
                 known_peers,
             } => {
-                let amount_ip_n = 15;
+                // let amount_ip_n = 15;
+                //
+                // let claimed_ip_ports = if let Some(known_peers) = known_peers {
+                //     self.propose_peers(known_peers, amount_ip_n)
+                // } else {
+                //     vec![]
+                // };
 
-                let claimed_ip_ports = if let Some(known_peers) = known_peers {
-                    self.propose_peers(known_peers, amount_ip_n)
-                } else {
-                    vec![]
-                };
+                let claimed_ip_ports = vec![];
 
                 let _ = sender.send(Message::PeerList(PeerList { claimed_ip_ports }));
             }

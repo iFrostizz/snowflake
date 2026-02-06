@@ -4,7 +4,6 @@ use crate::message::mail_box::MailBox;
 use crate::message::{pipeline::Pipeline, MiniMessage};
 use crate::net::queue::ConnectionQueue;
 use crate::net::{ip::UnsignedIp, BackoffParams, Intervals, Network, PeerInfo};
-use crate::node::{MessageOrSubscribable, SinglePickerConfig};
 use crate::server::{
     msg::{DecodingError, OutboundMessage},
     peers::PeerSender,
@@ -420,90 +419,7 @@ impl Network {
         Ok(())
     }
 
-    pub async fn send_to_peer(
-        &self,
-        message: &MessageOrSubscribable,
-        node_id: NodeId,
-    ) -> Option<Message> {
-        let peer_opt = {
-            let peers = self.peers_infos.read().unwrap();
-            if peers.is_empty() {
-                log::debug!("the set of peers is empty, cannot send to any");
-                return None;
-            }
-            peers.get(&node_id).cloned()
-        };
-
-        let (remove_peer, err) = if let Some(peer) = peer_opt {
-            if peer.handshook() {
-                match self
-                    .send_this_message_to_rename(&peer.sender, message)
-                    .await
-                {
-                    Ok(maybe_message) => return maybe_message,
-                    Err((remove_peer, err)) => (remove_peer, Some(err)),
-                }
-            } else {
-                (true, None)
-            }
-        } else {
-            (true, None)
-        };
-
-        let is_bootstrapper = self.is_bootstrapper(&node_id);
-        if !is_bootstrapper && remove_peer {
-            Network::remove_peers(self.peers_infos.clone(), vec![(node_id, err)]);
-        }
-
-        None
-    }
-
-    async fn send_this_message_to_rename(
-        &self,
-        sender: &PeerSender,
-        message: &MessageOrSubscribable,
-    ) -> Result<Option<Message>, (bool, NodeError)> {
-        match message {
-            MessageOrSubscribable::Subscribable(message) => {
-                match sender.send_and_response(self.mail_box.tx(), message.clone()) {
-                    Ok(handle) => handle
-                        .await
-                        .map(Some)
-                        .map_err(|_| (true, SendErrorWrapper.into())),
-                    Err(_err) => Err((true, _err)),
-                }
-            }
-            MessageOrSubscribable::Message(message) => sender
-                .send(message.clone())
-                .map(|_| None)
-                .map_err(|_err| (true, _err)),
-        }
-    }
-
     pub fn is_bootstrapper(&self, node_id: &NodeId) -> bool {
         self.bootstrappers.read().unwrap().contains(node_id)
-    }
-
-    pub fn pick_peer(
-        peers_infos: &Arc<RwLock<IndexMap<NodeId, PeerInfo>>>,
-        bootstrappers: &RwLock<HashSet<NodeId>>,
-        config: SinglePickerConfig,
-    ) -> Option<NodeId> {
-        match config {
-            SinglePickerConfig::Bootstrapper => {
-                let peers = peers_infos.read().unwrap();
-                let available_peers: HashSet<_> = peers.keys().collect();
-                let bootstrappers = bootstrappers.read().unwrap();
-                let bootstrappers: HashSet<_> = bootstrappers.iter().collect();
-                let inter: Vec<_> = bootstrappers.intersection(&available_peers).collect();
-                if inter.is_empty() {
-                    None
-                } else {
-                    let i = (rand::random::<u64>() % inter.len() as u64) as usize;
-                    Some(**inter[i])
-                }
-            }
-            _ => todo!(),
-        }
     }
 }

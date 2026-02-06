@@ -102,9 +102,6 @@ pub struct Args {
     #[arg(long, default_value = "50")]
     pub max_peers: Option<usize>,
 
-    #[arg(long, default_value = "50")]
-    pub max_light_peers: Option<usize>,
-
     /// RPC port
     #[arg(long, default_value_t = 9781)]
     pub rpc_port: u16,

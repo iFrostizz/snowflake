@@ -43,7 +43,6 @@ pub const C_CHAIN_ID: phf::Map<&'static str, ChainId> = phf_map! {
 pub const DEFAULT_DEADLINE: u64 = 10_000_000_000; // <10s
 
 pub const AVALANCHEGO_HANDLER_ID: u64 = 0;
-pub const SNOWFLAKE_HANDLER_ID: u64 = 127;
 
 #[cfg(feature = "dhat-heap")]
 pub(crate) const DHAT_TIME_S: u64 = 600;

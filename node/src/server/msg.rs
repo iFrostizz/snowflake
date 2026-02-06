@@ -1,19 +1,9 @@
-use crate::id::ChainId;
-use crate::utils::constants;
 use prost::{DecodeError, EncodeError, Message as _};
 use proto_lib::{p2p, sdk};
-use std::marker::PhantomData;
 use thiserror::Error;
 
 #[derive(Debug)]
 pub struct OutboundMessage;
-
-// TODO should handle compression if the message is too big
-#[derive(Default)]
-enum CompressionType {
-    #[default]
-    None,
-}
 
 pub(crate) const DELIMITER_LEN: u32 = 4;
 
@@ -82,60 +72,5 @@ impl InboundMessageExt<sdk::light_response::Message> for InboundMessage {
         let decoded = sdk::LightResponse::decode(message).map_err(DecodingError::Prost)?;
 
         decoded.message.ok_or(DecodingError::EmptyMessage)
-    }
-}
-
-pub struct AppRequestMessage<T> {
-    _phantom: PhantomData<T>,
-}
-
-impl<T> AppRequestMessage<T>
-where
-    T: Into<sdk::light_request::Message>,
-{
-    pub fn encode(chain_id: &ChainId, message: T) -> Result<p2p::message::Message, EncodeError> {
-        let mut bytes = unsigned_varint::encode::u64_buffer();
-        let bytes = unsigned_varint::encode::u64(constants::SNOWFLAKE_HANDLER_ID, &mut bytes);
-        let mut app_bytes = bytes.to_vec();
-        let message = sdk::LightRequest {
-            message: Some(message.into()),
-        };
-        message.encode(&mut app_bytes)?;
-        let app_request = p2p::AppRequest {
-            chain_id: chain_id.as_ref().to_vec(),
-            request_id: rand::random(),
-            deadline: constants::DEFAULT_DEADLINE,
-            app_bytes,
-        };
-        Ok(p2p::message::Message::AppRequest(app_request))
-    }
-}
-
-pub struct AppResponseMessage<T> {
-    _phantom: PhantomData<T>,
-}
-
-impl<T> AppResponseMessage<T>
-where
-    T: Into<sdk::light_response::Message>,
-{
-    pub fn encode(
-        chain_id: &ChainId,
-        message: T,
-        request_id: u32,
-    ) -> Result<p2p::message::Message, EncodeError> {
-        let mut bytes = unsigned_varint::encode::u64_buffer();
-        let bytes = unsigned_varint::encode::u64(constants::SNOWFLAKE_HANDLER_ID, &mut bytes);
-        let mut app_bytes = bytes.to_vec();
-        let message = sdk::LightResponse {
-            message: Some(message.into()),
-        };
-        message.encode(&mut app_bytes)?;
-        let app_response = p2p::AppResponse {
-            chain_id: chain_id.as_ref().to_vec(),
-            request_id,
-            app_bytes,
-        };
-        Ok(p2p::message::Message::AppResponse(app_response))
     }
 }
