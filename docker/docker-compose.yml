@@ -55,31 +55,6 @@ services:
     network_mode: host
     volumes:
       - snowflake:/shared
-    depends_on:
-      - bootstrap
-
-  peer2:
-    container_name: peer2
-    build:
-      context: ../
-      dockerfile: docker/Dockerfile
-    image: snowflake:latest
-    hostname: peer2
-    network_mode: host
-    volumes:
-      - snowflake:/shared
-    depends_on:
-      - bootstrap
-
-  peer3:
-    container_name: peer3
-    build:
-      context: ../
-      dockerfile: docker/Dockerfile
-    image: snowflake:latest
-    hostname: peer3
-    network_mode: host
-    volumes:
-      - snowflake:/shared
+      - ./keys:/app/docker/keys:ro
     depends_on:
       - bootstrap

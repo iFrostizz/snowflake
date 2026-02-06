@@ -1,7 +1,8 @@
 use blst::{
     blst_fp, blst_fp2, blst_hash_to_g2, blst_p1_affine, blst_p1_affine_compress,
     blst_p1_uncompress, blst_p2, blst_p2_affine, blst_p2_affine_compress, blst_p2_uncompress,
-    blst_scalar, blst_sign_pk2_in_g1, blst_sk_to_pk2_in_g1, BLST_ERROR,
+    blst_scalar, blst_scalar_from_be_bytes, blst_sign_pk2_in_g1, blst_sk_check,
+    blst_sk_to_pk2_in_g1, BLST_ERROR,
 };
 use std::{fs, path::Path};
 
@@ -27,19 +28,31 @@ impl Bls {
         let bytes = fs::read(file_path).expect("failed to read bls key file");
         let len = bytes.len();
 
-        let secret_key: [u8; 32] = bytes
+        let secret_key_bytes: [u8; 32] = bytes
             .try_into()
             .unwrap_or_else(|_| panic!("too much bytes, expected 32, got: {}", len));
-        let secret_key = blst_scalar { b: secret_key };
+        let mut secret_key = blst_scalar { b: [0; 32] };
+        let ok = unsafe {
+            blst_scalar_from_be_bytes(
+                &mut secret_key,
+                secret_key_bytes.as_ptr(),
+                secret_key_bytes.len(),
+            )
+        };
+        if !ok || unsafe { !blst_sk_check(&secret_key) } {
+            panic!("invalid bls key bytes");
+        }
 
         Self { secret_key }
     }
 
     #[cfg(test)]
     pub fn from_private_key(private_key: [u8; 32]) -> Self {
-        Self {
-            secret_key: blst_scalar { b: private_key },
-        }
+        let mut secret_key = blst_scalar { b: [0; 32] };
+        let ok =
+            unsafe { blst_scalar_from_be_bytes(&mut secret_key, private_key.as_ptr(), 32) };
+        assert!(ok && unsafe { blst_sk_check(&secret_key) }, "invalid bls key bytes");
+        Self { secret_key }
     }
 
     fn _sign(&self, msg: &[u8], dst: &[u8]) -> [u8; Self::BLST_P2_COMPRESS_BYTES] {

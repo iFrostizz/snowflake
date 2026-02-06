@@ -17,7 +17,10 @@ test:
 	cargo test --quiet
 
 keys:
-	openssl req -x509 -newkey rsa:4096 -keyout node.key -out node.crt -days 36500 -nodes -subj '/CN=localhost' -set_serial 0
+	openssl ecparam -name prime256v1 -genkey -noout -out node.key
+	openssl pkcs8 -topk8 -nocrypt -in node.key -out node.key.tmp
+	mv node.key.tmp node.key
+	openssl req -x509 -new -key node.key -out node.crt -days 36500 -subj '/CN=localhost' -set_serial 0
 	openssl rand 32 > bls.key
 
 proto:

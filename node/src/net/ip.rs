@@ -4,10 +4,8 @@ use openssl::{
     error::ErrorStack,
     hash::MessageDigest,
     pkey::{PKey, Private, Public},
-    rsa::Rsa,
     sign::{Signer, Verifier},
 };
-use sha2::{self, Digest};
 use std::{net::IpAddr, path::Path, time};
 
 #[derive(Debug)]
@@ -60,7 +58,7 @@ impl UnsignedIp {
         Ok(self.sign(&private_key, bls)?)
     }
 
-    /// Sign the sha256 of the public IP given the staker RSA private key
+    /// Sign the sha256 of the public IP given the staker private key
     fn sign(self, keypair: &PKey<Private>, bls: &Bls) -> Result<SignedIp, ErrorStack> {
         let mut signer = Signer::new(MessageDigest::sha256(), keypair)?;
         let ip_bytes = self.bytes();
@@ -76,8 +74,7 @@ impl UnsignedIp {
         })
     }
 
-    #[allow(unused)]
-    pub fn verify(&self, signature: &[u8], pkey: Rsa<Public>) -> Result<bool, ErrorStack> {
+    pub fn verify(&self, signature: &[u8], pkey: &PKey<Public>) -> Result<bool, ErrorStack> {
         let max_timestamp = time::SystemTime::now()
             .duration_since(time::UNIX_EPOCH)
             .unwrap()
@@ -87,14 +84,10 @@ impl UnsignedIp {
             return Ok(false);
         }
 
-        let pkey = &PKey::from_rsa(pkey)?;
         let mut verifier = Verifier::new(MessageDigest::sha256(), pkey)?;
-
-        let as_bytes = self.bytes();
-        let mut hasher = sha2::Sha256::new();
-        hasher.update(as_bytes);
-        let hashed_ip = hasher.finalize();
-        verifier.update(&hashed_ip)?;
+        let ip_bytes = self.bytes();
+        assert_eq!(ip_bytes.len(), self.capacity());
+        verifier.update(&ip_bytes)?;
 
         verifier.verify(signature)
     }

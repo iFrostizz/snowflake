@@ -1,9 +1,10 @@
+use std::path::Path;
 use crate::client::config;
 use crate::id::{ChainId, NodeId};
 use crate::message::mail_box::MailBox;
 use crate::message::{pipeline::Pipeline, MiniMessage};
 use crate::net::queue::ConnectionQueue;
-use crate::net::{ip::UnsignedIp, BackoffParams, Intervals, Network, PeerInfo};
+use crate::net::{ip::SignedIp, ip::UnsignedIp, BackoffParams, Intervals, Network, PeerInfo};
 use crate::server::{
     msg::{DecodingError, OutboundMessage},
     peers::PeerSender,
@@ -18,6 +19,7 @@ use crate::utils::{
 use flume::{Receiver, Sender};
 use futures::future;
 use indexmap::IndexMap;
+use openssl::pkey::PKey;
 use prost::EncodeError;
 use proto_lib::p2p::message::Message;
 use proto_lib::p2p::{self};
@@ -34,6 +36,48 @@ use tokio::task::JoinHandle;
 use tokio::time;
 use tokio_rustls::TlsStream;
 use tracing::instrument;
+
+fn validate_credentials(config: &NetworkConfig) -> Result<(), NodeError> {
+    let cert_bytes = std::fs::read(&config.cert_path)?;
+    let cert = openssl::x509::X509::from_pem(&cert_bytes)?;
+    let cert_pub = cert.public_key()?.public_key_to_der()?;
+
+    let key_bytes = std::fs::read(&config.pem_key_path)?;
+    let key = PKey::private_key_from_pem(&key_bytes)
+        .or_else(|_| PKey::private_key_from_pkcs8(&key_bytes))?;
+    let key_pub = key.public_key_to_der()?;
+
+    if cert_pub != key_pub {
+        return Err(NodeError::Message(
+            "certificate does not match private key".to_string(),
+        ));
+    }
+
+    let bls_bytes = std::fs::read(&config.bls_key_path)?;
+    if bls_bytes.len() != 32 {
+        return Err(NodeError::Message(format!(
+            "invalid bls key length: expected 32 bytes, got {}",
+            bls_bytes.len()
+        )));
+    }
+
+    Ok(())
+}
+
+fn verify_signed_ip(cert_path: &Path, signed_ip: &SignedIp) -> Result<(), NodeError> {
+    let cert_bytes = std::fs::read(cert_path)?;
+    let cert = openssl::x509::X509::from_pem(&cert_bytes)?;
+    let public_key = cert.public_key()?;
+    let valid = signed_ip
+        .unsigned_ip
+        .verify(&signed_ip.ip_sig, &public_key)?;
+    if !valid {
+        return Err(NodeError::Message(
+            "invalid signed IP: certificate signature mismatch".to_string(),
+        ));
+    }
+    Ok(())
+}
 
 #[derive(Debug, Error)]
 pub enum NodeError {
@@ -149,6 +193,7 @@ impl Network {
         node_id: NodeId,
         peers_infos: Arc<RwLock<IndexMap<NodeId, PeerInfo>>>,
     ) -> Result<Self, NodeError> {
+        validate_credentials(&config)?;
         let client_config = Arc::new(config::client_config(
             &config.cert_path,
             &config.pem_key_path,
@@ -168,6 +213,7 @@ impl Network {
             sig_timestamp,
         );
         let signed_ip = unsigned_ip.sign_with_key(&bls, &config.pem_key_path)?;
+        verify_signed_ip(&config.cert_path, &signed_ip)?;
 
         // TODO https://github.com/iFrostizz/snowflake/issues/13
         let client = p2p::Client {
@@ -374,7 +420,8 @@ impl Network {
                 .as_secs(),
             ip_addr: ip_octets(network.config.socket_addr.ip()),
             ip_port: network.config.socket_addr.port().into(),
-            upgrade_time: 1607144400,
+            // TODO sync with networks
+            upgrade_time: 1763568000,
             ip_signing_time: network.signed_ip.unsigned_ip.timestamp,
             ip_node_id_sig: network.signed_ip.ip_sig.clone(),
             tracked_subnets: Vec::new(),

@@ -42,15 +42,15 @@ pub struct Args {
     pub http_port: u16,
 
     /// Path of the certificate
-    #[arg(short, long, default_value = "./node.crt")]
+    #[arg(short, long, default_value = "./staker.crt")]
     pub cert_path: PathBuf,
 
     /// Path of the private key
-    #[arg(short, long, default_value = "./node.key")]
+    #[arg(short, long, default_value = "./staker.key")]
     pub pem_key_path: PathBuf,
 
     /// Path of the BLS key
-    #[arg(long, default_value = "./bls.key")]
+    #[arg(long, default_value = "./signer.key")]
     pub bls_key_path: PathBuf,
 
     /// Path of the bootstrappers path in the .json format
@@ -113,7 +113,7 @@ pub async fn read_args() -> Result<Args, NodeError> {
         log::debug!("public_ip parameter not provided, resolving DNS...");
         if let Some(ip) = public_ip::addr().await {
             args.public_ip = Some(ip);
-            log::debug!("found {:?}", ip);
+            log::debug!("found ip: {:?}", ip);
         } else {
             return Err(NodeError::Dns);
         }
