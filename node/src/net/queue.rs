@@ -196,15 +196,4 @@ impl ConnectionQueue {
             .send((data, connection_tx))
             .expect("receivers dropped");
     }
-
-    pub async fn wait_for_connection(&self, data: ConnectionData, retries: usize) -> bool {
-        let (tx, rx) = oneshot::channel();
-        match retries {
-            0 => {
-                self.add_connection_without_retries(data, Some(tx));
-            }
-            n => self._add_connection(data, n, Some(tx)),
-        };
-        rx.await.unwrap_or(false)
-    }
 }

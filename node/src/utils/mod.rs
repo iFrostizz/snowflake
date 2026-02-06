@@ -11,4 +11,3 @@ pub mod unpacker;
 pub mod windower;
 
 pub use fifo::FIFO;
-pub use fifo_set::FIFOSet;

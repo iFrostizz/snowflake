@@ -9,7 +9,7 @@ option go_package = "github.com/ava-labs/avalanchego/proto/pb/p2p";
 // Only one type can be non-null.
 message Message {
   reserved 1; // Until E upgrade is activated.
-  reserved 36; // Next unused field number.
+  reserved 37; // Next unused field number.
   // NOTES
   // Use "oneof" for each message type and set rest to null if not used.
   // That is because when the compression is enabled, we don't want to include uncompressed fields.
@@ -55,6 +55,9 @@ message Message {
     AppResponse app_response = 31;
     AppGossip app_gossip = 32;
     AppError app_error = 34;
+
+    // Simplex messages:
+    Simplex simplex = 36;
   }
 }
 
@@ -64,27 +67,12 @@ message Message {
 message Ping {
   // Uptime percentage on the primary network [0, 100]
   uint32 uptime = 1;
-  // Uptime percentage on subnets
-  repeated SubnetUptime subnet_uptimes = 2;
+  reserved 2; // Until Etna upgrade is activated.
 }
 
-// SubnetUptime is a descriptor for a peer's perceived uptime on a subnet.
-message SubnetUptime {
-  // Subnet the peer is validating
-  bytes subnet_id = 1;
-  // Uptime percentage on the subnet [0, 100]
-  uint32 uptime = 2;
-}
-
-// Pong is sent in response to a Ping with the perceived uptime of the
-// peer.
+// Pong is sent in response to a Ping.
 message Pong {
-  // Deprecated: uptime is now sent in Ping
-  // Uptime percentage on the primary network [0, 100]
-  uint32 uptime = 1;
-  // Deprecated: uptime is now sent in Ping
-  // Uptime percentage on subnets
-  repeated SubnetUptime subnet_uptimes = 2;
+  reserved 1, 2; // Until E upgrade is activated.
 }
 
 // Handshake is the first outbound message sent to a peer when a connection is
@@ -95,7 +83,6 @@ message Pong {
 //
 // Peers should drop connections to peers with incompatible versions.
 message Handshake {
-  reserved 5; // Until E upgrade is activated.
   // Network the peer is running on (e.g local, testnet, mainnet)
   uint32 network_id = 1;
   // Unix timestamp when this Handshake message was created
@@ -104,6 +91,9 @@ message Handshake {
   bytes ip_addr = 3;
   // IP port of the peer
   uint32 ip_port = 4;
+  // Unix timestamp (in seconds) of the most recently scheduled network upgrade.
+  // This timestamp may be the past upgrade or a future upgrade.
+  uint64 upgrade_time = 5;
   // Timestamp of the IP
   uint64 ip_signing_time = 6;
   // Signature of the peer IP port pair at a provided timestamp with the TLS
@@ -118,6 +108,9 @@ message Handshake {
   // Signature of the peer IP port pair at a provided timestamp with the BLS
   // key.
   bytes ip_bls_sig = 13;
+  // To avoid sending IPs that the client isn't interested in tracking, the
+  // server expects the client to confirm that it is tracking all subnets.
+  bool all_subnets = 14;
 }
 
 // Metadata about a peer's P2P client used to determine compatibility
@@ -160,6 +153,7 @@ message ClaimedIpPort {
 // filter.
 message GetPeerList {
   BloomFilter known_peers = 1;
+  bool all_subnets = 2;
 }
 
 // PeerList contains network-level metadata for a set of validators.
@@ -199,7 +193,7 @@ message StateSummaryFrontier {
 // GetAcceptedStateSummary requests a set of state summaries at a set of
 // block heights
 message GetAcceptedStateSummary {
-  // Chain bein requested from
+  // Chain being requested from
   bytes chain_id = 1;
   // Unique identifier for this request
   uint32 request_id = 2;
@@ -222,9 +216,9 @@ message AcceptedStateSummary {
 // The consensus engine that should be used when handling a consensus request.
 enum EngineType {
   ENGINE_TYPE_UNSPECIFIED = 0;
-  // Only the X-Chain uses avalanche consensus
-  ENGINE_TYPE_AVALANCHE = 1;
-  ENGINE_TYPE_SNOWMAN = 2;
+  // Only the X-Chain uses DAG consensus
+  ENGINE_TYPE_DAG = 1;
+  ENGINE_TYPE_CHAIN = 2;
 }
 
 // GetAcceptedFrontier requests the accepted frontier from a peer.
@@ -374,14 +368,16 @@ message PullQuery {
 message Chits {
   // Chain being responded from
   bytes chain_id = 1;
-  // Request id of the original PushQuery/PullQuery request
+  // Request ID of the original PushQuery/PullQuery request
   uint32 request_id = 2;
-  // Currently preferred block
+  // ID of the currently preferred block
   bytes preferred_id = 3;
-  // Last accepted block
+  // ID of the last accepted block
   bytes accepted_id = 4;
-  // Currently preferred block at the requested height
+  // ID of the currently preferred block at the requested height
   bytes preferred_id_at_height = 5;
+  // Last accepted block's height
+  uint64 accepted_height = 6;
 }
 
 // AppRequest is a VM-defined request.
@@ -429,3 +425,96 @@ message AppGossip {
   bytes app_bytes = 2;
 }
 
+message Simplex {
+  bytes chain_id = 1;
+
+  oneof message {
+    BlockProposal block_proposal = 2;
+    Vote vote = 3;
+    EmptyVote empty_vote = 4;
+    Vote finalize_vote = 5;
+    QuorumCertificate notarization = 6;
+    EmptyNotarization empty_notarization = 7;
+    QuorumCertificate finalization = 8;
+    ReplicationRequest replication_request = 9;
+    ReplicationResponse replication_response = 10;
+  }
+}
+
+message BlockProposal {
+  bytes block = 1;
+  Vote vote = 2;
+}
+
+message ProtocolMetadata {
+  // Version defines the version of the protocol this block was created with.
+  uint32 version = 1;
+  // Epoch returns the epoch in which the block was proposed
+  uint64 epoch = 2;
+  // Round returns the round number in which the block was proposed.
+  uint64 round = 3;
+  // Seq is the order of the block among all blocks in the blockchain.
+  // Cannot correspond to an empty block.
+  uint64 seq = 4;
+  // Prev returns the digest of the previous data block
+  bytes prev = 5;
+}
+
+message EmptyVoteMetadata {
+  // Epoch returns the epoch in which the empty block was proposed
+  uint64 epoch = 1;
+  // Round returns the round number in which the empty block was proposed.
+  uint64 round = 2;
+}
+
+message BlockHeader {
+  ProtocolMetadata metadata = 1;
+  // digest is the short representation of the inner block's bytes
+  bytes digest = 2;
+}
+
+message Signature {
+  // Signer identifies who the signature came from.
+  bytes signer = 1;
+  // Value is the actual cryptographic signature.
+  bytes value = 2;
+}
+
+message Vote {
+  BlockHeader block_header = 1;
+  Signature signature = 2;
+}
+
+message EmptyVote {
+  EmptyVoteMetadata metadata = 1;
+  Signature signature = 2;
+}
+
+message QuorumCertificate {
+  BlockHeader block_header = 1;
+  bytes quorum_certificate = 2;
+}
+
+message EmptyNotarization {
+  EmptyVoteMetadata metadata = 1;
+  bytes quorum_certificate = 2;
+}
+
+message ReplicationRequest {
+  repeated uint64 seqs = 1; // sequences we are requesting
+  uint64 latest_round = 2; // latest round that we are aware of
+}
+
+message ReplicationResponse {
+  repeated QuorumRound data = 1; // requested seqs. not required to be in particular order
+  QuorumRound latest_round = 2; // latest round the responding node is aware of
+}
+
+// QuorumRound represents a round that has acheived quorum on either
+// (empty notarization), (block & notarization), or (block, finalization certificate)
+message QuorumRound {
+  bytes block = 1;
+  QuorumCertificate notarization = 2;
+  EmptyNotarization empty_notarization = 3;
+  QuorumCertificate finalization = 4;
+}

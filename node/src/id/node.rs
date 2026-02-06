@@ -55,30 +55,6 @@ impl Debug for NodeId {
     }
 }
 
-pub struct VecNodeIds<'a>(&'a Vec<NodeId>);
-
-impl<'a> From<&'a Vec<NodeId>> for VecNodeIds<'a> {
-    fn from(value: &'a Vec<NodeId>) -> Self {
-        Self(value)
-    }
-}
-
-impl Display for VecNodeIds<'_> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "[")?;
-        let mut first = true;
-        for node_id in self.0 {
-            if first {
-                write!(f, "{}", node_id)?;
-            } else {
-                write!(f, ", {}", node_id)?;
-                first = false;
-            }
-        }
-        write!(f, "]")
-    }
-}
-
 impl TryFrom<String> for NodeId {
     type Error = IdError;
 

@@ -8,7 +8,7 @@ pub struct Message {
     /// That is because when the compression is enabled, we don't want to include uncompressed fields.
     #[prost(
         oneof = "message::Message",
-        tags = "2, 11, 12, 13, 35, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 34"
+        tags = "2, 11, 12, 13, 35, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 34, 36"
     )]
     pub message: ::core::option::Option<message::Message>,
 }
@@ -77,43 +77,23 @@ pub mod message {
         AppGossip(super::AppGossip),
         #[prost(message, tag = "34")]
         AppError(super::AppError),
+        /// Simplex messages:
+        #[prost(message, tag = "36")]
+        Simplex(super::Simplex),
     }
 }
 /// Ping reports a peer's perceived uptime percentage.
 ///
 /// Peers should respond to Ping with a Pong.
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
 pub struct Ping {
     /// Uptime percentage on the primary network \[0, 100\]
     #[prost(uint32, tag = "1")]
     pub uptime: u32,
-    /// Uptime percentage on subnets
-    #[prost(message, repeated, tag = "2")]
-    pub subnet_uptimes: ::prost::alloc::vec::Vec<SubnetUptime>,
 }
-/// SubnetUptime is a descriptor for a peer's perceived uptime on a subnet.
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct SubnetUptime {
-    /// Subnet the peer is validating
-    #[prost(bytes = "vec", tag = "1")]
-    pub subnet_id: ::prost::alloc::vec::Vec<u8>,
-    /// Uptime percentage on the subnet \[0, 100\]
-    #[prost(uint32, tag = "2")]
-    pub uptime: u32,
-}
-/// Pong is sent in response to a Ping with the perceived uptime of the
-/// peer.
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct Pong {
-    /// Deprecated: uptime is now sent in Ping
-    /// Uptime percentage on the primary network \[0, 100\]
-    #[prost(uint32, tag = "1")]
-    pub uptime: u32,
-    /// Deprecated: uptime is now sent in Ping
-    /// Uptime percentage on subnets
-    #[prost(message, repeated, tag = "2")]
-    pub subnet_uptimes: ::prost::alloc::vec::Vec<SubnetUptime>,
-}
+/// Pong is sent in response to a Ping.
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+pub struct Pong {}
 /// Handshake is the first outbound message sent to a peer when a connection is
 /// established to start the p2p handshake.
 ///
@@ -135,6 +115,10 @@ pub struct Handshake {
     /// IP port of the peer
     #[prost(uint32, tag = "4")]
     pub ip_port: u32,
+    /// Unix timestamp (in seconds) of the most recently scheduled network upgrade.
+    /// This timestamp may be the past upgrade or a future upgrade.
+    #[prost(uint64, tag = "5")]
+    pub upgrade_time: u64,
     /// Timestamp of the IP
     #[prost(uint64, tag = "6")]
     pub ip_signing_time: u64,
@@ -157,6 +141,10 @@ pub struct Handshake {
     /// key.
     #[prost(bytes = "vec", tag = "13")]
     pub ip_bls_sig: ::prost::alloc::vec::Vec<u8>,
+    /// To avoid sending IPs that the client isn't interested in tracking, the
+    /// server expects the client to confirm that it is tracking all subnets.
+    #[prost(bool, tag = "14")]
+    pub all_subnets: bool,
 }
 /// Metadata about a peer's P2P client used to determine compatibility
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -212,6 +200,8 @@ pub struct ClaimedIpPort {
 pub struct GetPeerList {
     #[prost(message, optional, tag = "1")]
     pub known_peers: ::core::option::Option<BloomFilter>,
+    #[prost(bool, tag = "2")]
+    pub all_subnets: bool,
 }
 /// PeerList contains network-level metadata for a set of validators.
 ///
@@ -258,7 +248,7 @@ pub struct StateSummaryFrontier {
 /// block heights
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GetAcceptedStateSummary {
-    /// Chain bein requested from
+    /// Chain being requested from
     #[prost(bytes = "vec", tag = "1")]
     pub chain_id: ::prost::alloc::vec::Vec<u8>,
     /// Unique identifier for this request
@@ -466,18 +456,21 @@ pub struct Chits {
     /// Chain being responded from
     #[prost(bytes = "vec", tag = "1")]
     pub chain_id: ::prost::alloc::vec::Vec<u8>,
-    /// Request id of the original PushQuery/PullQuery request
+    /// Request ID of the original PushQuery/PullQuery request
     #[prost(uint32, tag = "2")]
     pub request_id: u32,
-    /// Currently preferred block
+    /// ID of the currently preferred block
     #[prost(bytes = "vec", tag = "3")]
     pub preferred_id: ::prost::alloc::vec::Vec<u8>,
-    /// Last accepted block
+    /// ID of the last accepted block
     #[prost(bytes = "vec", tag = "4")]
     pub accepted_id: ::prost::alloc::vec::Vec<u8>,
-    /// Currently preferred block at the requested height
+    /// ID of the currently preferred block at the requested height
     #[prost(bytes = "vec", tag = "5")]
     pub preferred_id_at_height: ::prost::alloc::vec::Vec<u8>,
+    /// Last accepted block's height
+    #[prost(uint64, tag = "6")]
+    pub accepted_height: u64,
 }
 /// AppRequest is a VM-defined request.
 ///
@@ -537,14 +530,156 @@ pub struct AppGossip {
     #[prost(bytes = "vec", tag = "2")]
     pub app_bytes: ::prost::alloc::vec::Vec<u8>,
 }
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct Simplex {
+    #[prost(bytes = "vec", tag = "1")]
+    pub chain_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(oneof = "simplex::Message", tags = "2, 3, 4, 5, 6, 7, 8, 9, 10")]
+    pub message: ::core::option::Option<simplex::Message>,
+}
+/// Nested message and enum types in `Simplex`.
+pub mod simplex {
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Message {
+        #[prost(message, tag = "2")]
+        BlockProposal(super::BlockProposal),
+        #[prost(message, tag = "3")]
+        Vote(super::Vote),
+        #[prost(message, tag = "4")]
+        EmptyVote(super::EmptyVote),
+        #[prost(message, tag = "5")]
+        FinalizeVote(super::Vote),
+        #[prost(message, tag = "6")]
+        Notarization(super::QuorumCertificate),
+        #[prost(message, tag = "7")]
+        EmptyNotarization(super::EmptyNotarization),
+        #[prost(message, tag = "8")]
+        Finalization(super::QuorumCertificate),
+        #[prost(message, tag = "9")]
+        ReplicationRequest(super::ReplicationRequest),
+        #[prost(message, tag = "10")]
+        ReplicationResponse(super::ReplicationResponse),
+    }
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct BlockProposal {
+    #[prost(bytes = "vec", tag = "1")]
+    pub block: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "2")]
+    pub vote: ::core::option::Option<Vote>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ProtocolMetadata {
+    /// Version defines the version of the protocol this block was created with.
+    #[prost(uint32, tag = "1")]
+    pub version: u32,
+    /// Epoch returns the epoch in which the block was proposed
+    #[prost(uint64, tag = "2")]
+    pub epoch: u64,
+    /// Round returns the round number in which the block was proposed.
+    #[prost(uint64, tag = "3")]
+    pub round: u64,
+    /// Seq is the order of the block among all blocks in the blockchain.
+    /// Cannot correspond to an empty block.
+    #[prost(uint64, tag = "4")]
+    pub seq: u64,
+    /// Prev returns the digest of the previous data block
+    #[prost(bytes = "vec", tag = "5")]
+    pub prev: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+pub struct EmptyVoteMetadata {
+    /// Epoch returns the epoch in which the empty block was proposed
+    #[prost(uint64, tag = "1")]
+    pub epoch: u64,
+    /// Round returns the round number in which the empty block was proposed.
+    #[prost(uint64, tag = "2")]
+    pub round: u64,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct BlockHeader {
+    #[prost(message, optional, tag = "1")]
+    pub metadata: ::core::option::Option<ProtocolMetadata>,
+    /// digest is the short representation of the inner block's bytes
+    #[prost(bytes = "vec", tag = "2")]
+    pub digest: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct Signature {
+    /// Signer identifies who the signature came from.
+    #[prost(bytes = "vec", tag = "1")]
+    pub signer: ::prost::alloc::vec::Vec<u8>,
+    /// Value is the actual cryptographic signature.
+    #[prost(bytes = "vec", tag = "2")]
+    pub value: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct Vote {
+    #[prost(message, optional, tag = "1")]
+    pub block_header: ::core::option::Option<BlockHeader>,
+    #[prost(message, optional, tag = "2")]
+    pub signature: ::core::option::Option<Signature>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct EmptyVote {
+    #[prost(message, optional, tag = "1")]
+    pub metadata: ::core::option::Option<EmptyVoteMetadata>,
+    #[prost(message, optional, tag = "2")]
+    pub signature: ::core::option::Option<Signature>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct QuorumCertificate {
+    #[prost(message, optional, tag = "1")]
+    pub block_header: ::core::option::Option<BlockHeader>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub quorum_certificate: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct EmptyNotarization {
+    #[prost(message, optional, tag = "1")]
+    pub metadata: ::core::option::Option<EmptyVoteMetadata>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub quorum_certificate: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ReplicationRequest {
+    /// sequences we are requesting
+    #[prost(uint64, repeated, tag = "1")]
+    pub seqs: ::prost::alloc::vec::Vec<u64>,
+    /// latest round that we are aware of
+    #[prost(uint64, tag = "2")]
+    pub latest_round: u64,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ReplicationResponse {
+    /// requested seqs. not required to be in particular order
+    #[prost(message, repeated, tag = "1")]
+    pub data: ::prost::alloc::vec::Vec<QuorumRound>,
+    /// latest round the responding node is aware of
+    #[prost(message, optional, tag = "2")]
+    pub latest_round: ::core::option::Option<QuorumRound>,
+}
+/// QuorumRound represents a round that has acheived quorum on either
+/// (empty notarization), (block & notarization), or (block, finalization certificate)
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct QuorumRound {
+    #[prost(bytes = "vec", tag = "1")]
+    pub block: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "2")]
+    pub notarization: ::core::option::Option<QuorumCertificate>,
+    #[prost(message, optional, tag = "3")]
+    pub empty_notarization: ::core::option::Option<EmptyNotarization>,
+    #[prost(message, optional, tag = "4")]
+    pub finalization: ::core::option::Option<QuorumCertificate>,
+}
 /// The consensus engine that should be used when handling a consensus request.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum EngineType {
     Unspecified = 0,
-    /// Only the X-Chain uses avalanche consensus
-    Avalanche = 1,
-    Snowman = 2,
+    /// Only the X-Chain uses DAG consensus
+    Dag = 1,
+    Chain = 2,
 }
 impl EngineType {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -554,16 +689,16 @@ impl EngineType {
     pub fn as_str_name(&self) -> &'static str {
         match self {
             Self::Unspecified => "ENGINE_TYPE_UNSPECIFIED",
-            Self::Avalanche => "ENGINE_TYPE_AVALANCHE",
-            Self::Snowman => "ENGINE_TYPE_SNOWMAN",
+            Self::Dag => "ENGINE_TYPE_DAG",
+            Self::Chain => "ENGINE_TYPE_CHAIN",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
     pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
         match value {
             "ENGINE_TYPE_UNSPECIFIED" => Some(Self::Unspecified),
-            "ENGINE_TYPE_AVALANCHE" => Some(Self::Avalanche),
-            "ENGINE_TYPE_SNOWMAN" => Some(Self::Snowman),
+            "ENGINE_TYPE_DAG" => Some(Self::Dag),
+            "ENGINE_TYPE_CHAIN" => Some(Self::Chain),
             _ => None,
         }
     }

@@ -34,6 +34,7 @@ pub enum MiniMessage {
     AppResponse,
     AppGossip,
     AppError,
+    Simplex,
 }
 
 impl std::fmt::Display for MiniMessage {
@@ -64,6 +65,7 @@ impl std::fmt::Display for MiniMessage {
             MiniMessage::AppResponse => "AppResponse",
             MiniMessage::AppGossip => "AppGossip",
             MiniMessage::AppError => "AppError",
+            MiniMessage::Simplex => "Simplex",
         };
         write!(f, "Message::{}", variant)
     }
@@ -97,6 +99,7 @@ impl<'a> From<&'a Message> for MiniMessage {
             Message::AppResponse(_) => MiniMessage::AppResponse,
             Message::AppGossip(_) => MiniMessage::AppGossip,
             Message::AppError(_) => MiniMessage::AppError,
+            Message::Simplex(_) => MiniMessage::Simplex,
         }
     }
 }
@@ -131,6 +134,7 @@ impl MiniMessage {
                 MiniMessage::AppResponse => stats::messages::inc_sent_app_response_bytes(size),
                 MiniMessage::AppGossip => stats::messages::inc_sent_app_gossip_bytes(size),
                 MiniMessage::AppError => stats::messages::inc_sent_app_error_bytes(size),
+                MiniMessage::Simplex => (),
             }
         } else {
             match self {
@@ -159,6 +163,7 @@ impl MiniMessage {
                 MiniMessage::AppResponse => stats::messages::inc_recv_app_response_bytes(size),
                 MiniMessage::AppGossip => stats::messages::inc_recv_app_gossip_bytes(size),
                 MiniMessage::AppError => stats::messages::inc_recv_app_error_bytes(size),
+                MiniMessage::Simplex => ()
             }
         }
     }

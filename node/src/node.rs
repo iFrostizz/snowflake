@@ -1,14 +1,9 @@
-use crate::dht::block::DhtBlocks;
-use crate::dht::kademlia::ValueOrNodes;
-use crate::dht::{light_errors, DhtId, LightMessage, LightResult, LightValue};
 use crate::id::{Id, NodeId};
 use crate::message::SubscribableMessage;
-use crate::net::light::DhtCodex;
 use crate::net::node::{AddPeerError, NetworkConfig};
 use crate::net::{
-    light, node::NodeError, queue::ConnectionData, HandshakeInfos, Network, Peer, PeerMessage,
+    node::NodeError, queue::ConnectionData, HandshakeInfos, Network, Peer, PeerMessage,
 };
-use crate::server::msg::AppRequestMessage;
 use crate::server::peers::PeerInfo;
 use crate::stats::{self, Metrics};
 use crate::utils::{
@@ -118,21 +113,10 @@ impl Node {
         let rx2 = rx.resubscribe();
         let watch = tokio::spawn(node.watch_sent_transactions(transaction_rx, rx2));
 
-        let network = self.network.clone();
-        let rx2 = rx.resubscribe();
-        let light = tokio::spawn(network.start_light_network(rx2));
-
         let node = self.clone();
         let rx2 = rx.resubscribe();
         let mbox = tokio::spawn(async move {
             node.network.mail_box.start(rx2).await;
-            Ok(())
-        });
-
-        let node = self.clone();
-        let rx2 = rx.resubscribe();
-        let verif = tokio::spawn(async move {
-            node.start_verification_channel(rx2).await;
             Ok(())
         });
 
@@ -142,7 +126,7 @@ impl Node {
             Ok(())
         });
 
-        vec![conn, net, watch, light, mbox, verif, pip]
+        vec![conn, net, watch, mbox, pip]
     }
 
     /// A created connection that may create a new peer.
@@ -205,7 +189,6 @@ impl Node {
 
         let node = self.clone();
         let peers_infos = self.network.peers_infos.clone();
-        let light_peers = self.network.light_network.light_peers.clone();
         tokio::spawn(async move {
             let node_id = *peer.node_id();
             let err = match node.loop_peer(hs_permit, peer, connected_tx).await {
@@ -221,11 +204,7 @@ impl Node {
             };
 
             // remove peer and try to reconnect
-            Network::remove_peers(
-                peers_infos,
-                &mut light_peers.write().map,
-                vec![(node_id, err)],
-            );
+            Network::remove_peers(peers_infos, vec![(node_id, err)]);
             node.network.connection_queue.add_connection(data);
         });
 
@@ -289,13 +268,7 @@ impl Node {
             )
             .await;
 
-        let manage_peer = self.manage_peer(
-            peer.rpn().clone(),
-            peer.rpl().clone(),
-            node_id,
-            hs_permit,
-            tx.subscribe(),
-        );
+        let manage_peer = self.manage_peer(peer.rpn().clone(), node_id, hs_permit, tx.subscribe());
         let (write_peer, read_peer, recurring) = peer.communicate(
             self.network.peers_infos.clone(),
             self.network.config.intervals.clone(),
@@ -325,14 +298,13 @@ impl Node {
     fn manage_peer(
         self: &Arc<Node>,
         rpn: Receiver<PeerMessage>,
-        rpl: Receiver<(LightMessage, Option<oneshot::Sender<LightResult>>)>,
         node_id: NodeId,
         hs_permit: OwnedSemaphorePermit,
         rx: broadcast::Receiver<()>,
     ) -> JoinHandle<Result<(), NodeError>> {
         let node = self.clone();
         tokio::spawn(async move {
-            node.execute_peer_operation(&rpn, rpl, node_id, hs_permit, rx)
+            node.execute_peer_operation(&rpn, node_id, hs_permit, rx)
                 .await;
             Ok(())
         })
@@ -341,7 +313,6 @@ impl Node {
     pub async fn execute_peer_operation(
         self: Arc<Node>,
         rpn: &Receiver<PeerMessage>,
-        rpl: Receiver<(LightMessage, Option<oneshot::Sender<LightResult>>)>,
         node_id: NodeId,
         hs_permit: OwnedSemaphorePermit,
         mut rx: broadcast::Receiver<()>,
@@ -354,11 +325,6 @@ impl Node {
                 res = rpn.recv_async() => {
                     if let Ok(msg) = res {
                         self.manage_peer_message(node_id, msg, &mut maybe_hs_permit);
-                    }
-                }
-                res = rpl.recv_async() => {
-                    if let Ok((msg, resp)) = res {
-                        self.manage_light_message(node_id, msg, resp);
                     }
                 }
                 _ = rx.recv() => {
@@ -416,115 +382,6 @@ impl Node {
 
                     drop(hs_permit);
                 }
-            }
-        }
-    }
-
-    pub fn manage_light_message(
-        &self,
-        node_id: NodeId,
-        message: LightMessage,
-        resp: Option<oneshot::Sender<LightResult>>,
-    ) {
-        let res = match message {
-            LightMessage::NewPeer(buckets) => {
-                self.network
-                    .light_network
-                    .light_peers
-                    .write()
-                    .insert(node_id, buckets);
-                None
-            }
-            LightMessage::Store(dht_id, value) => {
-                let res = match dht_id {
-                    DhtId::Block => match DhtBlocks::decode(&value) {
-                        Ok(block) => {
-                            let (tx, _) = oneshot::channel();
-                            if self
-                                .network
-                                .light_network
-                                .kademlia_dht
-                                .verification_tx
-                                .send((block, tx))
-                                .is_err()
-                            {
-                                return;
-                            }
-                            Ok(LightValue::Ok)
-                        }
-                        Err(err) => Err(err),
-                    },
-                    _ => Err(light_errors::INVALID_DHT),
-                };
-                Some(res)
-            }
-            LightMessage::FindNode(bucket) => {
-                let res = Ok(LightValue::ValueOrNodes(ValueOrNodes::Nodes(
-                    self.network.light_network.kademlia_dht.find_node(&bucket),
-                )));
-                Some(res)
-            }
-            LightMessage::FindValue(dht_id, bucket) => {
-                let res = match dht_id {
-                    DhtId::Block => self
-                        .network
-                        .light_network
-                        .find_value(&self.network.light_network.block_dht.dht.store, &bucket),
-                    _ => Err(light_errors::INVALID_DHT),
-                };
-                Some(res)
-            }
-            LightMessage::Nodes(cds) => {
-                let cds = cds
-                    .into_iter()
-                    .filter(|c| c.node_id != self.network.node_id)
-                    .collect::<Vec<_>>();
-                if !cds.is_empty() {
-                    self.network
-                        .light_network
-                        .light_peers
-                        .potentially_add_nodes(cds);
-                }
-                None
-            }
-        };
-
-        match (res, resp) {
-            (Some(res), Some(resp)) => {
-                let _ = resp.send(res);
-            }
-            (None, None) | (Some(Ok(LightValue::Ok)), None) => (),
-            (res, resp) => {
-                log::error!("unexpected state for res and resp values");
-                log::error!("this is a logic bug. please report it.");
-                log::error!("res: {:?} resp: {:?}", res, resp);
-                unreachable!();
-            }
-        }
-    }
-
-    pub async fn start_verification_channel(&self, mut rx: broadcast::Receiver<()>) {
-        let verification_rx = self.network.verification_rx.clone();
-        let pool = Arc::new(Semaphore::new(10));
-        loop {
-            tokio::select! {
-                maybe_block = verification_rx.recv_async() => {
-                    if let Ok((block, tx)) = maybe_block {
-                        let network = self.network.clone();
-                        let pool = pool.clone();
-                        // TODO preferably the semaphore should be acquired before spawning the task
-                        tokio::spawn(async move {
-                            let r = pool.acquire().await.unwrap();
-                            let res = network.verify_block(&block).await.is_ok_and(|res| res);
-                            let _ = tx.send(res);
-                            if res {
-                                let _ = network.light_network.block_dht.store_block_if_desired(block);
-                            }
-                            drop(r);
-                        });
-                    }
-                },
-                _ = rx.recv() => return
             }
         }
     }
@@ -591,15 +448,11 @@ impl Node {
 
         let mut get_peer_list_interval =
             time::interval(Duration::from_millis(intervals.get_peer_list));
-        let mut find_nodes_interval = time::interval(Duration::from_millis(intervals.find_nodes));
 
         loop {
             tokio::select! {
                 _ = get_peer_list_interval.tick() => {
                     self.get_peer_list();
-                }
-                _ = find_nodes_interval.tick() => {
-                    self.find_nodes();
                 }
                 _ = rx.recv() => {
                     return Ok(())
@@ -619,37 +472,11 @@ impl Node {
         let bloom_filter = self.network.bloom_filter.read().unwrap().as_proto();
         if let Err(err) = random_peer.sender.send(Message::GetPeerList(GetPeerList {
             known_peers: Some(bloom_filter),
+            all_subnets: false,
         })) {
             Network::remove_peers(
                 self.network.peers_infos.clone(),
-                &mut self.network.light_network.light_peers.write().map,
                 vec![(*node_id, Some(err))],
-            );
-        }
-    }
-
-    fn find_nodes(self: &Arc<Node>) {
-        let light_peers = self.network.light_network.light_peers.read().unwrap();
-        let Some(node_id) = light::closest_peer(self.network.node_id, &light_peers) else {
-            return;
-        };
-        let peers_infos = self.network.peers_infos.read().unwrap();
-        let Some(random_peer) = peers_infos.get(&node_id) else {
-            return;
-        };
-        if let Err(err) = random_peer.sender.send(
-            AppRequestMessage::encode(
-                &self.network.config.c_chain_id,
-                sdk::FindNode {
-                    bucket: self.network.node_id.into(),
-                },
-            )
-            .unwrap(),
-        ) {
-            Network::remove_peers(
-                self.network.peers_infos.clone(),
-                &mut self.network.light_network.light_peers.write().map,
-                vec![(node_id, Some(err))],
             );
         }
     }
@@ -835,11 +662,7 @@ impl Node {
         let handles = handles.into_iter().map(|handle| tokio::spawn(handle));
 
         if !to_remove.is_empty() {
-            Network::remove_peers(
-                self.network.peers_infos.clone(),
-                &mut self.network.light_network.light_peers.write().map,
-                to_remove,
-            );
+            Network::remove_peers(self.network.peers_infos.clone(), to_remove);
         }
 
         let mut messages = Vec::new();

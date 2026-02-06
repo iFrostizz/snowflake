@@ -1,5 +1,4 @@
 use crate::client::bootstrap::Bootstrappers;
-use crate::dht::{Bucket, DhtBuckets};
 use crate::id::ChainId;
 use crate::net::node::{NetworkConfig, NodeError};
 use crate::net::{BackoffParams, Intervals};
@@ -109,13 +108,6 @@ pub struct Args {
     /// RPC port
     #[arg(long, default_value_t = 9781)]
     pub rpc_port: u16,
-
-    #[arg(long, default_value_t = false)]
-    pub sync_headers: bool,
-
-    // #[arg(long, default_value_t = Bucket::try_from(2).unwrap().pow(Bucket::try_from(50).unwrap()))]
-    #[arg(long, default_value_t = Bucket::MAX)]
-    pub block_dht_buckets: Bucket,
 }
 
 pub async fn read_args() -> Result<Args, NodeError> {
@@ -130,9 +122,6 @@ pub async fn read_args() -> Result<Args, NodeError> {
         }
     }
     assert!(args.public_ip.is_some());
-    if args.sync_headers {
-        args.block_dht_buckets = Bucket::MAX;
-    }
     Ok(args)
 }
 
@@ -141,7 +130,6 @@ impl Args {
         Intervals {
             ping: self.intervals_ping_ms,
             get_peer_list: self.intervals_get_peer_list_ms,
-            find_nodes: self.intervals_find_nodes,
         }
     }
 
@@ -182,19 +170,14 @@ impl Args {
             bucket_size: 500_000,           // 500 kB
             max_concurrent_handshakes: self.max_handshakes,
             max_peers: self.max_peers,
-            max_light_peers: self.max_light_peers,
             bootstrappers: Bootstrappers::new(
                 &self.bootstrappers_path,
                 &self.light_bootstrappers_path,
             )
             .bootstrappers(&self.network_id.to_string())
             .expect("failed to instantiate bootstrappers"),
-            dht_buckets: DhtBuckets {
-                block: self.block_dht_buckets,
-            },
             max_latency_records: self.max_latency_records,
             max_out_connections: self.max_out_connections,
-            sync_headers: self.sync_headers,
         }
     }
 }

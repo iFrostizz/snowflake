@@ -24,13 +24,8 @@ impl PeerInfo {
     }
 
     pub async fn ping(&self, mail_tx: &Sender<Mail>) -> Result<(), NodeError> {
-        self.sender.send_without_response(
-            mail_tx,
-            SubscribableMessage::Ping(Ping {
-                uptime: 100,
-                subnet_uptimes: vec![],
-            }),
-        )
+        self.sender
+            .send_without_response(mail_tx, SubscribableMessage::Ping(Ping { uptime: 100 }))
     }
 }
 

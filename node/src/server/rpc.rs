@@ -1,3 +1,6 @@
+#![allow(dead_code)]
+#![allow(unused_variables)]
+
 use flume::Sender;
 use jsonrpsee::server::{Server, ServerBuilder};
 use std::net::SocketAddr;
@@ -33,22 +36,10 @@ macro_rules! not_implemented {
 
 mod rpc_impl {
     use super::*;
-    use crate::dht::block::DhtBlocks;
-    use crate::dht::kademlia::LockedMapDb;
-    use crate::dht::light_errors;
-    use crate::dht::Bucket;
-    use crate::dht::DhtId;
     use crate::id::NodeId;
-    use crate::message::SubscribableMessage;
-    use crate::net::light::DhtCodex;
-    use crate::net::queue::ConnectionData;
     use crate::node::Node;
-    use crate::server::msg::AppRequestMessage;
-    use crate::server::msg::InboundMessage;
-    use crate::server::msg::InboundMessageExt;
     use crate::utils::constants;
     use crate::utils::rlp::{Block, Header, Transaction};
-    use crate::utils::twokhashmap::CompositeKey;
     use crate::utils::unpacker::StatelessBlock;
     use crate::Arc;
     use alloy::primitives::{keccak256, Address, Bytes, FixedBytes, U256, U64};
@@ -56,7 +47,6 @@ mod rpc_impl {
     use jsonrpsee::core::{async_trait, RpcResult};
     use jsonrpsee::proc_macros::rpc;
     use jsonrpsee::types::ErrorObject;
-    use proto_lib::{p2p, sdk};
     use serde::{Deserialize, Deserializer, Serialize};
     use std::env;
     use std::str::FromStr;
@@ -405,35 +395,6 @@ mod rpc_impl {
         Nodes(Vec<NodeId>),
     }
 
-    #[rpc(server, namespace = "light")]
-    pub trait Light {
-        #[method(name = "ping")]
-        async fn ping(&self, node_id: NodeId) -> RpcResult<()>;
-
-        #[method(name = "store")]
-        async fn store(
-            &self,
-            node_id: Option<NodeId>,
-            dht_id: DhtId,
-            value: Bytes,
-        ) -> RpcResult<()>;
-
-        #[method(name = "find_node")]
-        async fn find_node(
-            &self,
-            node_id: Option<NodeId>,
-            bucket: Bucket,
-        ) -> RpcResult<Vec<NodeId>>;
-
-        #[method(name = "find_value")]
-        async fn find_value(
-            &self,
-            node_id: Option<NodeId>,
-            dht_id: DhtId,
-            bucket: Bucket,
-        ) -> RpcResult<RpcValueOrNodes>;
-    }
-
     #[derive(Clone)]
     pub struct RpcServerImpl {
         pub(crate) node: Arc<Node>,
@@ -445,43 +406,11 @@ mod rpc_impl {
             &self,
             block_parameter: BlockParameter,
         ) -> RpcResult<StatelessBlock> {
-            let number = match block_parameter {
-                BlockParameter::Number(number) => number,
-                BlockParameter::Earliest => 0,
-                BlockParameter::Latest
-                | BlockParameter::Finalized
-                | BlockParameter::Pending
-                | BlockParameter::Safe => {
-                    return self.node.network.latest_block().await.map_err(|_| {
-                        ErrorObject::borrowed(
-                            jsonrpc_errors::INTERNAL_ERROR,
-                            "block not found",
-                            None,
-                        )
-                    })
-                }
-            };
-            Ok(self
-                .node
-                .network
-                .light_network
-                .find_content(
-                    &self.node.network.light_network.block_dht,
-                    CompositeKey::First(number),
-                )
-                .await?)
+            unimplemented!()
         }
 
         async fn get_block_by_hash(&self, hash: Bytes32) -> RpcResult<StatelessBlock> {
-            Ok(self
-                .node
-                .network
-                .light_network
-                .find_content(
-                    &self.node.network.light_network.block_dht,
-                    CompositeKey::Second(hash),
-                )
-                .await?)
+            unimplemented!()
         }
 
         fn transaction_at_position(
@@ -768,255 +697,11 @@ mod rpc_impl {
             not_implemented!()
         }
     }
-
-    #[async_trait]
-    impl LightServer for RpcServerImpl {
-        async fn ping(&self, node_id: NodeId) -> RpcResult<()> {
-            if node_id == self.node.network.node_id {
-                return Err(light_errors::SEND_TO_SELF.into());
-            }
-            let maybe_peer_infos = {
-                let peers_infos = self
-                    .node
-                    .network
-                    .light_network
-                    .kademlia_dht
-                    .peers_infos
-                    .read()
-                    .unwrap();
-                peers_infos.get(&node_id).cloned()
-            };
-            if let Some(peer_infos) = maybe_peer_infos {
-                peer_infos
-                    .ping(&self.node.network.light_network.kademlia_dht.mail_tx)
-                    .await
-                    .map_err(|err| ErrorObject::owned(1000, err.to_string(), None::<()>))
-            } else {
-                Err(light_errors::PEER_MISSING.into())
-            }
-        }
-
-        async fn store(
-            &self,
-            node_id: Option<NodeId>,
-            dht_id: DhtId,
-            value: Bytes,
-        ) -> RpcResult<()> {
-            let node_id = if node_id.is_none() {
-                self.node.network.node_id
-            } else {
-                node_id.unwrap()
-            };
-            match dht_id {
-                DhtId::Block => {
-                    let block = DhtBlocks::decode(&value)?;
-                    self.node
-                        .network
-                        .light_network
-                        .store(&self.node.network.light_network.block_dht, node_id, block)
-                        .await?;
-                }
-                DhtId::State => {}
-            }
-            Ok(())
-        }
-
-        async fn find_node(
-            &self,
-            node_id: Option<NodeId>,
-            bucket: Bucket,
-        ) -> RpcResult<Vec<NodeId>> {
-            let node_ids = if node_id.is_none() || node_id == Some(self.node.network.node_id) {
-                self.node
-                    .network
-                    .light_network
-                    .kademlia_dht
-                    .find_node(&bucket)
-                    .into_iter()
-                    .map(|ConnectionData { node_id, .. }| node_id)
-                    .collect()
-            } else {
-                let node_id = node_id.unwrap();
-                let sender = {
-                    let peers_infos = self
-                        .node
-                        .network
-                        .light_network
-                        .kademlia_dht
-                        .peers_infos
-                        .read()
-                        .unwrap();
-                    let Some(peer_infos) = peers_infos.get(&node_id) else {
-                        return Err(light_errors::PEER_MISSING.into());
-                    };
-                    peer_infos.sender.clone()
-                };
-                let message = AppRequestMessage::encode(
-                    &self.node.network.light_network.kademlia_dht.chain_id,
-                    sdk::FindNode {
-                        bucket: bucket.to_be_bytes_vec(),
-                    },
-                );
-                let Ok(p2p::message::Message::AppRequest(app_request)) = message else {
-                    return Err(light_errors::INVALID_CONTENT.into());
-                };
-                let light_message: sdk::light_response::Message = sender
-                    .send_and_app_response(
-                        self.node.network.light_network.kademlia_dht.chain_id,
-                        constants::SNOWFLAKE_HANDLER_ID,
-                        &self.node.network.light_network.kademlia_dht.mail_tx,
-                        SubscribableMessage::AppRequest(app_request),
-                    )
-                    .await
-                    .map_err(|err| ErrorObject::owned(1000, err.to_string(), None::<()>))?;
-                match light_message {
-                    sdk::light_response::Message::Nodes(p2p::PeerList { claimed_ip_ports }) => {
-                        if claimed_ip_ports.len() > 10 {
-                            return Err(light_errors::INVALID_CONTENT.into());
-                        }
-                        claimed_ip_ports
-                            .into_iter()
-                            .filter_map(|claimed_ip_port| claimed_ip_port.try_into().ok())
-                            .map(|ConnectionData { node_id, .. }| node_id)
-                            .collect()
-                    }
-                    _ => return Err(light_errors::INVALID_CONTENT.into()),
-                }
-            };
-            Ok(node_ids)
-        }
-
-        async fn find_value(
-            &self,
-            node_id: Option<NodeId>,
-            dht_id: DhtId,
-            bucket: Bucket,
-        ) -> RpcResult<RpcValueOrNodes> {
-            let value_or_nodes = if node_id.is_none() || node_id == Some(self.node.network.node_id)
-            {
-                match dht_id {
-                    DhtId::Block => {
-                        match self
-                            .node
-                            .network
-                            .light_network
-                            .block_dht
-                            .dht
-                            .store
-                            .get_bucket(&bucket)
-                        {
-                            Some(value) => {
-                                let block = block_to_rpc(DhtBlocks::decode(&value)?.block, true);
-                                RpcValueOrNodes::Value(Value::Block(Box::from(block)))
-                            }
-                            None => {
-                                let connections_data = self
-                                    .node
-                                    .network
-                                    .light_network
-                                    .kademlia_dht
-                                    .find_node(&bucket);
-                                let node_ids = connections_data
-                                    .into_iter()
-                                    .map(|ConnectionData { node_id, .. }| node_id)
-                                    .collect();
-                                RpcValueOrNodes::Nodes(node_ids)
-                            }
-                        }
-                    }
-                    _ => return Err(light_errors::INVALID_DHT.into()),
-                }
-            } else {
-                let node_id = node_id.unwrap();
-                let sender = {
-                    let peers_infos = self
-                        .node
-                        .network
-                        .light_network
-                        .kademlia_dht
-                        .peers_infos
-                        .read()
-                        .unwrap();
-                    let Some(peer_infos) = peers_infos.get(&node_id) else {
-                        return Err(light_errors::PEER_MISSING.into());
-                    };
-                    peer_infos.sender.clone()
-                };
-                let message = AppRequestMessage::encode(
-                    &self.node.network.light_network.kademlia_dht.chain_id,
-                    sdk::FindValue {
-                        dht_id: dht_id.into(),
-                        bucket: bucket.to_be_bytes_vec(),
-                    },
-                );
-                let Ok(p2p::message::Message::AppRequest(app_request)) = message else {
-                    return Err(light_errors::INVALID_CONTENT.into());
-                };
-                let rx = sender
-                    .send_and_response(
-                        &self.node.network.light_network.kademlia_dht.mail_tx,
-                        SubscribableMessage::AppRequest(app_request),
-                    )
-                    .map_err(|err| ErrorObject::owned(1000, err.to_string(), None::<()>))?;
-
-                let p2p::message::Message::AppResponse(app_response) = rx
-                    .await
-                    .map_err(|_| ErrorObject::borrowed(1000, "timeout", None))?
-                else {
-                    return Err(light_errors::INVALID_CONTENT.into());
-                };
-                if app_response.chain_id
-                    != self
-                        .node
-                        .network
-                        .light_network
-                        .kademlia_dht
-                        .chain_id
-                        .as_ref()
-                        .to_vec()
-                {
-                    return Err(light_errors::INVALID_CONTENT.into());
-                }
-                let bytes = app_response.app_bytes;
-                let Ok((app_id, bytes)) = unsigned_varint::decode::u64(&bytes) else {
-                    return Err(light_errors::INVALID_CONTENT.into());
-                };
-                if app_id != constants::SNOWFLAKE_HANDLER_ID {
-                    return Err(light_errors::INVALID_CONTENT.into());
-                }
-                let Ok(light_message) = InboundMessage::decode(bytes) else {
-                    return Err(light_errors::INVALID_CONTENT.into());
-                };
-                match light_message {
-                    sdk::light_response::Message::Value(sdk::Value { value }) => match dht_id {
-                        DhtId::Block => {
-                            let block = block_to_rpc(DhtBlocks::decode(&value)?.block, true);
-                            RpcValueOrNodes::Value(Value::Block(Box::from(block)))
-                        }
-                        _ => return Err(light_errors::INVALID_DHT.into()),
-                    },
-                    sdk::light_response::Message::Nodes(p2p::PeerList { claimed_ip_ports }) => {
-                        if claimed_ip_ports.len() > 10 {
-                            return Err(light_errors::INVALID_CONTENT.into());
-                        }
-                        let node_ids = claimed_ip_ports
-                            .into_iter()
-                            .filter_map(|claimed_ip_port| claimed_ip_port.try_into().ok())
-                            .map(|ConnectionData { node_id, .. }| node_id)
-                            .collect();
-                        RpcValueOrNodes::Nodes(node_ids)
-                    }
-                    _ => return Err(light_errors::INVALID_CONTENT.into()),
-                }
-            };
-            Ok(value_or_nodes)
-        }
-    }
 }
 
 use crate::net::node::NodeError;
 use crate::node::Node;
-use rpc_impl::{EthServer, LightServer, NetServer, RpcServerImpl, Web3Server};
+use rpc_impl::{EthServer, NetServer, RpcServerImpl, Web3Server};
 
 impl Rpc {
     pub async fn new(
@@ -1052,8 +737,6 @@ impl Rpc {
             .expect("should not fail");
         rpc.merge(EthServer::into_rpc(rpc_impl.clone()))
             .expect("should not fail");
-        rpc.merge(LightServer::into_rpc(rpc_impl))
-            .expect("should not fail");
 
         let server_handle = self.server.start(rpc);
         tokio::select! {
@@ -1070,7 +753,6 @@ impl Rpc {
 #[cfg(test)]
 mod tests {
     use super::Rpc;
-    use crate::dht::DhtBuckets;
     use crate::id::ChainId;
     use crate::net::node::NetworkConfig;
     use crate::net::BackoffParams;
@@ -1079,6 +761,7 @@ mod tests {
     use alloy::providers::{network::EthereumWallet, Provider, ProviderBuilder};
     use alloy::signers::local::PrivateKeySigner;
     use std::collections::HashMap;
+    use std::collections::HashSet;
     use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
     use std::path::Path;
     use std::sync::Arc;
@@ -1111,7 +794,6 @@ mod tests {
             intervals: Intervals {
                 ping: 0,
                 get_peer_list: 0,
-                find_nodes: 0,
             },
             back_off: BackoffParams {
                 initial_duration: Default::default(),
@@ -1124,13 +806,9 @@ mod tests {
             max_concurrent_handshakes: 0,
             max_peers: None,
             max_light_peers: None,
-            bootstrappers: HashMap::new(),
-            dht_buckets: DhtBuckets {
-                block: Default::default(),
-            },
+            bootstrappers: HashSet::new(),
             max_latency_records: 1,
             max_out_connections: 1,
-            sync_headers: false,
         };
         let node = Node::new(config);
 

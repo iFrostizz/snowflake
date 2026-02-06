@@ -1,22 +1,16 @@
 use crate::client::config;
-use crate::dht::{light_errors, DhtBuckets, LightError};
 use crate::id::{ChainId, NodeId};
 use crate::message::mail_box::MailBox;
-use crate::message::{pipeline::Pipeline, MiniMessage, SubscribableMessage};
-use crate::net::light::{DhtContent, LightNetwork, LightNetworkConfig};
+use crate::message::{pipeline::Pipeline, MiniMessage};
 use crate::net::queue::ConnectionQueue;
 use crate::net::{ip::UnsignedIp, BackoffParams, Intervals, Network, PeerInfo};
 use crate::node::{MessageOrSubscribable, SinglePickerConfig};
-use crate::server::msg::AppRequestMessage;
 use crate::server::{
     msg::{DecodingError, OutboundMessage},
     peers::PeerSender,
     tcp::write_stream_message,
 };
 use crate::stats;
-use crate::utils::constants::DEFAULT_DEADLINE;
-use crate::utils::twokhashmap::CompositeKey;
-use crate::utils::unpacker::StatelessBlock;
 use crate::utils::{
     bloom::{BloomError, Filter},
     bls::Bls,
@@ -27,14 +21,10 @@ use futures::future;
 use indexmap::IndexMap;
 use prost::EncodeError;
 use proto_lib::p2p::message::Message;
-use proto_lib::p2p::{
-    self, Accepted, EngineType, Get, GetAccepted, GetAcceptedFrontier, GetAncestors,
-};
-use proto_lib::sdk;
-use std::collections::{HashMap, HashSet};
+use proto_lib::p2p::{self};
+use std::collections::{HashSet};
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::RwLockWriteGuard;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
@@ -69,8 +59,6 @@ pub enum NodeError {
     Bloom(#[from] BloomError),
     #[error("unwanted peer: reason: {0}")]
     UnwantedPeer(#[from] AddPeerError),
-    #[error("light error: {0}")]
-    LightError(#[from] LightError),
     #[error("openssl error: {0}")]
     OpenSsl(#[from] openssl::error::ErrorStack),
     #[error("unexpected message: {0}")]
@@ -112,12 +100,9 @@ pub struct NetworkConfig {
     pub bucket_size: usize,
     pub max_concurrent_handshakes: usize,
     pub max_peers: Option<usize>,
-    pub max_light_peers: Option<usize>,
-    pub bootstrappers: HashMap<NodeId, Option<DhtBuckets>>,
-    pub dht_buckets: DhtBuckets,
+    pub bootstrappers: HashSet<NodeId>,
     pub max_latency_records: usize,
     pub max_out_connections: usize,
-    pub sync_headers: bool,
 }
 
 #[derive(Debug)]
@@ -188,8 +173,8 @@ impl Network {
         let client = p2p::Client {
             name: String::from("avalanchego"),
             major: 1,
-            minor: 13,
-            patch: 0,
+            minor: 14,
+            patch: 1,
         };
 
         let bloom_filter = Filter::new(8, 1000).expect("usage of wrong constants");
@@ -207,22 +192,6 @@ impl Network {
         let bootstrappers = RwLock::new(config.bootstrappers.clone());
 
         let connection_queue = Arc::new(ConnectionQueue::new(config.max_out_connections));
-        let (verification_tx, verification_rx) = flume::unbounded();
-        let light_network = LightNetwork::new(
-            node_id,
-            peers_infos.clone(),
-            connection_queue.clone(),
-            mail_box.tx().clone(),
-            verification_tx,
-            config.c_chain_id,
-            LightNetworkConfig {
-                max_lookups: 10,
-                alpha: 3,
-                dht_buckets: config.dht_buckets.clone(),
-                max_light_peers: config.max_light_peers,
-            },
-        );
-        let light_network = Arc::new(light_network);
 
         Ok(Self {
             node_id,
@@ -239,8 +208,6 @@ impl Network {
             node_pop,
             handshake_semaphore,
             mail_box,
-            light_network,
-            verification_rx,
         })
     }
 
@@ -340,7 +307,6 @@ impl Network {
         self.handshake(sender)?;
 
         let network = self.clone();
-        let sender = sender.clone();
         let hand_peer = tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_millis(2000));
             let mut i = 0;
@@ -363,8 +329,6 @@ impl Network {
                 }
             }
 
-            network.light_handshake(&sender)?;
-
             // the handshake was successful, the channel can still stop this thread remotely
             rx.recv()
                 .await
@@ -386,6 +350,7 @@ impl Network {
                 .as_secs(),
             ip_addr: ip_octets(network.config.socket_addr.ip()),
             ip_port: network.config.socket_addr.port().into(),
+            upgrade_time: 0,
             ip_signing_time: network.signed_ip.unsigned_ip.timestamp,
             ip_node_id_sig: network.signed_ip.ip_sig.clone(),
             tracked_subnets: Vec::new(),
@@ -394,32 +359,17 @@ impl Network {
             objected_acps: Vec::new(),
             known_peers: Some(bloom_filter),
             ip_bls_sig: network.signed_ip.ip_bls_sig.clone(),
+            all_subnets: false,
         };
 
         log::trace!("handshaking the peer");
         sender.send(Message::Handshake(handshake))
     }
 
-    fn light_handshake(&self, sender: &PeerSender) -> Result<(), NodeError> {
-        let buckets = (&self.config.dht_buckets).into();
-        let message = sdk::light_request::Message::LightHandshake(sdk::LightHandshake {
-            buckets: Some(buckets),
-        });
-        let app_request = AppRequestMessage::encode(&self.config.c_chain_id, message)?;
-        sender.send(app_request)
-    }
-
     pub fn remove_peers(
         peers_infos: Arc<RwLock<IndexMap<NodeId, PeerInfo>>>,
-        light_peers: &mut RwLockWriteGuard<IndexMap<NodeId, DhtBuckets>>,
         node_ids_errs: Vec<(NodeId, Option<NodeError>)>,
     ) {
-        {
-            for (node_id, _) in &node_ids_errs {
-                light_peers.swap_remove(node_id);
-            }
-        }
-
         {
             let mut peers_write = peers_infos.write().unwrap();
 
@@ -440,77 +390,6 @@ impl Network {
             } else {
                 log::debug!("removing peer {} for an unknown reason", node_id);
             }
-        }
-    }
-
-    pub fn disconnect_peer(
-        peers_infos: Arc<RwLock<IndexMap<NodeId, PeerInfo>>>,
-        light_peers: &mut RwLockWriteGuard<IndexMap<NodeId, DhtBuckets>>,
-        node_id: NodeId,
-        err: Option<NodeError>,
-    ) {
-        Self::remove_peers(peers_infos, light_peers, vec![(node_id, err)]);
-    }
-
-    pub async fn verify_block(
-        self: &Arc<Network>,
-        stateless_block: &StatelessBlock,
-    ) -> Result<bool, LightError> {
-        let block = &stateless_block.block;
-        let number = u64::from_be_bytes(*block.header.number());
-        log::debug!("verifying block {}", number);
-        let hash = block.hash();
-        if self
-            .light_network
-            .block_dht
-            .get_from_store(CompositeKey::Both(number, hash))?
-            .is_some()
-        {
-            return Ok(true);
-        }
-        let block_id = *stateless_block.id();
-        if self
-            .light_network
-            .block_dht
-            .verified_blocks
-            .read()
-            .unwrap()
-            .contains(&block_id)
-        {
-            return Ok(true);
-        }
-        let bootstrapper = self.pick_random_bootstrapper().await;
-        let message = SubscribableMessage::GetAccepted(GetAccepted {
-            chain_id: self.config.c_chain_id.as_ref().to_vec(),
-            request_id: rand::random(),
-            deadline: DEFAULT_DEADLINE,
-            container_ids: vec![block_id.as_ref().to_vec()],
-        });
-        let res = self
-            .send_to_peer(&MessageOrSubscribable::Subscribable(message), bootstrapper)
-            .await;
-        if let Some(Message::Accepted(Accepted {
-            chain_id,
-            container_ids,
-            ..
-        })) = res
-        {
-            if chain_id != self.config.c_chain_id.as_ref().to_vec() {
-                return Err(light_errors::INVALID_CONTENT);
-            }
-            if container_ids == vec![block_id.as_ref().to_vec()] {
-                self.light_network
-                    .block_dht
-                    .verified_blocks
-                    .write()
-                    .unwrap()
-                    .insert(block_id);
-                Ok(true)
-            } else {
-                Ok(false)
-            }
-        } else {
-            Err(light_errors::INVALID_CONTENT)
         }
     }
 
@@ -539,202 +418,6 @@ impl Network {
             return Err(AddPeerError::MaxPeersReached.into());
         }
         Ok(())
-    }
-
-    pub(crate) async fn pick_random_bootstrapper(self: &Arc<Network>) -> NodeId {
-        let mut maybe_bootstrapper = Network::pick_peer(
-            &self.peers_infos,
-            &self.bootstrappers,
-            SinglePickerConfig::Bootstrapper,
-        );
-        while maybe_bootstrapper.is_none() {
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            maybe_bootstrapper = Network::pick_peer(
-                &self.peers_infos,
-                &self.bootstrappers,
-                SinglePickerConfig::Bootstrapper,
-            );
-        }
-        maybe_bootstrapper.unwrap()
-    }
-
-    pub async fn start_light_network(
-        self: Arc<Network>,
-        mut rx: broadcast::Receiver<()>,
-    ) -> Result<(), NodeError> {
-        let network = self.clone();
-        let peer_bootstrap_process = tokio::spawn(network.sync_blocks());
-
-        if self.config.sync_headers {
-            let sync_handle = tokio::spawn(self.bootstrap_headers());
-
-            tokio::select! {
-                _ = sync_handle => {},
-                _ = peer_bootstrap_process => {},
-                _ = rx.recv() => {},
-            }
-        } else {
-            tokio::select! {
-                _ = peer_bootstrap_process => {},
-                _ = rx.recv() => {},
-            }
-        }
-
-        Ok(())
-    }
-
-    pub async fn bootstrap_headers(self: Arc<Network>) {
-        let chain_id = self.config.c_chain_id.as_ref().to_vec();
-
-        loop {
-            let mut bootstrapper = self.pick_random_bootstrapper().await;
-
-            let message = SubscribableMessage::GetAcceptedFrontier(GetAcceptedFrontier {
-                chain_id: chain_id.clone(),
-                request_id: rand::random(),
-                deadline: DEFAULT_DEADLINE,
-            });
-            let Some(Message::AcceptedFrontier(message)) = self
-                .send_to_peer(
-                    &MessageOrSubscribable::Subscribable(message.clone()),
-                    bootstrapper,
-                )
-                .await
-            else {
-                continue;
-            };
-
-            let mut last_container_id = message.container_id;
-            'outer: loop {
-                let message = SubscribableMessage::GetAncestors(GetAncestors {
-                    chain_id: chain_id.clone(),
-                    request_id: rand::random(),
-                    deadline: DEFAULT_DEADLINE,
-                    container_id: last_container_id.clone(),
-                    engine_type: EngineType::Snowman.into(),
-                });
-                let Some(Message::Ancestors(message)) = self
-                    .send_to_peer(
-                        &MessageOrSubscribable::Subscribable(message.clone()),
-                        bootstrapper,
-                    )
-                    .await
-                else {
-                    continue;
-                };
-
-                let len = message.containers.len();
-                log::debug!("Syncing {} containers", len);
-                if len == 0 {
-                    break 'outer;
-                }
-
-                for (i, container) in message.containers.into_iter().enumerate() {
-                    match StatelessBlock::unpack(container) {
-                        Ok(block) => {
-                            let block_dht = &self.light_network.block_dht;
-                            block_dht
-                                .verified_blocks
-                                .write()
-                                .unwrap()
-                                .insert(*block.id());
-                            if let Err(err) = block_dht.insert_to_store(block.bytes().to_vec()) {
-                                log::error!("Failed to store block: {:?}", err);
-                            }
-                            if block_dht
-                                .next_block_to_store()
-                                .is_ok_and(|n| &n.to_be_bytes() == block.block.header.number())
-                            {
-                                break 'outer;
-                            } else if i == len - 1 {
-                                if block.block.header.number() == &[0; 8] {
-                                    break 'outer;
-                                }
-                                last_container_id = block.id().as_ref().to_vec();
-                            }
-                            bootstrapper = self.pick_random_bootstrapper().await;
-                        }
-                        Err(err) => log::error!("error deserializing block: {:?}", err),
-                    }
-                }
-            }
-
-            tokio::time::sleep(Duration::from_secs(5)).await;
-        }
-    }
-
-    /// Sync headers from peers using the Kademlia DHT
-    pub(crate) async fn sync_blocks(self: Arc<Self>) {
-        loop {
-            if let Ok(last_block) = self.latest_block().await {
-                let last_number = u64::from_be_bytes(*last_block.block.header.number());
-                let light_network = &self.light_network;
-                let blocks = light_network.block_dht.bucket_to_number_iter(last_number);
-                let n = *light_network.block_dht.min_stored_blocks.lock().unwrap();
-                for number in blocks {
-                    if number >= n {
-                        if let Ok(block) = light_network
-                            .find_content(&light_network.block_dht, CompositeKey::First(number))
-                            .await
-                        {
-                            log::debug!("Found block {}", number);
-                            if let Err(err) = light_network.block_dht.store_block_if_desired(block)
-                            {
-                                log::error!("Failed to store block: {}", err);
-                            }
-                        }
-                    }
-                }
-            }
-
-            tokio::time::sleep(Duration::from_secs(10)).await;
-        }
-    }
-
-    pub async fn latest_block(self: &Arc<Self>) -> Result<StatelessBlock, NodeError> {
-        let chain_id = self.config.c_chain_id.as_ref().to_vec();
-        let bootstrapper = self.pick_random_bootstrapper().await;
-        let message = SubscribableMessage::GetAcceptedFrontier(GetAcceptedFrontier {
-            chain_id: chain_id.clone(),
-            request_id: rand::random(),
-            deadline: DEFAULT_DEADLINE,
-        });
-        let Some(Message::AcceptedFrontier(res)) = self
-            .send_to_peer(
-                &MessageOrSubscribable::Subscribable(message.clone()),
-                bootstrapper,
-            )
-            .await
-        else {
-            return Err(NodeError::Message("invalid message received".to_string()));
-        };
-
-        let message = SubscribableMessage::Get(Get {
-            chain_id,
-            request_id: rand::random(),
-            deadline: DEFAULT_DEADLINE,
-            container_id: res.container_id,
-        });
-        let Some(Message::Put(res)) = self
-            .send_to_peer(
-                &MessageOrSubscribable::Subscribable(message.clone()),
-                bootstrapper,
-            )
-            .await
-        else {
-            return Err(NodeError::Message("invalid message received".to_string()));
-        };
-
-        let block = StatelessBlock::unpack(res.container)
-            .map_err(|_| NodeError::Message("invalid container received".to_string()))?;
-        let block_dht = &self.light_network.block_dht;
-        block_dht
-            .verified_blocks
-            .write()
-            .unwrap()
-            .insert(*block.id());
-        block_dht.insert_to_store(block.bytes().to_vec())?;
-        Ok(block)
     }
 
     pub async fn send_to_peer(
@@ -769,11 +452,7 @@ impl Network {
 
         let is_bootstrapper = self.is_bootstrapper(&node_id);
         if !is_bootstrapper && remove_peer {
-            Network::remove_peers(
-                self.peers_infos.clone(),
-                &mut self.light_network.light_peers.write().map,
-                vec![(node_id, err)],
-            );
+            Network::remove_peers(self.peers_infos.clone(), vec![(node_id, err)]);
         }
 
         None
@@ -802,12 +481,12 @@ impl Network {
     }
 
     pub fn is_bootstrapper(&self, node_id: &NodeId) -> bool {
-        self.bootstrappers.read().unwrap().contains_key(node_id)
+        self.bootstrappers.read().unwrap().contains(node_id)
     }
 
     pub fn pick_peer(
         peers_infos: &Arc<RwLock<IndexMap<NodeId, PeerInfo>>>,
-        bootstrappers: &RwLock<HashMap<NodeId, Option<DhtBuckets>>>,
+        bootstrappers: &RwLock<HashSet<NodeId>>,
         config: SinglePickerConfig,
     ) -> Option<NodeId> {
         match config {
@@ -815,16 +494,7 @@ impl Network {
                 let peers = peers_infos.read().unwrap();
                 let available_peers: HashSet<_> = peers.keys().collect();
                 let bootstrappers = bootstrappers.read().unwrap();
-                let bootstrappers: HashSet<_> = bootstrappers
-                    .iter()
-                    .filter_map(|(node_id, buckets)| {
-                        if buckets.is_none() {
-                            Some(node_id)
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
+                let bootstrappers: HashSet<_> = bootstrappers.iter().collect();
                 let inter: Vec<_> = bootstrappers.intersection(&available_peers).collect();
                 if inter.is_empty() {
                     None

@@ -1,9 +1,9 @@
-use crate::dht::DhtBuckets;
 use crate::id::NodeId;
 use crate::net::{node::NodeError, queue::ConnectionData};
 use crate::node::Node;
 use serde::Deserialize;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::fs::File;
 use std::io;
 use std::io::Read;
@@ -37,13 +37,6 @@ impl<'a> Bootstrappers<'a> {
         Ok(serde_json::from_str(&content)?)
     }
 
-    fn read_light_bootsrappers(&self) -> io::Result<HashMap<String, Vec<Bootstrapper>>> {
-        let mut content = String::new();
-        let mut file = File::open(self.light_bootstrapper_path)?;
-        File::read_to_string(&mut file, &mut content)?;
-        Ok(serde_json::from_str(&content)?)
-    }
-
     fn read_all_bootsrappers(&self, network_name: &str) -> io::Result<Vec<Bootstrapper>> {
         let mut content = String::new();
         let mut file = File::open(self.bootstrapper_path)?;
@@ -66,35 +59,15 @@ impl<'a> Bootstrappers<'a> {
         Ok(bootstrappers)
     }
 
-    pub fn bootstrappers(
-        &self,
-        network_name: &str,
-    ) -> io::Result<HashMap<NodeId, Option<DhtBuckets>>> {
+    pub fn bootstrappers(&self, network_name: &str) -> io::Result<HashSet<NodeId>> {
         let bootstrappers = self.read_bootsrappers()?;
         let bootstrappers = bootstrappers
             .get(network_name)
             .expect("this network is not listed in the bootstrappers file");
-        let mut ret: HashMap<_, _> = bootstrappers
+        let ret: HashSet<_> = bootstrappers
             .iter()
-            .map(|bootstrapper| (bootstrapper.id, None))
+            .map(|bootstrapper| bootstrapper.id)
             .collect();
-        let light_bootstrappers = self.read_light_bootsrappers()?;
-        let light_bootstrappers = light_bootstrappers
-            .get(network_name)
-            .expect("this network is not listed in the bootstrappers file");
-        ret.extend(
-            light_bootstrappers
-                .iter()
-                .map(|bootstrapper| {
-                    (
-                        bootstrapper.id,
-                        Some(DhtBuckets {
-                            block: Default::default(),
-                        }),
-                    )
-                })
-                .collect::<HashMap<_, _>>(),
-        );
         Ok(ret)
     }
 
