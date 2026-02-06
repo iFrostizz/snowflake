@@ -805,7 +805,6 @@ mod tests {
             bucket_size: 0,
             max_concurrent_handshakes: 0,
             max_peers: None,
-            max_light_peers: None,
             bootstrappers: HashSet::new(),
             max_latency_records: 1,
             max_out_connections: 1,

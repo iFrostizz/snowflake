@@ -99,7 +99,7 @@ pub struct Args {
     #[arg(long, default_value_t = false)]
     pub enable_metrics: bool,
 
-    #[arg(long, default_value = "50")]
+    #[arg(long)]
     pub max_peers: Option<usize>,
 
     /// RPC port
@@ -169,7 +169,6 @@ impl Args {
             max_peers: self.max_peers,
             bootstrappers: Bootstrappers::new(
                 &self.bootstrappers_path,
-                &self.light_bootstrappers_path,
             )
             .bootstrappers(&self.network_id.to_string())
             .expect("failed to instantiate bootstrappers"),

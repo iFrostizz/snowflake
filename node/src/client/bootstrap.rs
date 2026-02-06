@@ -19,14 +19,12 @@ pub struct Bootstrapper {
 
 pub struct Bootstrappers<'a> {
     pub bootstrapper_path: &'a Path,
-    pub light_bootstrapper_path: &'a Path,
 }
 
 impl<'a> Bootstrappers<'a> {
-    pub fn new(bootstrapper_path: &'a Path, light_bootstrapper_path: &'a Path) -> Self {
+    pub fn new(bootstrapper_path: &'a Path) -> Self {
         Self {
             bootstrapper_path,
-            light_bootstrapper_path,
         }
     }
 
@@ -42,20 +40,9 @@ impl<'a> Bootstrappers<'a> {
         let mut file = File::open(self.bootstrapper_path)?;
         File::read_to_string(&mut file, &mut content)?;
         let mut bootstrappers: HashMap<String, Vec<Bootstrapper>> = serde_json::from_str(&content)?;
-        let mut bootstrappers = bootstrappers
+        let bootstrappers = bootstrappers
             .remove(network_name)
             .expect("this network is not listed in the bootstrappers file");
-
-        let mut content2 = String::new();
-        let mut file2 = File::open(self.light_bootstrapper_path)?;
-        File::read_to_string(&mut file2, &mut content2)?;
-        let mut light_bootstrappers: HashMap<String, Vec<Bootstrapper>> =
-            serde_json::from_str(&content2)?;
-        let light_bootstrappers = light_bootstrappers
-            .remove(network_name)
-            .expect("this network is not listed in the bootstrappers file");
-
-        bootstrappers.extend(light_bootstrappers);
         Ok(bootstrappers)
     }
 
@@ -76,9 +63,9 @@ impl<'a> Bootstrappers<'a> {
         node: Arc<Node>,
         network_name: &str,
     ) -> io::Result<Vec<Result<NodeId, NodeError>>> {
-        log::debug!("bootstrapping nodes");
-
         let bootstrappers = self.read_all_bootsrappers(network_name)?;
+
+        log::debug!("bootstrapping {} nodes", bootstrappers.len());
 
         let mut set = Vec::new();
         for bootstrapper in bootstrappers {

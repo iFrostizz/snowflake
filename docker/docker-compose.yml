@@ -57,8 +57,6 @@ services:
       - snowflake:/shared
     depends_on:
       - bootstrap
-    environment:
-      - PEER_ARGS=--sync-headers
 
   peer2:
     container_name: peer2

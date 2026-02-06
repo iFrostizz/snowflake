@@ -1,3 +1,4 @@
+use tracing::instrument;
 use crate::id::{Id, NodeId};
 use crate::message::SubscribableMessage;
 use crate::net::node::{AddPeerError, NetworkConfig};
@@ -287,6 +288,10 @@ impl Node {
         Ok((tasks, tx))
     }
 
+    #[instrument(
+        skip_all,
+        fields(node_id = %node_id)
+    )]
     fn manage_peer(
         self: &Arc<Node>,
         rpn: Receiver<PeerMessage>,
@@ -302,6 +307,7 @@ impl Node {
         })
     }
 
+    #[instrument(skip_all, fields(node_id = %node_id))]
     pub async fn execute_peer_operation(
         self: Arc<Node>,
         rpn: &Receiver<PeerMessage>,
@@ -344,15 +350,13 @@ impl Node {
                 sender,
                 known_peers,
             } => {
-                // let amount_ip_n = 15;
-                //
-                // let claimed_ip_ports = if let Some(known_peers) = known_peers {
-                //     self.propose_peers(known_peers, amount_ip_n)
-                // } else {
-                //     vec![]
-                // };
+                let amount_ip_n = 15;
 
-                let claimed_ip_ports = vec![];
+                let claimed_ip_ports = if let Some(known_peers) = known_peers {
+                    self.propose_peers(known_peers, amount_ip_n)
+                } else {
+                    vec![]
+                };
 
                 let _ = sender.send(Message::PeerList(PeerList { claimed_ip_ports }));
             }

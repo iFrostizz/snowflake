@@ -40,17 +40,16 @@ impl Listener {
 
     pub async fn start(self, node: Arc<Node>) -> ! {
         log::debug!("starting listening server");
-        log::debug!("tcp listener bound");
         let tls_acceptor = Arc::new(TlsAcceptor::from(self.config));
         let connections = Arc::new(Semaphore::new(self.max_connections));
 
         loop {
-            let node = node.clone();
-            let tls_acceptor = tls_acceptor.clone();
             match self.tcp.accept().await {
                 Ok((stream, sock_addr)) => {
                     let handle = connections.try_acquire();
                     if handle.is_ok() {
+                        let node = node.clone();
+                        let tls_acceptor = tls_acceptor.clone();
                         tokio::spawn(async move {
                             Self::manage_tls_incoming(node, tls_acceptor, stream, sock_addr).await;
                         });

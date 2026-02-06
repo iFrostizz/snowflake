@@ -31,7 +31,9 @@ macro_rules! debugger {
                 console_subscriber::init();
             }
             false => {
-                tracing_subscriber::fmt::init();
+                tracing_subscriber::fmt()
+                    .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+                    .init();
             }
         }
     };
@@ -71,7 +73,6 @@ async fn main() -> Result<(), NodeError> {
         client::start(
             node,
             &args.bootstrappers_path,
-            &args.light_bootstrappers_path,
             &args.network_id.to_string(),
         )
         .await

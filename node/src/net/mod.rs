@@ -7,7 +7,7 @@ use crate::net::{
     ip::SignedIp,
     node::{NetworkConfig, NodeError},
 };
-use crate::server::msg::{InboundMessageExt};
+use crate::server::msg::InboundMessageExt;
 use crate::server::tcp::read_stream_message;
 use crate::server::{
     msg::InboundMessage,
@@ -18,14 +18,12 @@ use crate::utils::{bloom::Filter, constants, ip::ip_from_octets, packer::Packer}
 use async_recursion::async_recursion;
 use flume::{Receiver, Sender};
 use indexmap::IndexMap;
-use proto_lib::p2p::{
-    self, message::Message, BloomFilter, Client, GetPeerList, Handshake,
-};
+use proto_lib::p2p::{self, message::Message, BloomFilter, Client, GetPeerList, Handshake};
 use ripemd::Digest;
 use rustls::ClientConfig;
 use rustls_pki_types::ServerName;
 use sha2::Sha256;
-use std::collections::{HashSet};
+use std::collections::HashSet;
 use std::io::{BufReader, ErrorKind};
 use std::net::SocketAddr;
 use std::sync::{Arc, RwLock};
@@ -36,6 +34,7 @@ use tokio::sync::broadcast;
 use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
 use tokio_rustls::{TlsConnector, TlsStream};
+use tracing::instrument;
 
 pub mod ip;
 pub mod latency;
@@ -280,7 +279,9 @@ impl Peer {
 
         let disconnection_rx2 = disconnection_rx.resubscribe();
         let rnp = self.channels.rnp.clone();
+        let node_id = self.identity.node_id;
         let write = tokio::spawn(Self::write_peer(
+            node_id,
             out_pipeline,
             write,
             rnp,
@@ -326,6 +327,7 @@ impl Peer {
     }
 
     async fn write_peer(
+        node_id: NodeId,
         out_pipeline: Arc<Pipeline>,
         write: WriteHalf<TlsStream<TcpStream>>,
         rnp: Receiver<Message>,
@@ -333,13 +335,17 @@ impl Peer {
     ) -> Result<(), NodeError> {
         log::trace!("write");
         let res =
-            Network::schedule_write_messages(out_pipeline, write, rnp, disconnection_rx).await;
+            Network::schedule_write_messages(node_id, out_pipeline, write, rnp, disconnection_rx).await;
         if res.is_err() {
             log::debug!("error on write");
         }
         res
     }
 
+    #[instrument(
+        skip_all,
+        fields(node_id = %self.identity.node_id, peer_addr = %self.connection.sock_addr)
+    )]
     async fn read_peer(
         self: Arc<Peer>,
         read: ReadHalf<TlsStream<TcpStream>>,
@@ -388,10 +394,10 @@ impl Peer {
         loop {
             tokio::select! {
                 _ = ping_interval.tick() => {
-                    let Some(peer_info) = peers_infos.read().unwrap().get(&node_id).cloned() else {
-                        continue;
-                    };
-                    peer_info.ping(&mail_tx).await?;
+                    // let Some(peer_info) = peers_infos.read().unwrap().get(&node_id).cloned() else {
+                    //     continue;
+                    // };
+                    // peer_info.ping(&mail_tx).await?;
                 }
                 // _ = find_nodes_interval.tick() => {
                 //     if let Some(peer_info) = peers_infos.read().unwrap().get(&node_id) {
@@ -446,12 +452,11 @@ impl Peer {
             mini.inc_recv(buf.len() as u64);
         }
 
-        let _ =
-            if let Some(request_id) = SubscribableMessage::response_request_id(&decoded) {
-                mail_box.mark_mail_received(&self.identity.node_id, request_id, decoded.clone())
-            } else {
-                None
-            };
+        let _ = if let Some(request_id) = SubscribableMessage::response_request_id(&decoded) {
+            mail_box.mark_mail_received(&self.identity.node_id, request_id, decoded.clone())
+        } else {
+            None
+        };
 
         // NOTE if this node holds a stake, here is the minimum number of messages to handle since
         //   they are registered and will get the node benched:
@@ -526,6 +531,7 @@ impl Peer {
                         known_peers,
                     })
                     .map_err(SendErrorWrapper::from)?;
+
                 let sock_addr = SocketAddr::new(ip, port);
 
                 self.channels

@@ -41,7 +41,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 FROM base AS anr
 WORKDIR /app
 
-RUN git clone --depth 1 --branch v1.13.0 https://github.com/ava-labs/avalanchego && \
+RUN git clone --depth 1 --branch v1.14.1 https://github.com/ava-labs/avalanchego && \
     cd avalanchego && \
     go mod download && \
     ./scripts/build.sh

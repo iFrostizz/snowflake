@@ -34,9 +34,8 @@ pub fn client_config(cert_path: &Path, key_path: &Path) -> ClientConfig {
         .map(|result| result.unwrap())
         .collect();
     assert_eq!(certs.len(), 1, "got more than one certificate");
-    let private_key = load_private_key(key_path).unwrap_or_else(|err| {
-        panic!("Cannot parse key file {}: {err}", key_path.display())
-    });
+    let private_key = load_private_key(key_path)
+        .unwrap_or_else(|err| panic!("Cannot parse key file {}: {err}", key_path.display()));
 
     let root_store = RootCertStore {
         roots: webpki_roots::TLS_SERVER_ROOTS.into(),

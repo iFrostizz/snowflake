@@ -21,7 +21,7 @@ use indexmap::IndexMap;
 use prost::EncodeError;
 use proto_lib::p2p::message::Message;
 use proto_lib::p2p::{self};
-use std::collections::{HashSet};
+use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
@@ -33,6 +33,7 @@ use tokio::sync::{broadcast, oneshot, Semaphore};
 use tokio::task::JoinHandle;
 use tokio::time;
 use tokio_rustls::TlsStream;
+use tracing::instrument;
 
 #[derive(Debug, Error)]
 pub enum NodeError {
@@ -212,50 +213,22 @@ impl Network {
 
     /// Continuously write messages and return an error on an EOF
     pub async fn schedule_write_messages(
+        node_id: NodeId,
         out_pipeline: Arc<Pipeline>,
-        mut write: WriteHalf<TlsStream<TcpStream>>,
+        write: WriteHalf<TlsStream<TcpStream>>,
         rnp: Receiver<Message>,
         mut disconnection_rx: broadcast::Receiver<()>,
     ) -> Result<(), NodeError> {
         let (ptx, prx) = flume::unbounded();
 
-        let (write_tx, mut rx) = oneshot::channel();
+        let (write_tx, rx) = oneshot::channel();
         let write_messages = tokio::spawn(async move {
-            let prx = &prx;
-            loop {
-                tokio::select! {
-                    maybe_bytes = prx.recv_async() => {
-                        if let Ok(bytes) = maybe_bytes {
-                            write_stream_message(&mut write, bytes).await?;
-                        }
-                    }
-                    _ = &mut rx => {
-                        break Ok(())
-                    }
-                }
-            }
+            Self::write_messages(node_id, write, prx, rx).await
         });
 
-        let (queue_tx, mut rx) = oneshot::channel();
+        let (queue_tx, rx) = oneshot::channel();
         let queue_messages = tokio::spawn(async move {
-            let rnp = &rnp;
-            let ptx = &ptx;
-            loop {
-                tokio::select! {
-                    maybe_message = rnp.recv_async() => {
-                        if let Ok(message) = maybe_message {
-                            log::trace!("sending message {message:?}");
-                            let mini = MiniMessage::from(&message);
-                            if let Ok(bytes) = OutboundMessage::encode(message) {
-                                out_pipeline.queue_message(bytes.into(), WriteHandler(ptx.clone(), mini)).await;
-                            }
-                        }
-                    }
-                    _ = &mut rx => {
-                        break Ok(());
-                    }
-                }
-            }
+            Self::queue_messages(node_id, out_pipeline.clone(), rnp.clone(), ptx, rx).await
         });
 
         let ret = tokio::select! {
@@ -271,6 +244,57 @@ impl Network {
         let _ = queue_tx.send(());
 
         ret
+    }
+
+    #[instrument(skip_all, fields(node_id = %node_id))]
+    async fn write_messages(
+        node_id: NodeId,
+        mut write: WriteHalf<TlsStream<TcpStream>>,
+        prx: Receiver<Vec<u8>>,
+        mut rx: oneshot::Receiver<()>,
+    ) -> Result<(), NodeError> {
+        let prx = &prx;
+        loop {
+            tokio::select! {
+                    maybe_bytes = prx.recv_async() => {
+                        if let Ok(bytes) = maybe_bytes {
+                            write_stream_message(&mut write, bytes).await?;
+                        }
+                    }
+                    _ = &mut rx => {
+                        break Ok(())
+                    }
+                }
+        }
+    }
+
+    #[instrument(skip_all, fields(node_id = %node_id))]
+    async fn queue_messages(
+        node_id: NodeId,
+        out_pipeline: Arc<Pipeline>,
+        rnp: Receiver<Message>,
+        ptx: Sender<Vec<u8>>,
+        mut rx: oneshot::Receiver<()>,
+    ) -> Result<(), NodeError> {
+        let rnp = &rnp;
+        let ptx = &ptx;
+
+        loop {
+            tokio::select! {
+                    maybe_message = rnp.recv_async() => {
+                        if let Ok(message) = maybe_message {
+                            log::trace!("sending message {message:?}");
+                            let mini = MiniMessage::from(&message);
+                            if let Ok(bytes) = OutboundMessage::encode(message) {
+                                out_pipeline.queue_message(bytes.into(), WriteHandler(ptx.clone(), mini)).await;
+                            }
+                        }
+                    }
+                    _ = &mut rx => {
+                        break Ok(());
+                    }
+                }
+        }
     }
 
     pub async fn add_peer(
@@ -297,6 +321,7 @@ impl Network {
         }
     }
 
+    #[instrument(skip_all, fields(node_id = %node_id))]
     pub fn handshake_peer(
         self: &Arc<Network>,
         sender: &PeerSender,
@@ -349,16 +374,17 @@ impl Network {
                 .as_secs(),
             ip_addr: ip_octets(network.config.socket_addr.ip()),
             ip_port: network.config.socket_addr.port().into(),
-            upgrade_time: 0,
+            upgrade_time: 1607144400,
             ip_signing_time: network.signed_ip.unsigned_ip.timestamp,
             ip_node_id_sig: network.signed_ip.ip_sig.clone(),
             tracked_subnets: Vec::new(),
             client: Some(network.client.clone()),
-            supported_acps: vec![23, 24, 25, 30, 31, 41, 62],
+            // supported_acps: vec![23, 24, 25, 30, 31, 41, 62],
+            supported_acps: vec![],
             objected_acps: Vec::new(),
             known_peers: Some(bloom_filter),
             ip_bls_sig: network.signed_ip.ip_bls_sig.clone(),
-            all_subnets: false,
+            all_subnets: true,
         };
 
         log::trace!("handshaking the peer");
