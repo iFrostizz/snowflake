@@ -140,7 +140,9 @@ impl ConnectionQueue {
                 Some(handle)
             }
             Err(err) => {
-                log::debug!("{}, {err}", &data.node_id);
+                if !matches!(err, NodeError::UnwantedPeer(_)) {
+                    log::debug!("{}, {err}", &data.node_id);
+                }
                 None
             }
         }
