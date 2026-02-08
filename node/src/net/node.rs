@@ -229,8 +229,6 @@ impl Network {
         let bloom_filter = RwLock::new(bloom_filter);
 
         let out_pipeline = Arc::new(Pipeline::new(
-            config.max_throughput,
-            config.max_out_queue_size,
             config.bucket_size,
         ));
 
