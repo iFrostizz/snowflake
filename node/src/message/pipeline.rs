@@ -14,7 +14,7 @@
 
 use crate::net::node::{WriteHandler, WriteMessage};
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 use tokio::sync::broadcast;
@@ -30,40 +30,77 @@ pub struct BucketMessage {
 pub struct Pipeline {
     /// Max throughput in B/s
     max_throughput: u32,
+
+    /// Maximum total queued bytes
     max_bytes: usize,
+
+    /// Currently queued bytes
     current_bytes: AtomicUsize,
+
+    /// Maximum number of tokens that can accumulate
     bucket_size: usize,
-    tokens: Mutex<usize>,
-    last_executed: Mutex<Instant>,
+
+    /// Current available tokens
+    tokens: AtomicUsize,
+
+    /// Base time reference
+    start: Instant,
+
+    /// Last execution time in microseconds since `start`
+    last_executed_micros: AtomicU64,
+
+    /// Queue of pending messages
     bucket_messages: Mutex<VecDeque<BucketMessage>>,
 }
 
 impl Pipeline {
-    /// Creates a new pipeline with a max leaking rate and an initial bucket size
-    /// Set `bucket_size` such that it can at least handle the biggest message.
     pub fn new(max_throughput: u32, max_bytes: usize, bucket_size: usize) -> Self {
         Self {
             max_throughput,
             max_bytes,
             current_bytes: AtomicUsize::new(0),
             bucket_size,
-            tokens: Mutex::new(bucket_size), // start full
-            last_executed: Mutex::new(Instant::now()),
+            tokens: AtomicUsize::new(bucket_size),
+            start: Instant::now(),
+            last_executed_micros: AtomicU64::new(0),
             bucket_messages: Mutex::new(VecDeque::new()),
         }
     }
 
-    /// Start the pipeline and look at executable messages in intervals
     pub async fn start(&self, mut rx: broadcast::Receiver<()>) {
         let mut int = tokio::time::interval(Duration::from_millis(1));
         loop {
             tokio::select! {
                 _ = int.tick() => {
-                    let _ = self.try_exec_messages().await;
+                    self.try_exec_messages().await;
                 }
                 _ = rx.recv() => {
                     return;
                 }
+            }
+        }
+    }
+
+    fn try_take_tokens(&self, size: usize) -> bool {
+        let tokens = &self.tokens;
+
+        loop {
+            let current = tokens.load(Ordering::Acquire);
+
+            if current < size {
+                return false;
+            }
+
+            let new = current - size;
+
+            match tokens.compare_exchange(
+                current,
+                new,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return true,
+                Err(_) => std::hint::spin_loop(),
             }
         }
     }
@@ -75,6 +112,7 @@ impl Pipeline {
     /// by storing the [`Instant`] the last message was sent.
     pub async fn queue_message(&self, message: WriteMessage, handler: WriteHandler) {
         let size = message.size();
+
         if size > self.bucket_size {
             log::error!(
                 "dropping too big message. size: {}, bucket_size: {}",
@@ -84,29 +122,21 @@ impl Pipeline {
             return;
         }
 
-        let current_bytes = self.current_bytes.load(Ordering::Relaxed);
-        if current_bytes > self.max_bytes {
+        let queued = self.current_bytes.load(Ordering::Acquire);
+        if queued + size > self.max_bytes {
             log::error!(
                 "dropping message. Queue {} would exceed max size {}",
-                current_bytes,
+                queued,
                 self.max_bytes
             );
             return;
         }
 
-        let has_enough_tokens = {
-            let mut tokens = self.tokens.lock().unwrap();
-            if *tokens >= size {
-                *tokens -= size;
-                true
-            } else {
-                false
-            }
-        };
-
-        if has_enough_tokens {
+        if self.try_take_tokens(size) {
             let _ = handler.handle_message(message).await;
         } else {
+            self.current_bytes.fetch_add(size, Ordering::AcqRel);
+
             self.bucket_messages
                 .lock()
                 .unwrap()
@@ -116,45 +146,51 @@ impl Pipeline {
 
     /// Attempts to execute as much messages in the queue as possible.
     async fn try_exec_messages(&self) {
-        // TODO replace last_executed by current one with an atomic by fetch
-        // it might be nice to write it at the end too though because this way we are being pessimistic about the mutex or atomic ordering.
-        // refilled (B) = refill_rate (B/s) * dur (s)
-        let dur = Instant::now()
-            .duration_since(*self.last_executed.lock().unwrap())
-            .as_micros() as usize;
+        let now_micros = self.start.elapsed().as_micros() as u64;
+
+        let last = self.last_executed_micros.load(Ordering::Acquire);
+        let dur = now_micros.saturating_sub(last) as usize;
+
         let refill_rate = self.max_throughput;
-        let refilled = *self.tokens.lock().unwrap() + dur * refill_rate as usize / 1_000_000;
+        let added = dur * refill_rate as usize / 1_000_000;
+
+        let previous = self.tokens.fetch_add(added, Ordering::AcqRel);
+        let refilled = previous + added;
 
         let mut bytes_sum = 0;
         let mut messages_to_send = Vec::new();
 
-        let mut i = 0;
         {
             let mut messages = self.bucket_messages.lock().unwrap();
-            let max = messages.len();
-            while i < max {
+
+            for _ in 0..messages.len() {
                 let BucketMessage { message, .. } = messages.front().unwrap();
                 let len = message.size();
+
                 if bytes_sum + len > refilled {
                     break;
                 }
 
                 bytes_sum += len;
-                messages_to_send.push(messages.pop_front().unwrap());
-                i += 1;
+                let msg = messages.pop_front().unwrap();
+                messages_to_send.push(msg);
             }
         }
 
-        // this is why it's important to set the bucket_size accordingly to the most huge message
-        let unused_tokens = std::cmp::min(refilled - bytes_sum, self.bucket_size);
-        *self.tokens.lock().unwrap() = unused_tokens;
+        if bytes_sum > 0 {
+            self.current_bytes.fetch_sub(bytes_sum, Ordering::AcqRel);
+        }
+
+        let unused_tokens =
+            std::cmp::min(refilled.saturating_sub(bytes_sum), self.bucket_size);
+
+        self.tokens.store(unused_tokens, Ordering::Release);
+        self.last_executed_micros.store(now_micros, Ordering::Release);
 
         for BucketMessage { message, handler } in messages_to_send {
             tokio::spawn(async move {
                 let _ = handler.handle_message(message).await;
             });
         }
-
-        *self.last_executed.lock().unwrap() = Instant::now();
     }
 }
