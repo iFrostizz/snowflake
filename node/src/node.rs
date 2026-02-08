@@ -21,13 +21,15 @@ use proto_lib::p2p::{
 };
 use proto_lib::sdk;
 use std::collections::HashSet;
+use std::future::Future;
 use std::net::SocketAddr;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
 use tokio::sync::{broadcast, OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinHandle;
-use tokio::time::{self};
+use tokio::time::{self, timeout, Timeout};
+use tokio_util::sync::CancellationToken;
 use tracing::instrument;
 
 #[derive(Debug)]
@@ -138,11 +140,19 @@ impl Node {
         }
         log::debug!("adding a new peer at {socket_addr:?}");
 
-        self.connect_new_peer(semaphore, data, connected_tx).await?;
-
-        log::debug!("added {socket_addr:?}");
-
-        Ok(())
+        let cancel_token = CancellationToken::new();
+        match timeout(
+            Duration::from_secs(10),
+            self.connect_new_peer(semaphore, data, connected_tx, cancel_token),
+        )
+        .await
+        {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(err)) => Err(err),
+            Err(_) => Err(NodeError::Message(
+                "Timeout on connecting to peer".to_owned(),
+            )),
+        }
     }
 
     /// Connect to a new peer and register it in the network.
@@ -152,6 +162,7 @@ impl Node {
         semaphore: Arc<Semaphore>,
         data: ConnectionData,
         connected_tx: Option<oneshot::Sender<bool>>,
+        cancel_token: CancellationToken,
     ) -> Result<(), NodeError> {
         self.network
             .check_add_peer(&data.node_id, &data.socket_addr.ip())?;
@@ -185,21 +196,26 @@ impl Node {
         let peers_infos = self.network.peers_infos.clone();
         tokio::spawn(async move {
             let node_id = *peer.node_id();
-            let err = match node.loop_peer(hs_permit, peer, connected_tx).await {
-                Err(NodeError::UnwantedPeer(AddPeerError::AlreadyConnected)) => {
-                    // timing issue; should not disconnect in this case.
-                    return;
-                }
-                Err(err) => {
-                    log::debug!("error when looping peer {:?} {err:?}", node_id);
-                    Some(err)
-                }
-                _ => None,
-            };
+            tokio::select! {
+                res = node.loop_peer(hs_permit, peer, connected_tx) => {
+                    let err = match res {
+                        Err(NodeError::UnwantedPeer(AddPeerError::AlreadyConnected)) => {
+                            // timing issue; should not disconnect in this case.
+                            return;
+                        }
+                        Err(err) => {
+                            log::debug!("error when looping peer {:?} {err:?}", node_id);
+                            Some(err)
+                        }
+                        _ => None,
+                    };
 
-            // remove peer and try to reconnect
-            Network::remove_peers(peers_infos, vec![(node_id, err)]);
-            node.network.connection_queue.add_connection(data);
+                    // remove peer and try to reconnect
+                    Network::remove_peers(peers_infos, vec![(node_id, err)]);
+                    node.network.connection_queue.add_connection(data);
+                }
+                _ = cancel_token.cancelled() => ()
+            }
         });
 
         Ok(())
