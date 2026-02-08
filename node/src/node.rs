@@ -368,7 +368,7 @@ impl Node {
                 sender,
                 known_peers,
             } => {
-                let amount_ip_n = 15;
+                let amount_ip_n = 5;
 
                 let claimed_ip_ports = if let Some(known_peers) = known_peers {
                     self.propose_peers(known_peers, amount_ip_n)

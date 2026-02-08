@@ -1027,7 +1027,10 @@ impl From<Transaction> for alloy::rpc::types::Transaction {
                         // yParity = {0; 1}
                         // chainId = (v - yParity - 35) / 2
                         let v = alloy::primitives::U256::from_be_bytes(tx.v);
-                        if v >= 37.try_into().unwrap() {
+                        let max: alloy::primitives::U256 = 37u32.try_into().unwrap();
+                        let one: alloy::primitives::U256 = 1u32.try_into().unwrap();
+                        let zero: alloy::primitives::U256 = 0u32.try_into().unwrap();
+                        if v >= max {
                             if tx.v[31] % 2 == 0 {
                                 let sub: alloy::primitives::U256 =
                                     v - alloy::primitives::U256::from(35);
@@ -1039,9 +1042,9 @@ impl From<Transaction> for alloy::rpc::types::Transaction {
                                     v - alloy::primitives::U256::from(36);
                                 (Some(chain_id.try_into().unwrap()), true)
                             }
-                        } else if v == 1.try_into().unwrap() {
+                        } else if v == one {
                             (None, true)
-                        } else if v == 0.try_into().unwrap() {
+                        } else if v == zero {
                             (None, false)
                         } else {
                             // TODO: ?
