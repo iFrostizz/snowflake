@@ -100,9 +100,9 @@ impl Node {
             Ok(())
         });
 
-        let node = self.clone();
-        let rx2 = rx.resubscribe();
-        let net = tokio::spawn(node.loop_node_messages(rx2));
+        // let node = self.clone();
+        // let rx2 = rx.resubscribe();
+        // let net = tokio::spawn(node.loop_node_messages(rx2));
 
         let node = self.clone();
         let rx2 = rx.resubscribe();
@@ -121,7 +121,8 @@ impl Node {
             Ok(())
         });
 
-        vec![conn, net, watch, mbox, pip]
+        // vec![conn, net, watch, mbox, pip]
+        vec![conn, watch, mbox, pip]
     }
 
     /// A created connection that may create a new peer.

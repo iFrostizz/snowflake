@@ -139,8 +139,6 @@ pub struct NetworkConfig {
     pub intervals: Intervals,
     pub back_off: BackoffParams,
     // in B/s
-    pub max_throughput: u32,
-    pub max_out_queue_size: usize,
     pub bucket_size: usize,
     pub max_concurrent_handshakes: usize,
     pub max_peers: Option<usize>,

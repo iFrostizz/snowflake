@@ -162,9 +162,7 @@ impl Args {
             cert_path: self.cert_path.clone(),
             intervals,
             back_off,
-            max_throughput: 1_000_000,      // 1000 kB/s
-            max_out_queue_size: 10_000_000, // 10 MB
-            bucket_size: 500_000,           // 500 kB
+            bucket_size: 5_000_000,           // 5MB
             max_concurrent_handshakes: self.max_handshakes,
             max_peers: self.max_peers,
             bootstrappers: Bootstrappers::new(&self.bootstrappers_path)
