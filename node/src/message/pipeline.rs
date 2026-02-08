@@ -14,9 +14,9 @@
 
 use crate::net::node::{WriteHandler, WriteMessage};
 use flume::{Receiver, Sender};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Duration;
-use tokio::sync::broadcast;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
+use tokio::sync::{broadcast, Mutex};
 
 #[derive(Debug)]
 pub struct BucketMessage {
@@ -26,30 +26,43 @@ pub struct BucketMessage {
 
 #[derive(Debug)]
 pub struct Pipeline {
-    /// Maximum number of tokens that can accumulate
-    bucket_size: usize,
+    /// Maximum bucket size (burst capacity in bytes)
+    burst_size: u64,
 
-    /// Current available tokens
-    tokens: AtomicUsize,
+    /// Refill rate in bytes per second
+    rate: u64,
+
+    /// Current available tokens (bytes)
+    tokens: AtomicU64,
+
+    /// Last refill timestamp
+    last_refill: Mutex<Instant>,
 
     bucket_tx: Sender<BucketMessage>,
     bucket_rx: Receiver<BucketMessage>,
 }
 
 impl Pipeline {
-    pub fn new(bucket_size: usize) -> Self {
+    /// Creates a new Pipeline.
+    /// - `rate`: The sustained rate limit in bytes per second (default 5MB/s).
+    /// - `burst_size`: Optional burst size in bytes; defaults to `rate` (allowing a 1-second burst).
+    pub fn new(rate: u64, burst_size: Option<u64>) -> Self {
+        let burst_size = burst_size.unwrap_or(rate);
         let (bucket_tx, bucket_rx) = flume::bounded(100);
 
         Self {
-            bucket_size,
-            tokens: AtomicUsize::new(bucket_size),
+            burst_size,
+            rate,
+            tokens: AtomicU64::new(burst_size),
+            last_refill: Mutex::new(Instant::now()),
             bucket_tx,
             bucket_rx,
         }
     }
 
+    /// Starts the background task to periodically process queued messages.
     pub async fn start(&self, mut rx: broadcast::Receiver<()>) {
-        let mut int = tokio::time::interval(Duration::from_millis(1));
+        let mut int = tokio::time::interval(Duration::from_millis(10)); // Adjusted to 10ms for better efficiency
         loop {
             tokio::select! {
                 _ = int.tick() => {
@@ -62,12 +75,31 @@ impl Pipeline {
         }
     }
 
-    fn try_take_tokens(&self, size: usize) -> bool {
-        if size > self.bucket_size {
+    /// Refills the token bucket based on elapsed time.
+    async fn refill(&self) {
+        let mut last = self.last_refill.lock().await;
+        let now = Instant::now();
+        let elapsed = now - *last;
+        let elapsed_nanos = elapsed.as_nanos() as u128;
+        let add = ((elapsed_nanos * self.rate as u128) / 1_000_000_000u128) as u64;
+
+        if add > 0 {
+            let current = self.tokens.fetch_add(add, Ordering::AcqRel);
+            let new_tokens = current + add;
+            if new_tokens > self.burst_size {
+                self.tokens.store(self.burst_size, Ordering::Release);
+            }
+            *last = now;
+        }
+    }
+
+    /// Attempts to take `size` tokens from the bucket using CAS for thread safety.
+    fn try_take_tokens(&self, size: u64) -> bool {
+        if size > self.burst_size {
             log::error!(
-                "dropping too big message. size: {}, bucket_size: {}",
+                "dropping too big message. size: {}, burst_size: {}",
                 size,
-                self.bucket_size
+                self.burst_size
             );
             return false;
         }
@@ -90,19 +122,19 @@ impl Pipeline {
         }
     }
 
-    /// Queue a message to the bucket.
-    /// It will be executed right away if the bucket is full enough,
-    /// but will be on the wait list if there aren't enough tokens in the bucket.
-    /// This is achieved by using an interval that will batch any incoming messages
-    /// by storing the [`Instant`] the last message was sent.
+    /// Queue a message to be sent.
+    /// It will be sent immediately if tokens are available after refilling,
+    /// otherwise it will be queued for later processing.
     pub async fn queue_message(&self, message: WriteMessage, handler: WriteHandler) {
-        let size = message.size();
+        self.refill().await;
 
-        if size > self.bucket_size {
+        let size = message.size() as u64;
+
+        if size > self.burst_size {
             log::error!(
-                "dropping too big message. size: {}, bucket_size: {}",
+                "dropping too big message. size: {}, burst_size: {}",
                 size,
-                self.bucket_size
+                self.burst_size
             );
             return;
         }
@@ -116,13 +148,15 @@ impl Pipeline {
         }
     }
 
-    /// Attempts to execute as much messages in the queue as possible.
+    /// Attempts to execute as many queued messages as possible after refilling tokens.
     async fn try_exec_messages(&self) {
-        while let Ok(BucketMessage { message, handler }) = self.bucket_rx.try_recv() {
-            let len = message.size();
+        self.refill().await;
 
-            if !self.try_take_tokens(len) {
-                // put it back if not enough tokens
+        while let Ok(BucketMessage { message, handler }) = self.bucket_rx.try_recv() {
+            let size = message.size() as u64;
+
+            if !self.try_take_tokens(size) {
+                // Put it back if not enough tokens
                 let _ = self.bucket_tx.try_send(BucketMessage { message, handler });
                 break;
             }

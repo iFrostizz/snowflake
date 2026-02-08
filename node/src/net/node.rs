@@ -105,7 +105,7 @@ pub enum NodeError {
     UnwantedPeer(#[from] AddPeerError),
     #[error("openssl error: {0}")]
     OpenSsl(#[from] openssl::error::ErrorStack),
-    #[error("unexpected message: {0}")]
+    #[error("{0}")]
     Message(String),
 }
 
@@ -139,7 +139,7 @@ pub struct NetworkConfig {
     pub intervals: Intervals,
     pub back_off: BackoffParams,
     // in B/s
-    pub bucket_size: usize,
+    pub bucket_size: u64,
     pub max_concurrent_handshakes: usize,
     pub max_peers: Option<usize>,
     pub bootstrappers: HashSet<NodeId>,
@@ -226,7 +226,7 @@ impl Network {
         let bloom_filter = Filter::new(8, 1000).expect("usage of wrong constants");
         let bloom_filter = RwLock::new(bloom_filter);
 
-        let out_pipeline = Arc::new(Pipeline::new(config.bucket_size));
+        let out_pipeline = Arc::new(Pipeline::new(config.bucket_size, None));
 
         let mail_box = Arc::new(MailBox::new(config.max_latency_records));
 

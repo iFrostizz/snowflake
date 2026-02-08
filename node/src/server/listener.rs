@@ -93,12 +93,7 @@ impl Listener {
                 // TODO getting lots of "already connected" logs here.
                 match node.network.check_add_peer(&node_id, &sock_addr.ip()) {
                     Ok(()) => (),
-                    Err(err)
-                        if matches!(
-                            err,
-                            NodeError::UnwantedPeer(AddPeerError::AlreadyConnected { .. })
-                        ) =>
-                    {
+                    Err(NodeError::UnwantedPeer(AddPeerError::AlreadyConnected)) => {
                         Network::remove_peers(
                             node.network.peers_infos.clone(),
                             vec![(node_id, Some(NodeError::Message("replacement".to_string())))],
