@@ -228,9 +228,7 @@ impl Network {
         let bloom_filter = Filter::new(8, 1000).expect("usage of wrong constants");
         let bloom_filter = RwLock::new(bloom_filter);
 
-        let out_pipeline = Arc::new(Pipeline::new(
-            config.bucket_size,
-        ));
+        let out_pipeline = Arc::new(Pipeline::new(config.bucket_size));
 
         let mail_box = Arc::new(MailBox::new(config.max_latency_records));
 

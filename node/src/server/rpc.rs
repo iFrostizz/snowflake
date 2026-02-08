@@ -822,7 +822,7 @@ mod tests {
         let wallet = EthereumWallet::from(signer);
         let provider = ProviderBuilder::new()
             .wallet(wallet.clone())
-            .on_http(format!("http://{}", addr).parse().unwrap());
+            .connect_http(format!("http://{}", addr).parse().unwrap());
 
         log::debug!("sending");
         let tx_signed = hex::decode("f86680843b9aca00825208940000000000000000000000000000000000000000808083015285a06c1cbdd2e8d1a0a9119159527cbe00151778bcc5ea8ae8ccd687b05f5316c325a044ea618c2ca67374cbec06747b048e7915a488f4cf9f911887bfa9e766112846").unwrap();

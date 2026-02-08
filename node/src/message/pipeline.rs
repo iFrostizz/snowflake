@@ -13,9 +13,9 @@
 // We could also add a dynamic property to messages to make those sent to big stakes a priority.
 
 use crate::net::node::{WriteHandler, WriteMessage};
+use flume::{Receiver, Sender};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
-use flume::{Receiver, Sender};
 use tokio::sync::broadcast;
 
 #[derive(Debug)]
@@ -74,12 +74,7 @@ impl Pipeline {
 
             let new = current - size;
 
-            match tokens.compare_exchange(
-                current,
-                new,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
+            match tokens.compare_exchange(current, new, Ordering::AcqRel, Ordering::Acquire) {
                 Ok(_) => return true,
                 Err(_) => std::hint::spin_loop(),
             }
@@ -102,16 +97,6 @@ impl Pipeline {
             );
             return;
         }
-
-        // let queued = self.current_bytes.load(Ordering::Acquire);
-        // if queued + size > self.max_bytes {
-        //     log::error!(
-        //         "dropping message. Queue {} would exceed max size {}",
-        //         queued,
-        //         self.max_bytes
-        //     );
-        //     return;
-        // }
 
         if self.try_take_tokens(size) {
             let _ = handler.handle_message(message).await;

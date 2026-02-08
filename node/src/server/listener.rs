@@ -6,8 +6,10 @@ use crate::node::Node;
 use rustls::ServerConfig;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Semaphore;
+use tokio::time::timeout;
 use tokio_rustls::{TlsAcceptor, TlsStream};
 
 pub struct Listener {
@@ -69,8 +71,8 @@ impl Listener {
         stream: TcpStream,
         sock_addr: SocketAddr,
     ) {
-        match tls_acceptor.accept(stream).await {
-            Ok(tls_stream) => {
+        match timeout(Duration::from_secs(5), tls_acceptor.accept(stream)).await {
+            Ok(Ok(tls_stream)) => {
                 let server_connection = tls_stream.get_ref().1;
                 let certs = server_connection.peer_certificates();
                 let Some(certs) = certs else {
@@ -94,13 +96,15 @@ impl Listener {
                 let tls = TlsStream::Server(tls_stream);
                 let peer = Peer::new(node_id, x509_certificate, sock_addr, 0, tls);
 
-                let hs_permit = node.hs_permit().await;
-
-                if let Err(err) = node.loop_peer(hs_permit, peer, None).await {
-                    log::debug!("{err}");
+                if let Ok(hs_permit) = timeout(Duration::from_secs(5), node.hs_permit()).await {
+                    if let Err(err) = node.loop_peer(hs_permit, peer, None).await {
+                        log::debug!("{err}");
+                    }
                 }
+
             }
-            Err(err) => log::debug!("on accepting TLS stream {err:?}"),
+            Ok(Err(err)) => log::debug!("on accepting TLS stream {err:?}"),
+            _ => (),
         }
     }
 }
