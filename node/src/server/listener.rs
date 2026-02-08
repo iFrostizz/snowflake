@@ -1,7 +1,9 @@
 // a TCP listener which dispatch and handles connections
 
 use crate::id::NodeId;
-use crate::net::Peer;
+use crate::net::node::AddPeerError;
+use crate::net::node::NodeError;
+use crate::net::{Network, Peer};
 use crate::node::Node;
 use rustls::ServerConfig;
 use std::net::SocketAddr;
@@ -88,9 +90,24 @@ impl Listener {
                 let node_id = NodeId::from_cert(&x509_certificate);
 
                 // TODO support peer replacements
-                if let Err(err) = node.network.check_add_peer(&node_id, &sock_addr.ip()) {
-                    log::debug!("{node_id}, {err}");
-                    return;
+                // TODO getting lots of "already connected" logs here.
+                match node.network.check_add_peer(&node_id, &sock_addr.ip()) {
+                    Ok(()) => (),
+                    Err(err)
+                        if matches!(
+                            err,
+                            NodeError::UnwantedPeer(AddPeerError::AlreadyConnected { .. })
+                        ) =>
+                    {
+                        Network::remove_peers(
+                            node.network.peers_infos.clone(),
+                            vec![(node_id, Some(NodeError::Message("replacement".to_string())))],
+                        )
+                    }
+                    Err(err) => {
+                        log::debug!("{node_id}, {err}");
+                        return;
+                    }
                 }
 
                 let tls = TlsStream::Server(tls_stream);
@@ -101,7 +118,6 @@ impl Listener {
                         log::debug!("{err}");
                     }
                 }
-
             }
             Ok(Err(err)) => log::debug!("on accepting TLS stream {err:?}"),
             _ => (),

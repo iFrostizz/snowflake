@@ -64,7 +64,11 @@ impl Pipeline {
 
     fn try_take_tokens(&self, size: usize) -> bool {
         if size > self.bucket_size {
-            log::error!("dropping too big message. size: {}, bucket_size: {}", size, self.bucket_size);
+            log::error!(
+                "dropping too big message. size: {}, bucket_size: {}",
+                size,
+                self.bucket_size
+            );
             return false;
         }
 
