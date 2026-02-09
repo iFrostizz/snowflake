@@ -302,7 +302,6 @@ impl Peer {
         let recurring = tokio::spawn(peer.loop_messages_peer(
             peers_infos,
             intervals,
-            mail_tx,
             disconnection_rx,
         ));
 
@@ -388,7 +387,6 @@ impl Peer {
         self: Arc<Peer>,
         peers_infos: Arc<RwLock<IndexMap<NodeId, PeerInfo>>>,
         intervals: Intervals,
-        mail_tx: Sender<Mail>,
         mut rx: broadcast::Receiver<()>,
     ) -> Result<(), NodeError> {
         let mut ping_interval = tokio::time::interval(Duration::from_millis(intervals.ping));
@@ -400,7 +398,7 @@ impl Peer {
                     let Some(peer_info) = peers_infos.read().unwrap().get(&node_id).cloned() else {
                         continue;
                     };
-                    peer_info.ping(&mail_tx).await?;
+                    peer_info.ping().await?;
                 }
                 _ = rx.recv() => {
                     return Ok(());

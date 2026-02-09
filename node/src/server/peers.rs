@@ -21,9 +21,14 @@ impl PeerInfo {
         self.infos.is_some()
     }
 
-    pub async fn ping(&self, mail_tx: &Sender<Mail>) -> Result<(), NodeError> {
-        self.sender
-            .send_without_response(mail_tx, SubscribableMessage::Ping(Ping { uptime: 100 }))
+    // pub async fn ping(&self, mail_tx: &Sender<Mail>) -> Result<(), NodeError> {
+    //     self.sender
+    //         .send_without_response(mail_tx, SubscribableMessage::Ping(Ping { uptime: 100 }))
+    // }
+
+    pub async fn ping(&self) -> Result<(), NodeError> {
+        self.sender.send(Message::Ping(Ping { uptime: 100 }))?;
+        Ok(())
     }
 }
 
