@@ -24,6 +24,8 @@ use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
+use dashmap::DashMap;
+use rand::prelude::IteratorRandom;
 use tokio::sync::oneshot;
 use tokio::sync::{broadcast, OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinHandle;
@@ -55,7 +57,7 @@ impl Node {
         let cert = x509.to_der().unwrap();
         let node_id = NodeId::from_cert(&cert);
 
-        let peers_infos = Arc::new(RwLock::new(IndexMap::new()));
+        let peers_infos = Arc::new(DashMap::new());
         let network = Arc::new(Network::new(network_config, node_id, peers_infos.clone()).unwrap());
 
         Self { network }
@@ -380,12 +382,13 @@ impl Node {
             }
             PeerMessage::NewPeer { infos: peer_infos } => {
                 if let Some(hs_permit) = maybe_hs_permit.take() {
-                    let mut peers = self.network.peers_infos.write().unwrap();
-                    if let Some(PeerInfo { infos, .. }) = peers.get_mut(&node_id) {
-                        if infos.is_none() {
+                    let mut peers = self.network.peers_infos.clone();
+                    if let Some(mut peer) = peers.get_mut(&node_id) {
+                        // let PeerInfo { infos, .. } = peer;
+                        if peer.infos.is_none() {
                             stats::handshook_peers::inc();
                             let gossip_id = peer_infos.gossip_id(&node_id);
-                            *infos = Some(peer_infos);
+                            peer.infos = Some(peer_infos);
                             let mut bloom_filter = self.network.bloom_filter.write().unwrap();
                             bloom_filter.feed(gossip_id); // we write it to the filter even if it fails to avoid always hearing about it
                             Self::regen_bloom_if_necessary(&peers, &mut bloom_filter);
@@ -478,23 +481,23 @@ impl Node {
     }
 
     fn get_peer_list(self: &Arc<Node>) {
-        let peers = self.network.peers_infos.read().unwrap();
-        if peers.is_empty() || self.network.has_reached_max_peers(&peers) {
-            return;
-        }
-        let (node_id, random_peer) = peers
-            .get_index((rand::random::<u64>() % peers.len() as u64) as usize)
-            .unwrap();
-        let bloom_filter = self.network.bloom_filter.read().unwrap().as_proto();
-        if let Err(err) = random_peer.sender.send(Message::GetPeerList(GetPeerList {
-            known_peers: Some(bloom_filter),
-            all_subnets: false,
-        })) {
-            Network::remove_peers(
-                self.network.peers_infos.clone(),
-                vec![(*node_id, Some(err))],
-            );
-        }
+        // let peers = self.network.peers_infos;
+        // if peers.is_empty() || self.network.has_reached_max_peers(&peers) {
+        //     return;
+        // }
+
+        // if let Some((node_id, random_peer)) = *peers.iter().choose(&mut rand::rng()) {
+        //     let bloom_filter = self.network.bloom_filter.read().unwrap().as_proto();
+        //     if let Err(err) = random_peer.sender.send(Message::GetPeerList(GetPeerList {
+        //         known_peers: Some(bloom_filter),
+        //         all_subnets: false,
+        //     })) {
+        //         Network::remove_peers(
+        //             self.network.peers_infos.clone(),
+        //             vec![(*node_id, Some(err))],
+        //         );
+        //     }
+        // }
     }
 
     fn fastest_peers(&self, n: usize) -> Vec<NodeId> {
@@ -503,27 +506,30 @@ impl Node {
     }
 
     fn random_peers(&self, n: usize) -> Vec<NodeId> {
-        let peers = self.network.peers_infos.read().unwrap();
-        if peers.is_empty() {
-            return Vec::new();
-        }
+        // let peers = self.network.peers_infos;
+        // if peers.is_empty() {
+        //     return Vec::new();
+        // }
 
-        (0..n)
-            .fold(HashSet::new(), |mut set, _| {
-                let (node_id, _) = peers
-                    .get_index((rand::random::<u64>() % peers.len() as u64) as usize)
-                    .unwrap();
-                set.insert(*node_id);
-                set
-            })
-            .into_iter()
-            .collect()
+        vec![]
+
+        // (0..n)
+        //     .fold(HashSet::new(), |mut set, _| {
+        //         let (node_id, _) = peers
+        //             .get_index((rand::random::<u64>() % peers.len() as u64) as usize)
+        //             .unwrap();
+        //         set.insert(*node_id);
+        //         set
+        //     })
+        //     .into_iter()
+        //     .collect()
     }
 
-    fn regen_bloom_if_necessary(peers: &IndexMap<NodeId, PeerInfo>, bloom_filter: &mut Filter) {
+    fn regen_bloom_if_necessary(peers: &DashMap<NodeId, PeerInfo>, bloom_filter: &mut Filter) {
         if bloom_filter.is_sub_optimal() {
-            let connected_peers = peers.iter().filter_map(|(node_id, peer_infos)| {
-                peer_infos.infos.as_ref().map(|infos| (node_id, infos))
+            let connected_peers = peers.iter().filter_map(|_ref| {
+                let (node_id, peer_infos) = _ref.pair();
+                peer_infos.infos.as_ref().map(|infos| (*node_id, infos.clone()))
             });
             let tracked = connected_peers.clone().count() as u64;
             log::debug!("regenerating bloom filter, tracking {tracked}");
@@ -535,7 +541,7 @@ impl Node {
             }
 
             for (node_id, infos) in connected_peers {
-                bloom_filter.feed(infos.gossip_id(node_id));
+                bloom_filter.feed(infos.gossip_id(&node_id));
             }
         }
     }
@@ -576,8 +582,9 @@ impl Node {
         match ReadFilter::try_from(known_peers.filter.as_slice()) {
             Ok(filter) => {
                 let mut ips = Vec::with_capacity(amount_ip_n);
-                let peers_info = self.network.peers_infos.read().unwrap();
-                for (node_id, peer_info) in peers_info.iter() {
+                let peers_info = &self.network.peers_infos;
+                for _ref in peers_info.iter() {
+                    let (node_id, peer_info) = _ref.pair();
                     if ips.len() >= amount_ip_n {
                         break;
                     }
@@ -631,7 +638,7 @@ impl Node {
         message: &MessageOrSubscribable,
     ) -> Vec<Message> {
         let (to_remove, handles) = {
-            let peers = self.network.peers_infos.read().unwrap();
+            let peers = &self.network.peers_infos;
             if peers.is_empty() {
                 log::debug!("the set of peers is empty, cannot send to any");
                 return vec![];

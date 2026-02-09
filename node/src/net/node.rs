@@ -28,6 +28,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use dashmap::DashMap;
 use thiserror::Error;
 use tokio::io::WriteHalf;
 use tokio::net::TcpStream;
@@ -191,7 +192,7 @@ impl Network {
     pub fn new(
         config: NetworkConfig,
         node_id: NodeId,
-        peers_infos: Arc<RwLock<IndexMap<NodeId, PeerInfo>>>,
+        peers_infos: Arc<DashMap<NodeId, PeerInfo>>,
     ) -> Result<Self, NodeError> {
         validate_credentials(&config)?;
         let client_config = Arc::new(config::client_config(
@@ -345,7 +346,7 @@ impl Network {
         snp: PeerSender,
         tx: broadcast::Sender<()>,
     ) {
-        let mut peers = self.peers_infos.write().unwrap();
+        let peers = &self.peers_infos;
         if peers.get(&node_id).is_none() {
             peers.insert(
                 node_id,
@@ -380,7 +381,7 @@ impl Network {
             loop {
                 tokio::select! {
                     _ = interval.tick() => {
-                        let peer_infos = network.peers_infos.read().unwrap();
+                        let peer_infos = &network.peers_infos;
                         let is_handshook = peer_infos.get(&node_id).is_some_and(|peer| peer.handshook());
                         if i < 5 && is_handshook {
                             break;
@@ -435,14 +436,14 @@ impl Network {
     }
 
     pub fn remove_peers(
-        peers_infos: Arc<RwLock<IndexMap<NodeId, PeerInfo>>>,
+        peers_infos: Arc<DashMap<NodeId, PeerInfo>>,
         node_ids_errs: Vec<(NodeId, Option<NodeError>)>,
     ) {
         {
-            let mut peers_write = peers_infos.write().unwrap();
+            let mut peers_write = peers_infos;
 
             for (node_id, _) in &node_ids_errs {
-                if let Some(peer) = peers_write.swap_remove(node_id) {
+                if let Some((_, peer)) = peers_write.remove(node_id) {
                     let _ = peer.tx.send(());
                     if peer.handshook() {
                         stats::handshook_peers::dec();
@@ -461,7 +462,7 @@ impl Network {
         }
     }
 
-    pub fn has_reached_max_peers(&self, peers_infos: &IndexMap<NodeId, PeerInfo>) -> bool {
+    pub fn has_reached_max_peers(&self, peers_infos: &DashMap<NodeId, PeerInfo>) -> bool {
         match self.config.max_peers {
             Some(max_peers) => peers_infos.len() >= max_peers,
             None => false,
@@ -477,7 +478,7 @@ impl Network {
             return Err(AddPeerError::Invalid.into());
         }
 
-        let peers_infos = self.peers_infos.read().unwrap();
+        let peers_infos = &self.peers_infos;
         if peers_infos.contains_key(node_id) {
             return Err(AddPeerError::AlreadyConnected.into());
         }

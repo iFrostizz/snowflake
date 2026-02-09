@@ -453,7 +453,7 @@ mod rpc_impl {
         }
 
         fn peer_count(&self) -> RpcResult<U64> {
-            let peer_count = self.node.network.peers_infos.read().unwrap().len() as u64;
+            let peer_count = self.node.network.peers_infos.len() as u64;
             Ok(U64::from(peer_count))
         }
     }
