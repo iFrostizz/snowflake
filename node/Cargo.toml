@@ -55,6 +55,7 @@ serde-big-array = "0.5.1"
 pretty_assertions = "1.4.1"
 threadpool = "1.8.1"
 tokio-util = "0.7.18"
+parking_lot = "0.12.5"
 
 [dev-dependencies]
 pretty_assertions = "1.4.1"

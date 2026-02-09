@@ -558,7 +558,11 @@ impl Node {
                         .connection_queue
                         .add_connection_without_retries(connection_data, None);
                 }
-                Err(err) => log::debug!("{err}"),
+                Err(err) => {
+                    if !matches!(err, NodeError::UnwantedPeer(AddPeerError::AlreadyConnected)) {
+                        log::debug!("{err}");
+                    }
+                },
             }
         }
     }

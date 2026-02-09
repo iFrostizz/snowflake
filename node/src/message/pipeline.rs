@@ -16,7 +16,7 @@ use crate::net::node::{WriteHandler, WriteMessage};
 use flume::{Receiver, Sender};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
-use tokio::sync::{broadcast, Mutex};
+use tokio::sync::{broadcast};
 
 #[derive(Debug)]
 pub struct BucketMessage {
@@ -36,7 +36,7 @@ pub struct Pipeline {
     tokens: AtomicU64,
 
     /// Last refill timestamp
-    last_refill: Mutex<Instant>,
+    last_refill: parking_lot::Mutex<Instant>,
 
     bucket_tx: Sender<BucketMessage>,
     bucket_rx: Receiver<BucketMessage>,
@@ -54,7 +54,7 @@ impl Pipeline {
             burst_size,
             rate,
             tokens: AtomicU64::new(burst_size),
-            last_refill: Mutex::new(Instant::now()),
+            last_refill: parking_lot::Mutex::new(Instant::now()),
             bucket_tx,
             bucket_rx,
         }
@@ -76,11 +76,11 @@ impl Pipeline {
     }
 
     /// Refills the token bucket based on elapsed time.
-    async fn refill(&self) {
-        let mut last = self.last_refill.lock().await;
+    fn refill(&self) {
+        let mut last = self.last_refill.lock();
         let now = Instant::now();
         let elapsed = now - *last;
-        let elapsed_nanos = elapsed.as_nanos() as u128;
+        let elapsed_nanos = elapsed.as_nanos();
         let add = ((elapsed_nanos * self.rate as u128) / 1_000_000_000u128) as u64;
 
         if add > 0 {
@@ -126,7 +126,7 @@ impl Pipeline {
     /// It will be sent immediately if tokens are available after refilling,
     /// otherwise it will be queued for later processing.
     pub async fn queue_message(&self, message: WriteMessage, handler: WriteHandler) {
-        self.refill().await;
+        self.refill();
 
         let size = message.size() as u64;
 
@@ -150,7 +150,7 @@ impl Pipeline {
 
     /// Attempts to execute as many queued messages as possible after refilling tokens.
     async fn try_exec_messages(&self) {
-        self.refill().await;
+        self.refill();
 
         while let Ok(BucketMessage { message, handler }) = self.bucket_rx.try_recv() {
             let size = message.size() as u64;
