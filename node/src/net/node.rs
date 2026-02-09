@@ -191,7 +191,7 @@ impl Network {
     pub fn new(
         config: NetworkConfig,
         node_id: NodeId,
-        peers_infos: Arc<RwLock<IndexMap<NodeId, PeerInfo>>>,
+        peers_infos: Arc<parking_lot::RwLock<IndexMap<NodeId, PeerInfo>>>,
     ) -> Result<Self, NodeError> {
         validate_credentials(&config)?;
         let client_config = Arc::new(config::client_config(
@@ -345,7 +345,7 @@ impl Network {
         snp: PeerSender,
         tx: broadcast::Sender<()>,
     ) {
-        let mut peers = self.peers_infos.write().unwrap();
+        let mut peers = self.peers_infos.write();
         if peers.get(&node_id).is_none() {
             peers.insert(
                 node_id,
@@ -380,7 +380,7 @@ impl Network {
             loop {
                 tokio::select! {
                     _ = interval.tick() => {
-                        let peer_infos = network.peers_infos.read().unwrap();
+                        let peer_infos = network.peers_infos.read();
                         let is_handshook = peer_infos.get(&node_id).is_some_and(|peer| peer.handshook());
                         if i < 5 && is_handshook {
                             break;
@@ -435,11 +435,11 @@ impl Network {
     }
 
     pub fn remove_peers(
-        peers_infos: Arc<RwLock<IndexMap<NodeId, PeerInfo>>>,
+        peers_infos: Arc<parking_lot::RwLock<IndexMap<NodeId, PeerInfo>>>,
         node_ids_errs: Vec<(NodeId, Option<NodeError>)>,
     ) {
         {
-            let mut peers_write = peers_infos.write().unwrap();
+            let mut peers_write = peers_infos.write();
 
             for (node_id, _) in &node_ids_errs {
                 if let Some(peer) = peers_write.swap_remove(node_id) {
@@ -477,7 +477,7 @@ impl Network {
             return Err(AddPeerError::Invalid.into());
         }
 
-        let peers_infos = self.peers_infos.read().unwrap();
+        let peers_infos = self.peers_infos.read();
         if peers_infos.contains_key(node_id) {
             return Err(AddPeerError::AlreadyConnected.into());
         }

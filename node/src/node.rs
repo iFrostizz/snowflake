@@ -55,7 +55,7 @@ impl Node {
         let cert = x509.to_der().unwrap();
         let node_id = NodeId::from_cert(&cert);
 
-        let peers_infos = Arc::new(RwLock::new(IndexMap::new()));
+        let peers_infos = Arc::new(parking_lot::RwLock::new(IndexMap::new()));
         let network = Arc::new(Network::new(network_config, node_id, peers_infos.clone()).unwrap());
 
         Self { network }
@@ -381,7 +381,7 @@ impl Node {
             PeerMessage::NewPeer { infos: peer_infos } => {
                 if let Some(hs_permit) = maybe_hs_permit.take() {
                     // taking the write lock because the else branches are exceptional
-                    let mut peers = self.network.peers_infos.write().unwrap();
+                    let mut peers = self.network.peers_infos.write();
                     if let Some(PeerInfo { infos, .. }) = peers.get_mut(&node_id) {
                         if infos.is_none() {
                             stats::handshook_peers::inc();
@@ -479,7 +479,7 @@ impl Node {
     }
 
     fn get_peer_list(self: &Arc<Node>) {
-        let peers = self.network.peers_infos.read().unwrap();
+        let peers = self.network.peers_infos.read();
         if peers.is_empty() || self.network.has_reached_max_peers(&peers) {
             return;
         }
@@ -504,7 +504,7 @@ impl Node {
     }
 
     fn random_peers(&self, n: usize) -> Vec<NodeId> {
-        let peers = self.network.peers_infos.read().unwrap();
+        let peers = self.network.peers_infos.read();
         if peers.is_empty() {
             return Vec::new();
         }
@@ -577,7 +577,7 @@ impl Node {
         match ReadFilter::try_from(known_peers.filter.as_slice()) {
             Ok(filter) => {
                 let mut ips = Vec::with_capacity(amount_ip_n);
-                let peers_info = self.network.peers_infos.read().unwrap();
+                let peers_info = self.network.peers_infos.read();
                 for (node_id, peer_info) in peers_info.iter() {
                     if ips.len() >= amount_ip_n {
                         break;
@@ -632,7 +632,7 @@ impl Node {
         message: &MessageOrSubscribable,
     ) -> Vec<Message> {
         let (to_remove, handles) = {
-            let peers = self.network.peers_infos.read().unwrap();
+            let peers = self.network.peers_infos.read();
             if peers.is_empty() {
                 log::debug!("the set of peers is empty, cannot send to any");
                 return vec![];

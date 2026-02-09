@@ -71,7 +71,7 @@ pub struct Network {
     pub client: Client,
     pub client_config: Arc<ClientConfig>,
     /// All peers discovered by the node
-    pub peers_infos: Arc<RwLock<IndexMap<NodeId, PeerInfo>>>,
+    pub peers_infos: Arc<parking_lot::RwLock<IndexMap<NodeId, PeerInfo>>>,
     pub bootstrappers: RwLock<HashSet<NodeId>>,
     pub out_pipeline: Arc<Pipeline>,
     /// The canonically sorted validators map
@@ -266,7 +266,7 @@ impl Peer {
     #[allow(clippy::type_complexity)]
     pub fn communicate(
         mut self,
-        peers_infos: Arc<RwLock<IndexMap<NodeId, PeerInfo>>>,
+        peers_infos: Arc<parking_lot::RwLock<IndexMap<NodeId, PeerInfo>>>,
         intervals: Intervals,
         out_pipeline: Arc<Pipeline>,
         mail_box: Arc<MailBox>,
@@ -387,7 +387,7 @@ impl Peer {
     /// Send messages to a peer on a recurring basis
     async fn loop_messages_peer(
         self: Arc<Peer>,
-        peers_infos: Arc<RwLock<IndexMap<NodeId, PeerInfo>>>,
+        peers_infos: Arc<parking_lot::RwLock<IndexMap<NodeId, PeerInfo>>>,
         intervals: Intervals,
         mut rx: broadcast::Receiver<()>,
     ) -> Result<(), NodeError> {
@@ -397,7 +397,7 @@ impl Peer {
         loop {
             tokio::select! {
                 _ = ping_interval.tick() => {
-                    let Some(peer_info) = peers_infos.read().unwrap().get(&node_id).cloned() else {
+                    let Some(peer_info) = peers_infos.read().get(&node_id).cloned() else {
                         continue;
                     };
                     peer_info.ping().await?;

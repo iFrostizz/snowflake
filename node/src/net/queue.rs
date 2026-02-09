@@ -3,11 +3,11 @@ use crate::net::node::NodeError;
 use crate::node::Node;
 use crate::utils::ip::{ip_from_octets, ip_octets};
 use flume::{Receiver, Sender};
+use flurry::HashMap as FlurryMap;
 use proto_lib::p2p::ClaimedIpPort;
-use std::collections::HashMap;
 use std::fmt::{Debug, Formatter};
 use std::net::SocketAddr;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::oneshot;
 use tokio::sync::{broadcast, Semaphore};
@@ -78,7 +78,7 @@ impl From<ConnectionData> for ClaimedIpPort {
 #[derive(Debug)]
 pub struct ConnectionQueue {
     semaphore: Arc<Semaphore>,
-    connections: RwLock<HashMap<NodeId, usize>>,
+    connections: Arc<FlurryMap<NodeId, usize>>,
     rcd: Receiver<(ConnectionData, Option<oneshot::Sender<bool>>)>,
     scd: Sender<(ConnectionData, Option<oneshot::Sender<bool>>)>,
 }
@@ -95,7 +95,7 @@ impl ConnectionQueue {
 
         Self {
             semaphore: Arc::new(Semaphore::new(max_concurrent)),
-            connections: RwLock::new(HashMap::new()),
+            connections: Arc::new(FlurryMap::new()),
             rcd,
             scd,
         }
@@ -149,13 +149,16 @@ impl ConnectionQueue {
     }
 
     pub fn mark_connected(&self, node_id: &NodeId) {
-        self.connections.write().unwrap().remove(node_id);
+        let guard = self.connections.guard();
+        self.connections.remove(node_id, &guard);
     }
 
     /// Schedule a connection that will be executed once that the semaphore is acquired
     /// returns true if it was added
     pub fn add_connection(&self, data: ConnectionData) -> bool {
-        let maybe_retries = self.connections.read().unwrap().get(&data.node_id).cloned();
+        let guard = self.connections.guard();
+        let maybe_retries = self.connections.get(&data.node_id, &guard).map(|v| *v);
+
         match maybe_retries {
             None => {
                 self._add_connection(data, 0, None);
@@ -163,7 +166,7 @@ impl ConnectionQueue {
             }
             Some(retries) => {
                 if retries >= Self::MAX_RETRIES {
-                    self.connections.write().unwrap().remove(&data.node_id);
+                    self.connections.remove(&data.node_id, &guard);
                     false
                 } else {
                     self._add_connection(data, retries + 1, None);
@@ -180,7 +183,8 @@ impl ConnectionQueue {
         data: ConnectionData,
         connection_tx: Option<oneshot::Sender<bool>>,
     ) -> bool {
-        self.connections.write().unwrap().remove(&data.node_id);
+        let guard = self.connections.guard();
+        self.connections.remove(&data.node_id, &guard);
         self.scd
             .send((data, connection_tx))
             .expect("receivers dropped");
@@ -193,10 +197,8 @@ impl ConnectionQueue {
         retries: usize,
         connection_tx: Option<oneshot::Sender<bool>>,
     ) {
-        self.connections
-            .write()
-            .unwrap()
-            .insert(data.node_id, retries);
+        let guard = self.connections.guard();
+        self.connections.insert(data.node_id, retries, &guard);
         self.scd
             .send((data, connection_tx))
             .expect("receivers dropped");
