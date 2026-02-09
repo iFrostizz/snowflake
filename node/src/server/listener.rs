@@ -50,7 +50,7 @@ impl Listener {
         loop {
             match self.tcp.accept().await {
                 Ok((stream, sock_addr)) => {
-                    if !node.network.has_reached_max_peers(&node.network.peers_infos.read()) {
+                    if !node.network.has_reached_max_peers(&node.network.peers_infos) {
                         let handle = connections.try_acquire();
                         if handle.is_ok() {
                             let node = node.clone();

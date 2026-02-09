@@ -191,7 +191,7 @@ impl Network {
     pub fn new(
         config: NetworkConfig,
         node_id: NodeId,
-        peers_infos: Arc<parking_lot::RwLock<IndexMap<NodeId, PeerInfo>>>,
+        peers_infos: Arc<flurry::HashMap<NodeId, PeerInfo>>,
     ) -> Result<Self, NodeError> {
         validate_credentials(&config)?;
         let client_config = Arc::new(config::client_config(
@@ -345,8 +345,9 @@ impl Network {
         snp: PeerSender,
         tx: broadcast::Sender<()>,
     ) {
-        let mut peers = self.peers_infos.write();
-        if peers.get(&node_id).is_none() {
+        let mut peers = &self.peers_infos;
+        let guard = peers.guard();
+        if peers.get(&node_id, &guard).is_none() {
             peers.insert(
                 node_id,
                 PeerInfo {
@@ -355,6 +356,7 @@ impl Network {
                     infos: None,
                     tx,
                 },
+                &guard
             );
             stats::connected_peers::inc();
         } else {
@@ -380,8 +382,9 @@ impl Network {
             loop {
                 tokio::select! {
                     _ = interval.tick() => {
-                        let peer_infos = network.peers_infos.read();
-                        let is_handshook = peer_infos.get(&node_id).is_some_and(|peer| peer.handshook());
+                        let peers_infos = &network.peers_infos;
+                        let guard = peers_infos.guard();
+                        let is_handshook = peers_infos.get(&node_id, &guard).is_some_and(|peer| peer.handshook());
                         if i < 5 && is_handshook {
                             break;
                         } else if i >= 5 {
@@ -435,14 +438,14 @@ impl Network {
     }
 
     pub fn remove_peers(
-        peers_infos: Arc<parking_lot::RwLock<IndexMap<NodeId, PeerInfo>>>,
+        peers_infos: Arc<flurry::HashMap<NodeId, PeerInfo>>,
         node_ids_errs: Vec<(NodeId, Option<NodeError>)>,
     ) {
         {
-            let mut peers_write = peers_infos.write();
+            let guard = peers_infos.guard();
 
             for (node_id, _) in &node_ids_errs {
-                if let Some(peer) = peers_write.swap_remove(node_id) {
+                if let Some(peer) = peers_infos.remove(node_id, &guard) {
                     let _ = peer.tx.send(());
                     if peer.handshook() {
                         stats::handshook_peers::dec();
@@ -461,7 +464,7 @@ impl Network {
         }
     }
 
-    pub fn has_reached_max_peers(&self, peers_infos: &IndexMap<NodeId, PeerInfo>) -> bool {
+    pub fn has_reached_max_peers(&self, peers_infos: &flurry::HashMap<NodeId, PeerInfo>) -> bool {
         match self.config.max_peers {
             Some(max_peers) => peers_infos.len() >= max_peers,
             None => false,
@@ -477,8 +480,8 @@ impl Network {
             return Err(AddPeerError::Invalid.into());
         }
 
-        let peers_infos = self.peers_infos.read();
-        if peers_infos.contains_key(node_id) {
+        let peers_infos = &self.peers_infos;
+        if peers_infos.contains_key(node_id, &peers_infos.guard()) {
             return Err(AddPeerError::AlreadyConnected.into());
         }
 
