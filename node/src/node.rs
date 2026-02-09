@@ -107,12 +107,12 @@ impl Node {
         let rx2 = rx.resubscribe();
         let watch = tokio::spawn(node.watch_sent_transactions(transaction_rx, rx2));
 
-        let node = self.clone();
-        let rx2 = rx.resubscribe();
-        let mbox = tokio::spawn(async move {
-            node.network.mail_box.start(rx2).await;
-            Ok(())
-        });
+        // let node = self.clone();
+        // let rx2 = rx.resubscribe();
+        // let mbox = tokio::spawn(async move {
+        //     node.network.mail_box.start(rx2).await;
+        //     Ok(())
+        // });
 
         let out_pipeline = self.network.out_pipeline.clone();
         let pip = tokio::spawn(async move {
@@ -120,7 +120,8 @@ impl Node {
             Ok(())
         });
 
-        vec![conn, net, watch, mbox, pip]
+        // vec![conn, net, watch, mbox, pip]
+        vec![conn, net, watch, pip]
     }
 
     /// A created connection that may create a new peer.

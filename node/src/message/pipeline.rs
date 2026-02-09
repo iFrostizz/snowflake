@@ -139,13 +139,13 @@ impl Pipeline {
             return;
         }
 
-        if self.try_take_tokens(size) {
-            let _ = handler.handle_message(message).await;
-        } else {
-            if let Err(_) = self.bucket_tx.try_send(BucketMessage { message, handler }) {
-                log::error!("dropping message: queue full");
-            }
-        }
+        // if self.try_take_tokens(size) {
+        let _ = handler.handle_message(message).await;
+        // } else {
+        //     if let Err(_) = self.bucket_tx.try_send(BucketMessage { message, handler }) {
+        //         log::error!("dropping message: queue full");
+        //     }
+        // }
     }
 
     /// Attempts to execute as many queued messages as possible after refilling tokens.
