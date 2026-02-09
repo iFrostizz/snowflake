@@ -166,7 +166,7 @@ impl From<Vec<u8>> for WriteMessage {
 pub struct WriteHandler(Sender<Vec<u8>>, MiniMessage);
 
 impl WriteHandler {
-    pub async fn handle_message(self, message: WriteMessage) {
+    pub fn handle_message(self, message: WriteMessage) {
         let Self(tx, mini) = self;
         let bytes = message.0;
         mini.inc_sent(bytes.len() as u64);
@@ -327,7 +327,7 @@ impl Network {
                         log::trace!("sending message {message:?}");
                         let mini = MiniMessage::from(&message);
                         if let Ok(bytes) = OutboundMessage::encode(message) {
-                            out_pipeline.queue_message(bytes.into(), WriteHandler(ptx.clone(), mini)).await;
+                            out_pipeline.queue_message(bytes.into(), WriteHandler(ptx.clone(), mini));
                         }
                     }
                 }
@@ -338,7 +338,7 @@ impl Network {
         }
     }
 
-    pub async fn add_peer(
+    pub fn add_peer(
         self: &Arc<Network>,
         node_id: NodeId,
         x509_certificate: Vec<u8>,

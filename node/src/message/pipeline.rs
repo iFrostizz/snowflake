@@ -62,17 +62,17 @@ impl Pipeline {
 
     /// Starts the background task to periodically process queued messages.
     pub async fn start(&self, mut rx: broadcast::Receiver<()>) {
-        let mut int = tokio::time::interval(Duration::from_millis(10)); // Adjusted to 10ms for better efficiency
-        loop {
-            tokio::select! {
-                _ = int.tick() => {
-                    self.try_exec_messages().await;
-                }
-                _ = rx.recv() => {
-                    return;
-                }
-            }
-        }
+        // let mut int = tokio::time::interval(Duration::from_millis(10)); // Adjusted to 10ms for better efficiency
+        // loop {
+        //     tokio::select! {
+        //         _ = int.tick() => {
+        //             self.try_exec_messages();
+        //         }
+        //         _ = rx.recv() => {
+        //             return;
+        //         }
+        //     }
+        // }
     }
 
     /// Refills the token bucket based on elapsed time.
@@ -125,7 +125,7 @@ impl Pipeline {
     /// Queue a message to be sent.
     /// It will be sent immediately if tokens are available after refilling,
     /// otherwise it will be queued for later processing.
-    pub async fn queue_message(&self, message: WriteMessage, handler: WriteHandler) {
+    pub fn queue_message(&self, message: WriteMessage, handler: WriteHandler) {
         // self.refill();
 
         let size = message.size() as u64;
@@ -140,7 +140,7 @@ impl Pipeline {
         }
 
         // if self.try_take_tokens(size) {
-        let _ = handler.handle_message(message).await;
+        handler.handle_message(message);
         // } else {
         //     if let Err(_) = self.bucket_tx.try_send(BucketMessage { message, handler }) {
         //         log::error!("dropping message: queue full");
@@ -149,19 +149,19 @@ impl Pipeline {
     }
 
     /// Attempts to execute as many queued messages as possible after refilling tokens.
-    async fn try_exec_messages(&self) {
-        // self.refill();
-
-        while let Ok(BucketMessage { message, handler }) = self.bucket_rx.try_recv() {
-            let size = message.size() as u64;
-
-            if !self.try_take_tokens(size) {
-                // Put it back if not enough tokens
-                let _ = self.bucket_tx.try_send(BucketMessage { message, handler });
-                break;
-            }
-
-            let _ = handler.handle_message(message).await;
-        }
+    fn try_exec_messages(&self) {
+    //     // self.refill();
+    //
+    //     while let Ok(BucketMessage { message, handler }) = self.bucket_rx.try_recv() {
+    //         let size = message.size() as u64;
+    //
+    //         if !self.try_take_tokens(size) {
+    //             // Put it back if not enough tokens
+    //             let _ = self.bucket_tx.try_send(BucketMessage { message, handler });
+    //             break;
+    //         }
+    //
+    //         handler.handle_message(message);
+    //     }
     }
 }

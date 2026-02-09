@@ -114,14 +114,15 @@ impl Node {
         //     Ok(())
         // });
 
-        let out_pipeline = self.network.out_pipeline.clone();
-        let pip = tokio::spawn(async move {
-            out_pipeline.start(rx).await;
-            Ok(())
-        });
+        // let out_pipeline = self.network.out_pipeline.clone();
+        // let pip = tokio::spawn(async move {
+        //     out_pipeline.start(rx).await;
+        //     Ok(())
+        // });
 
         // vec![conn, net, watch, mbox, pip]
-        vec![conn, net, watch, pip]
+        // vec![conn, net, watch, pip]
+        vec![conn, net, watch]
     }
 
     /// A created connection that may create a new peer.
@@ -276,8 +277,7 @@ impl Node {
                 peer.x509_certificate().to_owned(),
                 sender.clone(),
                 tx.clone(),
-            )
-            .await;
+            );
 
         let manage_peer = self.manage_peer(peer.rpn().clone(), node_id, hs_permit, tx.subscribe());
         let (write_peer, read_peer, recurring) = peer.communicate(
