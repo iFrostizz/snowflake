@@ -12,7 +12,6 @@ use std::time::Duration;
 use tokio::sync::oneshot;
 use tokio::sync::{broadcast, Semaphore};
 use tokio::task::JoinHandle;
-use dashmap::DashMap;
 
 #[derive(Clone, Eq, PartialEq, Hash)]
 pub struct ConnectionData {
@@ -79,8 +78,7 @@ impl From<ConnectionData> for ClaimedIpPort {
 #[derive(Debug)]
 pub struct ConnectionQueue {
     semaphore: Arc<Semaphore>,
-    // connections: RwLock<HashMap<NodeId, usize>>,
-    connections: DashMap<NodeId, usize>,
+    connections: RwLock<HashMap<NodeId, usize>>,
     rcd: Receiver<(ConnectionData, Option<oneshot::Sender<bool>>)>,
     scd: Sender<(ConnectionData, Option<oneshot::Sender<bool>>)>,
 }
@@ -97,7 +95,7 @@ impl ConnectionQueue {
 
         Self {
             semaphore: Arc::new(Semaphore::new(max_concurrent)),
-            connections: DashMap::new(),
+            connections: RwLock::new(HashMap::new()),
             rcd,
             scd,
         }
@@ -151,22 +149,21 @@ impl ConnectionQueue {
     }
 
     pub fn mark_connected(&self, node_id: &NodeId) {
-        self.connections.remove(node_id);
+        self.connections.write().unwrap().remove(node_id);
     }
 
     /// Schedule a connection that will be executed once that the semaphore is acquired
     /// returns true if it was added
     pub fn add_connection(&self, data: ConnectionData) -> bool {
-        let maybe_retries = self.connections.get(&data.node_id);
+        let maybe_retries = self.connections.read().unwrap().get(&data.node_id).cloned();
         match maybe_retries {
             None => {
                 self._add_connection(data, 0, None);
                 true
             }
             Some(retries) => {
-                let retries = *retries;
                 if retries >= Self::MAX_RETRIES {
-                    self.connections.remove(&data.node_id);
+                    self.connections.write().unwrap().remove(&data.node_id);
                     false
                 } else {
                     self._add_connection(data, retries + 1, None);
@@ -183,7 +180,7 @@ impl ConnectionQueue {
         data: ConnectionData,
         connection_tx: Option<oneshot::Sender<bool>>,
     ) -> bool {
-        self.connections.remove(&data.node_id);
+        self.connections.write().unwrap().remove(&data.node_id);
         self.scd
             .send((data, connection_tx))
             .expect("receivers dropped");
@@ -197,6 +194,8 @@ impl ConnectionQueue {
         connection_tx: Option<oneshot::Sender<bool>>,
     ) {
         self.connections
+            .write()
+            .unwrap()
             .insert(data.node_id, retries);
         self.scd
             .send((data, connection_tx))

@@ -28,7 +28,6 @@ use std::io::{BufReader, ErrorKind};
 use std::net::SocketAddr;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, SystemTime};
-use dashmap::DashMap;
 use tokio::io::{split, ReadHalf, WriteHalf};
 use tokio::net::TcpStream;
 use tokio::sync::broadcast;
@@ -72,7 +71,7 @@ pub struct Network {
     pub client: Client,
     pub client_config: Arc<ClientConfig>,
     /// All peers discovered by the node
-    pub peers_infos: Arc<DashMap<NodeId, PeerInfo>>,
+    pub peers_infos: Arc<RwLock<IndexMap<NodeId, PeerInfo>>>,
     pub bootstrappers: RwLock<HashSet<NodeId>>,
     pub out_pipeline: Arc<Pipeline>,
     /// The canonically sorted validators map
@@ -267,7 +266,7 @@ impl Peer {
     #[allow(clippy::type_complexity)]
     pub fn communicate(
         mut self,
-        peers_infos: Arc<DashMap<NodeId, PeerInfo>>,
+        peers_infos: Arc<RwLock<IndexMap<NodeId, PeerInfo>>>,
         intervals: Intervals,
         out_pipeline: Arc<Pipeline>,
         mail_box: Arc<MailBox>,
@@ -388,7 +387,7 @@ impl Peer {
     /// Send messages to a peer on a recurring basis
     async fn loop_messages_peer(
         self: Arc<Peer>,
-        peers_infos: Arc<DashMap<NodeId, PeerInfo>>,
+        peers_infos: Arc<RwLock<IndexMap<NodeId, PeerInfo>>>,
         intervals: Intervals,
         mut rx: broadcast::Receiver<()>,
     ) -> Result<(), NodeError> {
@@ -398,7 +397,7 @@ impl Peer {
         loop {
             tokio::select! {
                 _ = ping_interval.tick() => {
-                    let Some(peer_info) = peers_infos.get(&node_id) else {
+                    let Some(peer_info) = peers_infos.read().unwrap().get(&node_id).cloned() else {
                         continue;
                     };
                     peer_info.ping().await?;

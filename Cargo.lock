@@ -3384,7 +3384,6 @@ dependencies = [
  "clap",
  "console-subscriber",
  "current_platform",
- "dashmap",
  "dhat",
  "flume",
  "futures",
