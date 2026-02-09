@@ -760,7 +760,6 @@ mod tests {
     use crate::node::Node;
     use alloy::providers::{network::EthereumWallet, Provider, ProviderBuilder};
     use alloy::signers::local::PrivateKeySigner;
-    use std::collections::HashMap;
     use std::collections::HashSet;
     use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
     use std::path::Path;
@@ -800,8 +799,6 @@ mod tests {
                 muln: 0,
                 max_retries: 0,
             },
-            max_throughput: 0,
-            max_out_queue_size: 0,
             bucket_size: 0,
             max_concurrent_handshakes: 0,
             max_peers: None,

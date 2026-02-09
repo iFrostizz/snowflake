@@ -392,22 +392,16 @@ impl Peer {
         mut rx: broadcast::Receiver<()>,
     ) -> Result<(), NodeError> {
         let mut ping_interval = tokio::time::interval(Duration::from_millis(intervals.ping));
-        // let mut find_nodes_interval = tokio::time::interval(Duration::from_millis(intervals.find_nodes));
         let node_id = self.identity.node_id;
 
         loop {
             tokio::select! {
                 _ = ping_interval.tick() => {
-                    // let Some(peer_info) = peers_infos.read().unwrap().get(&node_id).cloned() else {
-                    //     continue;
-                    // };
-                    // peer_info.ping(&mail_tx).await?;
+                    let Some(peer_info) = peers_infos.read().unwrap().get(&node_id).cloned() else {
+                        continue;
+                    };
+                    peer_info.ping(&mail_tx).await?;
                 }
-                // _ = find_nodes_interval.tick() => {
-                //     if let Some(peer_info) = peers_infos.read().unwrap().get(&node_id) {
-                //         peer_info.find_nodes(node_id, &mail_tx).await?;
-                //     }
-                // }
                 _ = rx.recv() => {
                     return Ok(());
                 }

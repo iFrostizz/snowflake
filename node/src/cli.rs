@@ -89,10 +89,6 @@ pub struct Args {
     #[arg(long, default_value_t = 60000)]
     pub intervals_get_peer_list_ms: u64,
 
-    /// Intervals configuration
-    #[arg(long, default_value_t = 60000)]
-    pub intervals_find_nodes: u64,
-
     #[arg(long, default_value_t = 9000)]
     pub metrics_port: u16,
 

@@ -21,14 +21,13 @@ use proto_lib::p2p::{
 };
 use proto_lib::sdk;
 use std::collections::HashSet;
-use std::future::Future;
 use std::net::SocketAddr;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
 use tokio::sync::{broadcast, OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinHandle;
-use tokio::time::{self, timeout, Timeout};
+use tokio::time::{self, timeout};
 use tokio_util::sync::CancellationToken;
 use tracing::instrument;
 
@@ -100,9 +99,9 @@ impl Node {
             Ok(())
         });
 
-        // let node = self.clone();
-        // let rx2 = rx.resubscribe();
-        // let net = tokio::spawn(node.loop_node_messages(rx2));
+        let node = self.clone();
+        let rx2 = rx.resubscribe();
+        let net = tokio::spawn(node.loop_node_messages(rx2));
 
         let node = self.clone();
         let rx2 = rx.resubscribe();
@@ -121,8 +120,7 @@ impl Node {
             Ok(())
         });
 
-        // vec![conn, net, watch, mbox, pip]
-        vec![conn, watch, mbox, pip]
+        vec![conn, net, watch, mbox, pip]
     }
 
     /// A created connection that may create a new peer.
@@ -548,6 +546,7 @@ impl Node {
         }
     }
 
+    #[instrument(skip_all)]
     fn try_connect_from_claimed(self: &Arc<Node>, claimed: ClaimedIpPort) {
         let connection_data: Result<ConnectionData, _> = claimed.try_into();
         if let Ok(connection_data) = connection_data {
@@ -559,7 +558,7 @@ impl Node {
                         .connection_queue
                         .add_connection_without_retries(connection_data, None);
                 }
-                Err(err) => log::debug!("{err} {node_id}"),
+                Err(err) => log::debug!("{err}"),
             }
         }
     }

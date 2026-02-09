@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use crate::utils::rlp::RlpError;
 use thiserror::Error;
 

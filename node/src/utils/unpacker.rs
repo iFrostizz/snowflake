@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use super::packer::PackerError;
 use crate::id::BlockID;
 use crate::utils::rlp::Block;
