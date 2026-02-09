@@ -50,16 +50,18 @@ impl Listener {
         loop {
             match self.tcp.accept().await {
                 Ok((stream, sock_addr)) => {
-                    let handle = connections.try_acquire();
-                    if handle.is_ok() {
-                        let node = node.clone();
-                        let tls_acceptor = tls_acceptor.clone();
-                        tokio::spawn(async move {
-                            Self::manage_tls_incoming(node, tls_acceptor, stream, sock_addr).await;
-                        });
-                    } else {
-                        log::debug!("rejecting before accepting more concurrent connections");
-                        continue;
+                    if !node.network.has_reached_max_peers(&node.network.peers_infos.read()) {
+                        let handle = connections.try_acquire();
+                        if handle.is_ok() {
+                            let node = node.clone();
+                            let tls_acceptor = tls_acceptor.clone();
+                            tokio::spawn(async move {
+                                Self::manage_tls_incoming(node, tls_acceptor, stream, sock_addr).await;
+                            });
+                        } else {
+                            log::debug!("rejecting before accepting more concurrent connections");
+                            continue;
+                        }
                     }
                 }
                 Err(err) => log::debug!("on accepting TCP stream {err:?}"),
