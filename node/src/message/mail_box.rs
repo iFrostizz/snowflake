@@ -85,40 +85,40 @@ impl MailBox {
         peers_latency: Arc<RwLock<PeersLatency>>,
         message_callback: oneshot::Sender<Message>,
     ) {
-        let (tx, rx) = oneshot::channel();
-
-        let is_ping = matches!(message, SubscribableMessage::Ping(_));
-
-        let request_id = *message.request_id();
-        mails
-            .lock()
-            .unwrap()
-            .entry(node_id)
-            .or_default()
-            .insert(request_id, (tx, message_callback, message));
-
-        let start = Instant::now();
-        let res = tokio::time::timeout(deadline, async move {
-            let _ = rx.await;
-            if is_ping {
-                let lat = Instant::now().duration_since(start);
-                peers_latency.write().unwrap().record(node_id, lat);
-            }
-        })
-        .await;
-
-        let mut mails = mails.lock().unwrap();
-        if let Some(set) = mails.get_mut(&node_id) {
-            // has timed out, we need to force clean
-            if res.is_err() {
-                let (.., message) = set.remove(&request_id).unwrap();
-                message.on_timeout();
-            }
-
-            if set.is_empty() {
-                debug_assert!(mails.remove(&node_id).is_some());
-            }
-        }
+        // let (tx, rx) = oneshot::channel();
+        //
+        // let is_ping = matches!(message, SubscribableMessage::Ping(_));
+        //
+        // let request_id = *message.request_id();
+        // mails
+        //     .lock()
+        //     .unwrap()
+        //     .entry(node_id)
+        //     .or_default()
+        //     .insert(request_id, (tx, message_callback, message));
+        //
+        // let start = Instant::now();
+        // let res = tokio::time::timeout(deadline, async move {
+        //     let _ = rx.await;
+        //     if is_ping {
+        //         let lat = Instant::now().duration_since(start);
+        //         peers_latency.write().unwrap().record(node_id, lat);
+        //     }
+        // })
+        // .await;
+        //
+        // let mut mails = mails.lock().unwrap();
+        // if let Some(set) = mails.get_mut(&node_id) {
+        //     // has timed out, we need to force clean
+        //     if res.is_err() {
+        //         let (.., message) = set.remove(&request_id).unwrap();
+        //         message.on_timeout();
+        //     }
+        //
+        //     if set.is_empty() {
+        //         debug_assert!(mails.remove(&node_id).is_some());
+        //     }
+        // }
     }
 
     /// Mark a message as received and return the sent messages if it had not timed out
@@ -128,22 +128,23 @@ impl MailBox {
         request_id: &u32,
         received_message: Message,
     ) -> Option<Message> {
-        if let Some((tx, callback, message)) = self
-            .mails
-            .lock()
-            .unwrap()
-            .get_mut(node_id)
-            .and_then(|map| map.remove(request_id))
-        {
-            let is_ping = matches!(message, SubscribableMessage::Ping(_));
-            let is_pong = matches!(received_message, Message::Pong(_));
-            if is_ping == is_pong {
-                let _ = tx.send(());
-            }
-            let _ = callback.send(received_message);
-            Some(message.into())
-        } else {
-            None
-        }
+        // if let Some((tx, callback, message)) = self
+        //     .mails
+        //     .lock()
+        //     .unwrap()
+        //     .get_mut(node_id)
+        //     .and_then(|map| map.remove(request_id))
+        // {
+        //     let is_ping = matches!(message, SubscribableMessage::Ping(_));
+        //     let is_pong = matches!(received_message, Message::Pong(_));
+        //     if is_ping == is_pong {
+        //         let _ = tx.send(());
+        //     }
+        //     let _ = callback.send(received_message);
+        //     Some(message.into())
+        // } else {
+        //     None
+        // }
+        None
     }
 }

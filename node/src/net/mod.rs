@@ -297,7 +297,9 @@ impl Peer {
         let peer2 = peer.clone();
         let disconnection_rx2 = disconnection_rx.resubscribe();
         let read =
-            tokio::spawn(peer2.read_peer(read, mail_box, sender, chain_id, disconnection_rx2));
+            tokio::spawn(peer2.read_peer(read,
+                                         // mail_box,
+                                         sender, chain_id, disconnection_rx2));
 
         let recurring = tokio::spawn(peer.loop_messages_peer(
             peers_infos,
@@ -352,7 +354,7 @@ impl Peer {
     async fn read_peer(
         self: Arc<Peer>,
         read: ReadHalf<TlsStream<TcpStream>>,
-        mail_box: Arc<MailBox>,
+        // mail_box: Arc<MailBox>,
         sender: PeerSender,
         c_chain_id: ChainId,
         disconnection_rx: broadcast::Receiver<()>,
@@ -363,7 +365,7 @@ impl Peer {
             read,
             &c_chain_id,
             sender,
-            &mail_box,
+            // &mail_box,
             disconnection_rx,
         )
         .await;
@@ -413,7 +415,7 @@ impl Peer {
         mut read: ReadHalf<TlsStream<TcpStream>>,
         c_chain_id: &ChainId,
         sender: PeerSender,
-        mail_box: &MailBox,
+        // mail_box: &MailBox,
         mut rx: broadcast::Receiver<()>,
     ) -> Result<(), NodeError> {
         loop {
@@ -421,7 +423,9 @@ impl Peer {
             tokio::select! {
                 maybe_buf = read_stream_message(&mut read) => {
                     let buf = maybe_buf?;
-                    self.manage_message(c_chain_id, &buf, &sender, mail_box, false).await?;
+                    self.manage_message(c_chain_id, &buf, &sender,
+                        //mail_box,
+                    false).await?;
                 }
                 _ = rx.recv() => {
                     return Ok(())
@@ -437,7 +441,7 @@ impl Peer {
         c_chain_id: &ChainId,
         buf: &[u8],
         sender: &PeerSender,
-        mail_box: &MailBox,
+        // mail_box: &MailBox,
         recursed: bool,
     ) -> Result<(), NodeError> {
         let decoded = InboundMessage::decode(buf).map_err(NodeError::Decoding)?;
@@ -448,11 +452,11 @@ impl Peer {
             mini.inc_recv(buf.len() as u64);
         }
 
-        let _ = if let Some(request_id) = SubscribableMessage::response_request_id(&decoded) {
-            mail_box.mark_mail_received(&self.identity.node_id, request_id, decoded.clone())
-        } else {
-            None
-        };
+        // let _ = if let Some(request_id) = SubscribableMessage::response_request_id(&decoded) {
+        //     mail_box.mark_mail_received(&self.identity.node_id, request_id, decoded.clone())
+        // } else {
+        //     None
+        // };
 
         // NOTE if this node holds a stake, here is the minimum number of messages to handle since
         //   they are registered and will get the node benched:
@@ -469,7 +473,9 @@ impl Peer {
                 let buf_read = BufReader::new(&comp[..]);
                 let decoded_buf = zstd::stream::decode_all(buf_read)?;
 
-                self.manage_message(c_chain_id, &decoded_buf, sender, mail_box, true)
+                self.manage_message(c_chain_id, &decoded_buf, sender,
+                                    //mail_box,
+                                    true)
                     .await?;
 
                 return Ok(());

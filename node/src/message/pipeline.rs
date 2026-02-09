@@ -77,20 +77,20 @@ impl Pipeline {
 
     /// Refills the token bucket based on elapsed time.
     fn refill(&self) {
-        let mut last = self.last_refill.lock();
-        let now = Instant::now();
-        let elapsed = now - *last;
-        let elapsed_nanos = elapsed.as_nanos();
-        let add = ((elapsed_nanos * self.rate as u128) / 1_000_000_000u128) as u64;
-
-        if add > 0 {
-            let current = self.tokens.fetch_add(add, Ordering::AcqRel);
-            let new_tokens = current + add;
-            if new_tokens > self.burst_size {
-                self.tokens.store(self.burst_size, Ordering::Release);
-            }
-            *last = now;
-        }
+        // let mut last = self.last_refill.lock();
+        // let now = Instant::now();
+        // let elapsed = now - *last;
+        // let elapsed_nanos = elapsed.as_nanos();
+        // let add = ((elapsed_nanos * self.rate as u128) / 1_000_000_000u128) as u64;
+        //
+        // if add > 0 {
+        //     let current = self.tokens.fetch_add(add, Ordering::AcqRel);
+        //     let new_tokens = current + add;
+        //     if new_tokens > self.burst_size {
+        //         self.tokens.store(self.burst_size, Ordering::Release);
+        //     }
+        //     *last = now;
+        // }
     }
 
     /// Attempts to take `size` tokens from the bucket using CAS for thread safety.
@@ -126,7 +126,7 @@ impl Pipeline {
     /// It will be sent immediately if tokens are available after refilling,
     /// otherwise it will be queued for later processing.
     pub async fn queue_message(&self, message: WriteMessage, handler: WriteHandler) {
-        self.refill();
+        // self.refill();
 
         let size = message.size() as u64;
 
@@ -150,7 +150,7 @@ impl Pipeline {
 
     /// Attempts to execute as many queued messages as possible after refilling tokens.
     async fn try_exec_messages(&self) {
-        self.refill();
+        // self.refill();
 
         while let Ok(BucketMessage { message, handler }) = self.bucket_rx.try_recv() {
             let size = message.size() as u64;

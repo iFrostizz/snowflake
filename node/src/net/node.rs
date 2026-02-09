@@ -358,6 +358,7 @@ impl Network {
             );
             stats::connected_peers::inc();
         } else {
+            // @audit-ok this is exceptional so we take the write lock
             log::error!("trying to double-add a peer {}", &node_id);
         }
     }
