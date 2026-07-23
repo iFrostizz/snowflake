@@ -271,20 +271,16 @@ impl Node {
 
         let sender = peer.sender().clone();
         let (tx, _) = broadcast::channel(100);
-        self.network
-            .add_peer(
-                node_id,
-                peer.x509_certificate().to_owned(),
-                sender.clone(),
-                tx.clone(),
-            );
+        self.network.add_peer(
+            node_id,
+            peer.x509_certificate().to_owned(),
+            sender.clone(),
+            tx.clone(),
+        );
 
         let manage_peer = self.manage_peer(peer.rpn().clone(), node_id, hs_permit, tx.subscribe());
-        let (write_peer, read_peer, recurring) = peer.communicate(
-            self.network.peers_infos.clone(),
-            self.network.config.intervals.clone(),
+        let (write_peer, read_peer) = peer.communicate(
             self.network.out_pipeline.clone(),
-            self.network.mail_box.clone(),
             c_chain_id,
             tx.subscribe(),
         );
@@ -301,7 +297,7 @@ impl Node {
             }
         };
 
-        let tasks = vec![manage_peer, write_peer, read_peer, recurring, hand_peer];
+        let tasks = vec![manage_peer, write_peer, read_peer, hand_peer];
 
         Ok((tasks, tx))
     }
@@ -381,12 +377,12 @@ impl Node {
             PeerMessage::NewPeer { infos: peer_infos } => {
                 if let Some(hs_permit) = maybe_hs_permit.take() {
                     // taking the write lock because the else branches are exceptional
-                    let mut peers = &self.network.peers_infos;
+                    let peers = &self.network.peers_infos;
                     let guard = peers.guard();
-                    if let Some(mut peer) = peers.get(&node_id, &guard) {
+                    if let Some(peer) = peers.get(&node_id, &guard) {
                         if peer.infos.is_none() {
                             stats::handshook_peers::inc();
-                            let gossip_id = peer_infos.gossip_id(&node_id);
+                            // let gossip_id = peer_infos.gossip_id(&node_id);
                             let mut peer = peer.clone();
                             peer.infos = Some(peer_infos);
                             peers.insert(node_id, peer, &guard);
@@ -568,7 +564,7 @@ impl Node {
                     if !matches!(err, NodeError::UnwantedPeer(AddPeerError::AlreadyConnected)) {
                         log::debug!("{err}");
                     }
-                },
+                }
             }
         }
     }

@@ -16,7 +16,7 @@ use crate::net::node::{WriteHandler, WriteMessage};
 use flume::{Receiver, Sender};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
-use tokio::sync::{broadcast};
+use tokio::sync::broadcast;
 
 #[derive(Debug)]
 pub struct BucketMessage {
@@ -150,18 +150,18 @@ impl Pipeline {
 
     /// Attempts to execute as many queued messages as possible after refilling tokens.
     fn try_exec_messages(&self) {
-    //     // self.refill();
-    //
-    //     while let Ok(BucketMessage { message, handler }) = self.bucket_rx.try_recv() {
-    //         let size = message.size() as u64;
-    //
-    //         if !self.try_take_tokens(size) {
-    //             // Put it back if not enough tokens
-    //             let _ = self.bucket_tx.try_send(BucketMessage { message, handler });
-    //             break;
-    //         }
-    //
-    //         handler.handle_message(message);
-    //     }
+        //     // self.refill();
+        //
+        //     while let Ok(BucketMessage { message, handler }) = self.bucket_rx.try_recv() {
+        //         let size = message.size() as u64;
+        //
+        //         if !self.try_take_tokens(size) {
+        //             // Put it back if not enough tokens
+        //             let _ = self.bucket_tx.try_send(BucketMessage { message, handler });
+        //             break;
+        //         }
+        //
+        //         handler.handle_message(message);
+        //     }
     }
 }

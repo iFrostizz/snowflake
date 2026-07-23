@@ -266,18 +266,13 @@ impl Peer {
     #[allow(clippy::type_complexity)]
     pub fn communicate(
         mut self,
-        peers_infos: Arc<flurry::HashMap<NodeId, PeerInfo>>,
-        intervals: Intervals,
         out_pipeline: Arc<Pipeline>,
-        mail_box: Arc<MailBox>,
         chain_id: ChainId,
         disconnection_rx: broadcast::Receiver<()>,
     ) -> (
         JoinHandle<Result<(), NodeError>>,
         JoinHandle<Result<(), NodeError>>,
-        JoinHandle<Result<(), NodeError>>,
     ) {
-        let mail_tx = mail_box.tx().clone();
         let (read, write) = self.take_tls();
 
         let disconnection_rx2 = disconnection_rx.resubscribe();
@@ -296,18 +291,9 @@ impl Peer {
 
         let peer2 = peer.clone();
         let disconnection_rx2 = disconnection_rx.resubscribe();
-        let read =
-            tokio::spawn(peer2.read_peer(read,
-                                         // mail_box,
-                                         sender, chain_id, disconnection_rx2));
+        let read = tokio::spawn(peer2.read_peer(read, sender, chain_id, disconnection_rx2));
 
-        let recurring = tokio::spawn(peer.loop_messages_peer(
-            peers_infos,
-            intervals,
-            disconnection_rx,
-        ));
-
-        (write, read, recurring)
+        (write, read)
     }
 
     async fn connect(
@@ -354,21 +340,12 @@ impl Peer {
     async fn read_peer(
         self: Arc<Peer>,
         read: ReadHalf<TlsStream<TcpStream>>,
-        // mail_box: Arc<MailBox>,
         sender: PeerSender,
         c_chain_id: ChainId,
         disconnection_rx: broadcast::Receiver<()>,
     ) -> Result<(), NodeError> {
         log::trace!("read");
-        let res = Self::read_messages(
-            &self,
-            read,
-            &c_chain_id,
-            sender,
-            // &mail_box,
-            disconnection_rx,
-        )
-        .await;
+        let res = Self::read_messages(&self, read, &c_chain_id, sender, disconnection_rx).await;
 
         if res.is_err() {
             log::debug!("error on read");
@@ -415,7 +392,6 @@ impl Peer {
         mut read: ReadHalf<TlsStream<TcpStream>>,
         c_chain_id: &ChainId,
         sender: PeerSender,
-        // mail_box: &MailBox,
         mut rx: broadcast::Receiver<()>,
     ) -> Result<(), NodeError> {
         loop {
@@ -423,9 +399,7 @@ impl Peer {
             tokio::select! {
                 maybe_buf = read_stream_message(&mut read) => {
                     let buf = maybe_buf?;
-                    self.manage_message(c_chain_id, &buf, &sender,
-                        //mail_box,
-                    false).await?;
+                    self.manage_message(c_chain_id, &buf, &sender, false).await?;
                 }
                 _ = rx.recv() => {
                     return Ok(())
@@ -441,7 +415,6 @@ impl Peer {
         c_chain_id: &ChainId,
         buf: &[u8],
         sender: &PeerSender,
-        // mail_box: &MailBox,
         recursed: bool,
     ) -> Result<(), NodeError> {
         let decoded = InboundMessage::decode(buf).map_err(NodeError::Decoding)?;
@@ -451,12 +424,6 @@ impl Peer {
             log::trace!("received message {}", &mini);
             mini.inc_recv(buf.len() as u64);
         }
-
-        // let _ = if let Some(request_id) = SubscribableMessage::response_request_id(&decoded) {
-        //     mail_box.mark_mail_received(&self.identity.node_id, request_id, decoded.clone())
-        // } else {
-        //     None
-        // };
 
         // NOTE if this node holds a stake, here is the minimum number of messages to handle since
         //   they are registered and will get the node benched:
@@ -473,9 +440,7 @@ impl Peer {
                 let buf_read = BufReader::new(&comp[..]);
                 let decoded_buf = zstd::stream::decode_all(buf_read)?;
 
-                self.manage_message(c_chain_id, &decoded_buf, sender,
-                                    //mail_box,
-                                    true)
+                self.manage_message(c_chain_id, &decoded_buf, sender, true)
                     .await?;
 
                 return Ok(());
@@ -526,13 +491,13 @@ impl Peer {
                 }
 
                 // send a PeerList message according to their filter
-                self.channels
-                    .spn
-                    .send(PeerMessage::GetPeerList {
-                        sender: sender.clone(),
-                        known_peers,
-                    })
-                    .map_err(SendErrorWrapper::from)?;
+                // self.channels
+                //     .spn
+                //     .send(PeerMessage::GetPeerList {
+                //         sender: sender.clone(),
+                //         known_peers,
+                //     })
+                //     .map_err(SendErrorWrapper::from)?;
 
                 let sock_addr = SocketAddr::new(ip, port);
 
@@ -552,20 +517,23 @@ impl Peer {
                     })
                     .map_err(SendErrorWrapper::from)?;
             }
-            Message::PeerList(peer_list) => {
-                self.channels
-                    .spn
-                    .send(PeerMessage::PeerList(peer_list))
-                    .map_err(SendErrorWrapper::from)?;
+            Message::PeerList(_peer_list) => {
+                // self.channels
+                //     .spn
+                //     .send(PeerMessage::PeerList(peer_list))
+                //     .map_err(SendErrorWrapper::from)?;
             }
-            Message::GetPeerList(GetPeerList { known_peers, .. }) => {
-                self.channels
-                    .spn
-                    .send(PeerMessage::GetPeerList {
-                        sender: sender.clone(),
-                        known_peers,
-                    })
-                    .map_err(SendErrorWrapper::from)?;
+            Message::GetPeerList(GetPeerList {
+                known_peers: _known_peers,
+                ..
+            }) => {
+                // self.channels
+                //     .spn
+                //     .send(PeerMessage::GetPeerList {
+                //         sender: sender.clone(),
+                //         known_peers,
+                //     })
+                //     .map_err(SendErrorWrapper::from)?;
             }
             Message::Pong(_pong) => {}
             _ => log::trace!("unsupported message {} {}", mini, self.identity.node_id),

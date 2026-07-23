@@ -356,7 +356,7 @@ impl Network {
                     infos: None,
                     tx,
                 },
-                &guard
+                &guard,
             );
             stats::connected_peers::inc();
         } else {
